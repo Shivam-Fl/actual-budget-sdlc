@@ -287,3 +287,99 @@ describe('compileAndRunQuery', () => {
     ).toEqual(ids);
   });
 });
+
+describe('$sumOver window semantics', () => {
+  // `$sumOver` compiles to
+  // `SUM(amount) OVER (ORDER BY <the query's own orders> ROWS BETWEEN CURRENT
+  // ROW AND UNBOUNDED FOLLOWING)`, so the frame only yields a running balance
+  // when it runs newest-to-oldest. These cases pin that: they pass before and
+  // after the desktop fix, and are here so a future change to `$sumOver` or to
+  // the query that builds the window cannot quietly alter it.
+
+  async function insertRunningBalanceTransactions() {
+    const oldest = uuidv4();
+    const middle = uuidv4();
+    const newest = uuidv4();
+
+    await db.insertTransaction({
+      id: oldest,
+      account: 'acct',
+      date: '2020-01-01',
+      amount: 100,
+    });
+    await db.insertTransaction({
+      id: middle,
+      account: 'acct',
+      date: '2020-01-02',
+      amount: -50,
+    });
+    await db.insertTransaction({
+      id: newest,
+      account: 'acct',
+      date: '2020-01-03',
+      amount: 25,
+    });
+
+    return { oldest, middle, newest };
+  }
+
+  function runningBalanceQuery() {
+    // The test database holds only these transactions, so no account filter is
+    // needed - `acct` is not a real account row here and would be nulled by
+    // ref validation.
+    return q('transactions').select([{ balance: { $sumOver: '$amount' } }]);
+  }
+
+  it('is a running balance for a newest-first ordering', async () => {
+    const { oldest, middle, newest } = await insertRunningBalanceTransactions();
+
+    const { data } = await compileAndRunAqlQuery(
+      runningBalanceQuery().orderBy({ date: 'desc' }).serialize(),
+    );
+
+    expect(
+      data.reduce((acc, row) => ({ ...acc, [row.id]: row.balance }), {}),
+    ).toEqual({ [newest]: 75, [middle]: 50, [oldest]: 100 });
+  });
+
+  it('is not a running balance for an oldest-first ordering', async () => {
+    await insertRunningBalanceTransactions();
+
+    const { data } = await compileAndRunAqlQuery(
+      runningBalanceQuery().orderBy({ date: 'asc' }).serialize(),
+    );
+
+    // Each row sums forward toward the newer transactions instead. This is why
+    // the desktop balance query has to order its own window rather than
+    // inherit the user's display sort.
+    expect(data.map(row => row.balance)).toEqual([75, -25, 25]);
+  });
+
+  it('counts a starting balance transaction like any other row', async () => {
+    const { oldest, middle, newest } = await insertRunningBalanceTransactions();
+    const startingBalanceId = uuidv4();
+    await db.insertTransaction({
+      id: startingBalanceId,
+      account: 'acct',
+      date: '2019-12-31',
+      amount: 1004,
+      payee: 'starting-balance',
+    });
+
+    const { data } = await compileAndRunAqlQuery(
+      runningBalanceQuery().orderBy({ date: 'desc' }).serialize(),
+    );
+
+    // Every balance is offset by the starting balance, because it is an
+    // ordinary transaction in the window. Absolute balance assertions are only
+    // meaningful on an account with no starting balance row.
+    expect(
+      data.reduce((acc, row) => ({ ...acc, [row.id]: row.balance }), {}),
+    ).toEqual({
+      [newest]: 1079,
+      [middle]: 1054,
+      [oldest]: 1104,
+      [startingBalanceId]: 1004,
+    });
+  });
+});
