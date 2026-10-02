@@ -111,6 +111,10 @@ env:
   api_allowlist:
     - "localhost:*"
     - "127.0.0.1:*"
+    # Actual's own browser app reads its theme catalog and release notes from GitHub on every
+    # page load. Public, read-only, and not where any budget data goes.
+    - "api.github.com"
+    - "raw.githubusercontent.com"
 
 # The debugger gets different rules from QA, on purpose. Reproducing a reported bug often
 # REQUIRES production — the bug exists there, with that account and that data. QA is the
