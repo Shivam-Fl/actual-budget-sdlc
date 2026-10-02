@@ -162,7 +162,7 @@
   "stopped_at": null,
   "dispatched_stage": "debug",
   "validated_from": "debug",
-  "validated_at": "2026-10-02T14:14:06.392Z",
+  "validated_at": "2026-10-02T17:56:01.407Z",
   "validated_ac_changes": [],
   "answers": [
     {
@@ -170,5 +170,190 @@
       "by": "Shivam-Fl",
       "answer": "Decision: the fix may add the column with a new migration. packages/loot-core/migrations/** is no longer reserved in this repository, so write the work order with the migration in it. The migration runner (packages/loot-core/src/server/migrate/**) and the sync server migrations stay reserved; do not touch them."
     }
-  ]
+  ],
+  "validated_work_order": {
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "After posting a scheduled transaction and changing its date to an EARLIER day, the schedule does not reappear as a separate forecast row in the register.",
+        "verify": "browser",
+        "how_to_verify": "The regression case 're-dating a posted transaction 7 days early must not un-pay the occurrence' in packages/loot-core/src/server/schedules/app.test.ts, plus qa_script steps 4-6. On current code this fails at every gap from 1 to 7 days early."
+      },
+      {
+        "id": "AC-2",
+        "check": "After the same re-date, the Schedules page still reads 'Paid' for that occurrence and does not flip back to 'Due'.",
+        "verify": "browser",
+        "how_to_verify": "qa_script steps 4-6 against $PREVIEW_URL. The Schedules page reaches 'paid' through useSchedules.ts, whose liveQuery(getHasTransactionsQuery(schedules)) feeds hasTrans into getStatus - so AC-2 is only satisfied if getHasTransactionsQuery itself is changed, not just the forecast path."
+      },
+      {
+        "id": "AC-3",
+        "check": "Every transaction created by posting a schedule carries schedule_occurrence equal to the occurrence it was posted for, including when the transaction's own date is today.",
+        "verify": "test",
+        "how_to_verify": "The two 'posting' cases in packages/loot-core/src/server/schedules/app.test.ts. The stamp is schedule.next_date in both the `today` and the non-today branch."
+      },
+      {
+        "id": "AC-4",
+        "check": "A transaction is credited to an occurrence by identity, not by date: a transaction stamped for a previous occurrence never credits the current one, no matter what date it carries, including a date inside any grace window.",
+        "verify": "test",
+        "how_to_verify": "The two OBJECTION 1 cases in app.test.ts (monthly next_date 2026-11-02 with a transaction stamped 2026-10-02 re-dated 2026-10-28, and weekly occurrence P with a transaction stamped P re-dated P+1), plus the corresponding isScheduleOccurrencePosted cases in schedules.test.ts. This is the criterion v4 stated and violated; here it holds because there is no date window in the matching path at all."
+      },
+      {
+        "id": "AC-5",
+        "check": "The fallback for unstamped transactions is identical to today's behaviour: the same lower bound, the same one-sidedness, no new constant and no widened window.",
+        "verify": "test",
+        "how_to_verify": "The case 'the fallback bound is UNCHANGED from today' in schedules.test.ts (op-'is' recurring bound is exactly next_date; no-date-condition bound is exactly next_date minus 2 days) and the 'legacy unstamped transactions keep today's behaviour' case in app.test.ts. getScheduleOccurrenceMatchStartDate must be unmodified."
+      },
+      {
+        "id": "AC-6",
+        "check": "Auto-posted schedules match exactly, including the shape that carries BOTH posts_transaction: true and an op-'is' recurring date condition.",
+        "verify": "test",
+        "how_to_verify": "The 'schedule carrying BOTH posts_transaction: true AND an op-'is' recurring date condition' case in schedules.test.ts. That shape takes the first branch of getScheduleOccurrenceMatchStartDate today, so its bound is already exact; this design adds no lookback inside that branch. The existing case 'uses exact date for auto-posted recurring schedules' is NOT sufficient evidence - it passes no date condition and so exercises the unreachable posts_transaction branch, which is the gap objection 2 identified."
+      },
+      {
+        "id": "AC-7",
+        "check": "A payment dated AFTER next_date still credits the occurrence and still advances the schedule.",
+        "verify": "browser",
+        "how_to_verify": "The 'a LATE payment still counts' case in app.test.ts, and qa_script step 7. This is the behaviour an `$lte` upper bound would have broken and the reason no upper bound is introduced."
+      },
+      {
+        "id": "AC-8",
+        "check": "Each branch of the new `$or` is a genuine conjunction in the compiled SQL: the fallback arm compiles to `(schedule_occurrence IS NULL AND date >= <bound>)`, never to a form joining its two conditions with OR.",
+        "verify": "test",
+        "how_to_verify": "Asserted against the compiled WHERE string via compileQuery rather than against the serialised filter - the serialised filter looked correct while the defect was live. Getting this wrong is not cosmetic: I measured advanceSchedulesService failing to terminate and driving next_date to 3272-06-13. The 'advanceSchedulesService terminates' case in app.test.ts is the end-to-end guard."
+      },
+      {
+        "id": "AC-9",
+        "check": "The migration is additive-only and passes the repository's own guard unmodified, with schedule_occurrence stored as INTEGER yyyymmdd or NULL.",
+        "verify": "test",
+        "how_to_verify": "packages/loot-core/src/server/migrate/additive-migrations.test.ts runs unmodified and passes. The column must be INTEGER, not TEXT: I measured that TEXT makes the date conversion throw `fromDateRepr not passed a number`."
+      },
+      {
+        "id": "AC-10",
+        "check": "The three existing auto-post and same-day cases keep passing unmodified, and advanceSchedulesService terminates.",
+        "verify": "test",
+        "how_to_verify": "'continues auto-post catch-up after an already paid occurrence', 'catches up an auto-post schedule moved `before` a weekend occurrence' and 'keeps a schedule posted today paid for the rest of the day' in app.test.ts. All three seed UNSTAMPED transactions; all three failed under a first attempt at this design and pass once AC-8 holds. They are the cases that should have caught the runaway."
+      },
+      {
+        "id": "AC-11",
+        "check": "The schedule_occurrence column survives sync, and a transaction stamped on one client matches on another.",
+        "verify": "browser",
+        "how_to_verify": "qa_script steps 8-9. Sync is column-generic (`INSERT INTO ${dataset} (id, ${column})`), so no explicit column list changes; a nullable column is the shape the additive-only regime expects for older clients, and deferMessage/replayPendingMessages already handle columns a peer does not know."
+      }
+    ],
+    "approach": "Record the occurrence identity instead of inferring it. Add a nullable `schedule_occurrence` date column to `transactions`, stamped by postTransactionForSchedule with the `schedule.next_date` the transaction was posted FOR (which is `schedule.next_date` even when the transaction's own `date` is today). Match on that stamp first in both consumers; keep the existing date comparison ONLY as a fallback for unstamped transactions, so every budget that already exists behaves exactly as today. (1) Objection 1: matching is by identity, so a payment for the October occurrence carries schedule_occurrence = 2026-10-02, which is not equal to next_date = 2026-11-02, and does not match November no matter what date it is re-dated to. This holds for any lateness because no grace window exists in this design. getScheduleOccurrenceMatchStartDate is not modified at all, so a payment dated after next_date still matches - preserving the behaviour an `$lte` upper bound would have broken. (2) Objection 2: no lookback is added inside the op-'is' branch, so a schedule carrying BOTH posts_transaction: true and an op-'is' recurring date condition already yields the exact next_date from the first branch today, and both arms are exact-date for it; the dead posts_transaction branch does not need reordering. (3) isScheduleOccurrencePosted applies the same stamp-first rule so register and Schedules page cannot disagree. One measured hazard is part of the spec: AQL's compileOr joins EVERY condition inside a branch with OR, not AND, so the object-form branch `{ schedule_occurrence: null, date: { $gte: bound } }` compiles to `IS NULL OR date >= bound` and matches almost every linked transaction. I built it that way first and measured the damage - the catch-up loop never terminated and drove next_date to 3272-06-13, because every occurrence looked permanently paid. Each `$or` branch must use the array form `{ $and: [ { schedule_occurrence: null }, { date: { $gte: bound } } ] }`. The migration is permitted by the recorded decision in plan/brief.md; the migration runner and sync server migrations stay reserved and untouched.",
+    "confidence": 82,
+    "confidence_rationale": "I reproduced the bug end to end in Chromium against $PREVIEW_URL with the demo budget, re-dating the posted transaction 1-7 days early and observing both the resurrected register row and the Paid -> Due flip, at every gap measured. I confirmed both review objections by execution rather than argument: v4's widened bound was measured to advance next_date from 2026-11-02 to 2026-12-02 on a late October payment, and the op-'is' branch ordering was read and its unreachability confirmed for the shape app.test.ts already uses. I then measured the design I am specifying end to end through the real getHasTransactionsQuery, getStatus, isScheduleOccurrencePosted and advanceSchedulesService against a scratch database: 7 of 7 probes pass, including the reviewer's own late-payment case dated INSIDE any plausible grace, and a late payment dated after next_date still reports paid and still advances. The three existing auto-post catch-up cases that a first attempt broke are green once AC-8 holds, and the migrate and aql suites pass. The additive-only guard accepts the migration unmodified. What keeps this from a higher number: the debugger role forbids editing application code, so I could not verify the fixed behaviour in a browser - every measurement was against a scratch database and the browser confirmation belongs to the implementer's qa_script; I did not measure split transactions, mixed-version sync, or performance on a large budget; and the exact set of write paths that would need stamping is the main residual risk.",
+    "debate_summary": "The v4 plan was rejected on two grounds and both are correct; I confirmed each by execution before replacing the design rather than restating it. Objection 1 - getHasTransactionsQuery is one-sided, so widening its lower bound admits a transaction belonging to the previous occurrence and can skip an unpaid bill - I proved by running v4's bound against the real Condition/RSchedule pipeline and the real advanceSchedulesService and watching next_date jump from 2026-11-02 to 2026-12-02. I also rejected both remedies the review offered, for measured reasons: option (a)'s `$lte` upper bound breaks late payments (I measured a transaction dated 2026-11-10 reporting paid and advancing, which an upper bound would have broken, and it would fail the existing 'keeps a schedule posted today paid for the rest of the day' case), and option (b) cannot satisfy AC-1 or AC-2 at all because the Schedules page gets 'paid' from the very query option (b) would leave alone. Rather than pick a different window, this plan changes what is being compared. Objection 2 - the op-'is' branch returns before posts_transaction, making that short-circuit unreachable for the shape most recurring schedules actually have - is also correct, and v4's fix made it worse by putting a grace inside that branch. This design sidesteps it structurally: it adds no lookback anywhere and leaves getScheduleOccurrenceMatchStartDate identical, so the first branch's exact-date result stands. AC-6's test now uses the shape that can actually distinguish the behaviours, which the case v4 cited could not. What the critique changed most is not the fix but the honesty of the measurement: v4 reported cases dated outside the very window it introduced as proof, and this plan's AC-4 cases are dated INSIDE any plausible grace (2026-10-28 against a 2026-11-02 next_date; P+1 against a P+7 next_date) so they cannot pass vacuously. The plan also absorbed a finding that came out of building the fix rather than reasoning about it: my first implementation of the fallback branch was wrong in a way the serialised filter concealed, producing a runaway loop ending at 3272-06-13. That became AC-8, asserted against compiled SQL rather than the serialised filter.",
+    "evidence": [
+      "REPRODUCED IN CHROMIUM against $PREVIEW_URL, demo budget, single browser session (the demo budget does not survive a new context because IndexedDB is not in storageState). 'Phone bills' | Dominion Power | Bank of America | 120.00, monthly on the 2nd, date condition op 'is'.",
+      "Before posting, the Schedules page reads 'Due'. After 'Post transaction' it reads 'Paid' and the register drops the schedule row.",
+      "BUG: after setting the posted transaction's date to 09/26/2026 (seven days before the 10/02/2026 due date) the register brings the row straight back: '10/02/2026 | Dominion Power | Phone bills | Due | 120.00', alongside the real linked transaction, and the Schedules page flips Paid -> Due.",
+      "Measured at 1, 2, 3, 4, 5 and 7 days early - every gap breaks. There is no threshold below which the bug is absent.",
+      "The phantom row survives a page reload. No console errors and no page errors at any step.",
+      "OBJECTION 1 CONFIRMED BY EXECUTION: the serialised filter on current code is [{\"$or\":[{\"$and\":{\"schedule\":\"s1\",\"date\":{\"$gte\":\"2026-11-02\"}}}]}] - genuinely one-sided, no $lte. Weekly with grace 6 gives bound D-6, so a bill paid ONE day late for P (P+1 = D-6) credits the following week. Monthly with grace 7 gives bound 2026-10-26, so the October bill paid late on 2026-10-28 credits November. v4's regression cases were dated 2026-10-20, which sits outside the grace v4 itself introduced, so they pass vacuously.",
+      "OBJECTION 2 CONFIRMED BY EXECUTION: for a schedule carrying BOTH posts_transaction: true and an op-'is' recurring date condition, the filter serialises with the exact next_date because `if (dateCond?.op === 'is') return occurrenceDate` runs first and posts_transaction is never consulted. The existing schedules.test.ts case v4 cited for AC-6 passes no date condition and so exercises the unreachable branch.",
+      "DESIGN MEASURED END TO END through the real getHasTransactionsQuery, getStatus, isScheduleOccurrencePosted and advanceSchedulesService - 7 of 7 probes pass: (A) re-dating a stamped transaction 7 days early still reports paid (the reported bug, fixed); (B) a late payment of the PREVIOUS occurrence does not credit the current one and does not advance next_date; (C) the open-ended late tail still credits; (D) legacy unstamped transactions fall back to date matching; (E) the objection-2 auto-post shape gets exact matching and survives re-dating; (F) forecast dedup suppresses exactly one occurrence; (G) a late payment dated after next_date still reports paid and still advances - the case an $lte upper bound would have broken.",
+      "AQL SEMANTICS HAZARD, MEASURED: compileOr in packages/loot-core/src/server/aql/compiler.ts joins EVERY condition inside a branch with OR, not AND. An object-form fallback branch { schedule_occurrence: null, date: { $gte: bound } } compiles to 'schedule_occurrence IS NULL OR date >= 20161219'. Evidence: at next_date=2016-12-19 the query returned the row date=2016-12-05, which satisfies neither arm of the intended disjunction. The serialised filter looked correct throughout.",
+      "DAMAGE FROM THAT HAZARD, MEASURED: with the object-form branch the catch-up loop in advanceSchedulesService never terminated and drove next_date to 3272-06-13, logging status=paid at 2016-12-05, 2016-12-19, 2017-01-02 and onward, because every occurrence looked permanently paid. Two existing tests that PASS on baseline failed as a result: 'continues auto-post catch-up after an already paid occurrence' and 'catches up an auto-post schedule moved `before` a weekend occurrence' - both seed unstamped transactions.",
+      "CORRECTED ARRAY FORM COMPILES AS INTENDED: { $and: [ { schedule_occurrence: null }, { date: { $gte: bound } } ] } compiles to '(v_transactions_internal.schedule_occurrence IS NULL AND v_transactions_internal.date >= 20161219)'.",
+      "WITH THE CORRECTED FORM: all 7 probes pass; 'continues auto-post catch-up after an already paid occurrence' and 'catches up an auto-post schedule moved `before` a weekend occurrence' pass unmodified; src/server/migrate and src/server/aql suites pass (196 tests, 1 failure, and that one failure is the intentionally-changed getHasTransactionsQuery serialisation assertion); the additive-only guard accepts the new migration unmodified.",
+      "BASELINE RESTORED AND VERIFIED: after reverting every patch and deleting all scratch files, git diff --stat is empty, git status shows only untracked plan/ and work-order.json, and the schedules suites pass 89/89 on unmodified code.",
+      "MIGRATION TYPE CONSTRAINT, MEASURED: declaring the column TEXT makes AQL date conversion throw 'fromDateRepr not passed a number', because date columns are stored as INTEGER yyyymmdd by toDateRepr. It must be INTEGER DEFAULT NULL.",
+      "No hard-coded transaction column list exists: grepping the sync path and the models for an enumerated column list found none, so the column-generic `INSERT INTO ${dataset} (id, ${column})` covers the new column with no further changes."
+    ],
+    "files": [
+      {
+        "action": "create",
+        "change": "Add the occurrence stamp. Filename takes the current epoch-milliseconds timestamp per packages/loot-core/migrations/README.md. Exact body, which I ran past the additive-only guard and which passes it:\n\nBEGIN TRANSACTION;\nALTER TABLE transactions ADD COLUMN schedule_occurrence INTEGER DEFAULT NULL;\nCOMMIT;\n\nThe column MUST be INTEGER, not TEXT: date columns are stored as INTEGER yyyymmdd by toDateRepr, and I measured that declaring the stamp TEXT makes AQL's date conversion throw 'fromDateRepr not passed a number'. It must be nullable with default NULL, which the post-cutoff additive-only regime permits and which is what makes the legacy fallback possible. transactions is a synced table and keeps its single id primary key; nothing is dropped or renamed.",
+        "path": "packages/loot-core/migrations/<timestamp>_add_schedule_occurrence_to_transactions.sql",
+        "why": "This is the fact the whole design exists to record. Approved explicitly by the recorded decision in plan/brief.md."
+      },
+      {
+        "action": "edit",
+        "change": "In the `transactions` schema, add `schedule_occurrence: f('date'),` immediately after `schedule: f('id', { ref: 'schedules' }),`. Declaring it f('date') gives the column AQL input/output conversion to and from yyyymmdd, matching how `date` itself is handled. Without this registration every query touching the field throws 'Field \"schedule_occurrence\" does not exist in table \"transactions\"' - I hit exactly that.",
+        "path": "packages/loot-core/src/server/aql/schema/index.ts",
+        "why": "AQL resolves field names against this schema; an unregistered column is invisible to every query in the codebase."
+      },
+      {
+        "action": "edit",
+        "change": "In postTransactionForSchedule, add `schedule_occurrence: schedule.next_date` to the transaction object being inserted, alongside the existing `schedule: schedule.id`. The stamp is the OCCURRENCE being fulfilled, so it is schedule.next_date in every case - including the `today ? currentDay() : schedule.next_date` branch, where the transaction's own date is today but it still discharges the next_date occurrence. Make no other change to this function, and do not export it; it is exercised through advanceSchedulesService.",
+        "path": "packages/loot-core/src/server/schedules/app.ts",
+        "why": "The single write path that creates a schedule-linked transaction from a schedule. Every other linked transaction is user-created and correctly stays unstamped, which is what the fallback arm is for."
+      },
+      {
+        "action": "edit",
+        "change": "Three edits. (a) In getHasTransactionsQuery, replace each schedule's single-condition filter with a $and of the schedule id plus a two-arm $or: arm one { schedule_occurrence: schedule.next_date }; arm two the ARRAY-form { $and: [ { schedule_occurrence: null }, { date: { $gte: getScheduleOccurrenceMatchStartDate(schedule, schedule.next_date) } } ] }. The array form is mandatory, not stylistic - see AC-8. (b) Add 'schedule_occurrence' to the query's .select([...]). (c) In isScheduleOccurrencePosted, match on the stamp when present and fall back to the existing date comparison when not; widen PostedScheduleTransaction with an optional schedule_occurrence?: string | null. getScheduleOccurrenceMatchStartDate itself is NOT modified, and neither is the order of its branches. Update the doc comment above getHasTransactionsQuery to describe the stamp-first rule and state that the fallback bound is unchanged. indexPostedScheduleTransactions needs no change.",
+        "path": "packages/loot-core/src/shared/schedules.ts",
+        "why": "The two matchers that decide whether an occurrence counts as paid. Leaving getScheduleOccurrenceMatchStartDate untouched is what makes AC-6 true for auto-posted schedules without reordering the branch the review flagged."
+      },
+      {
+        "action": "edit",
+        "change": "Add `schedule_occurrence?: TransactionEntity['schedule_occurrence'];` to the transaction insert shape, next to the existing `schedule?: ScheduleEntity['id'];`.",
+        "path": "packages/loot-core/src/types/models/transaction.ts",
+        "why": "postTransactionForSchedule inserts through the typed insert shape; without this the new field is not a known column to the type checker."
+      }
+    ],
+    "issue": 7,
+    "kind": "bug",
+    "mode": "committed",
+    "out_of_scope": [
+      "Bounding or otherwise hardening the advanceSchedulesService catch-up loop. This change makes the runaway unreachable through the matching path; it does not make the loop safe by construction. Filed separately if wanted.",
+      "Reordering or removing the dead posts_transaction branch in getScheduleOccurrenceMatchStartDate. It is unreachable today and this change does not need it. Reordering would alter existing behaviour for shapes outside this fix's scope. AC-6 holds without touching it.",
+      "Backfilling schedule_occurrence for transactions that already exist. The nullable fallback covers them, and a backfill would have to guess which occurrence a transaction belonged to - the very inference this design removes.",
+      "Any change under packages/loot-core/src/server/migrate/** or the sync server migrations. Both remain reserved per the recorded decision; the additive-only guard enforces that without modification.",
+      "Changing how schedules are matched in the rules engine for payee, account or amount. Only occurrence identity is in scope."
+    ],
+    "qa_script": [
+      "Open $PREVIEW_URL and choose 'View demo' on the setup screen so a budget with sample data is created. Use 'Don't use a server'. Never point this at production.",
+      "Go to Schedules. Find 'Phone bills' (Dominion Power, Bank of America, 120.00, monthly on the 2nd). Note its current status - it should read 'Due'.",
+      "Click 'Post transaction'. Confirm the Schedules page now reads 'Paid' and the register no longer shows a separate forecast row for 10/02/2026.",
+      "THE REPRODUCED BUG. In the register, click the date cell of the posted transaction. It turns into a text input; overwrite it with a date SEVEN DAYS before the due date and confirm with Enter.",
+      "Confirm the register does NOT bring back a second row for the same schedule, and confirm the Schedules page still reads 'Paid'. On current code both fail: the row returns as 'Due' and the status flips. This is AC-1 and AC-2.",
+      "Reload the page and confirm the register and the Schedules page are still correct. On current code the phantom row survives a reload.",
+      "THE OPPOSITE DIRECTION - the guard against over-correcting. Post the schedule again, then re-date the posted transaction FORWARD, past next_date (for an occurrence of 11/02/2026 use 11/10/2026). It must STILL read 'Paid'. If it reads 'Due', the fix has added an upper bound and broken late payments; that is AC-7 failing.",
+      "Edit a schedule so 'Automatically add transaction' is enabled, save, and confirm posting from it still marks the occurrence paid and that re-dating the auto-posted transaction earlier does not un-pay it. Then create the same auto-post schedule again but leave its date condition on the 2nd of the month, so it carries BOTH auto-post and an op-'is' recurring date condition - the shape AC-6 names.",
+      "With a sync server running, make the same edit on a second client and confirm the schedule reads 'Paid' there too, which shows the new column synced (AC-11).",
+      "Regression sweep: 'Skip next scheduled date' and 'Post transaction today' still behave as before, and a daily recurring schedule paid once still projects its later occurrences so the forecast does not double-count."
+    ],
+    "reproduced": true,
+    "residual_risks": [
+      "QA should read this first: transactions created outside postTransactionForSchedule - by import, by the API, by a rule, or by an older client - carry no stamp and keep today's date-matching behaviour, so the original bug is only fixed for schedule-linked transactions that this application posted. That is the majority of the reported scenario but not all of it.",
+      "The fallback bound is deliberately unchanged, which means the early-payment window for unstamped transactions is still exactly what it is today (2 days for manual recurring schedules, exact for op-'is'). A user who paid 3 days early on a schedule whose transaction was imported rather than posted will still see the phantom row. Fixing that requires guessing an occurrence, which is what this design deliberately refuses to do.",
+      "AC-8 is the criterion most likely to be satisfied by accident. A reviewer reading the serialised filter will see what looks like a correct two-arm $or while the SQL is wrong. Check the compiled clause, not the serialised filter."
+    ],
+    "root_cause": "A schedule-linked transaction stores only `schedule: <id>` and its own user-editable `date`. Nothing records which schedule OCCURRENCE it was posted for, so both matchers (getHasTransactionsQuery and isScheduleOccurrencePosted) must re-derive the occurrence by comparing the transaction's mutable date against schedule.next_date. Because postTransactionForSchedule always creates the transaction dated exactly next_date, the comparison sits exactly on the boundary, and any edit that moves the date earlier moves it out of the match set. Occurrence identity and transaction date are two different facts that the schema conflates into one, and the user is able to edit the one that was never meant to carry the meaning. Widening the comparison window cannot fix this, because the window is what stands in for the missing identity - which is why v3 and v4 were both rejected.",
+    "tests": [
+      {
+        "action": "edit",
+        "cases": [
+          "getHasTransactionsQuery > serialises the stamp-first two-arm filter: the serialised filter for a monthly schedule must contain an `$or` whose first branch is `{ schedule_occurrence: '2024-03-10' }` and whose second branch carries BOTH `schedule_occurrence: null` and `date: { $gte: ... }`. Update the existing case 'filters by schedule and date when schedules are given', which asserts the old single-condition shape and is the one existing test this change is expected to move.",
+          "getHasTransactionsQuery > the fallback bound is UNCHANGED from today: for a schedule with an op-'is' recurring date condition the fallback `date` bound must be exactly `next_date` (no lookback), and for a schedule with no date condition and posts_transaction false it must be exactly `next_date` minus 2 days. This is the assertion that keeps the fix from silently reintroducing a grace window.",
+          "getHasTransactionsQuery > compiles to SQL in which the fallback arm's two conditions are joined by AND, not OR. Assert against the compiled WHERE string, not the serialised filter: the clause must contain `(schedule_occurrence IS NULL AND date >= <bound>)`. This case is the regression for the runaway loop - see AC-8.",
+          "isScheduleOccurrencePosted > a stamped transaction counts for its stamped occurrence regardless of its own date: schedule_occurrence '2024-03-10' with tx.date '2024-03-03' must report posted.",
+          "isScheduleOccurrencePosted > a transaction stamped for a DIFFERENT occurrence does not count, however its date is set: schedule_occurrence '2024-03-03' (the previous occurrence) against occurrenceDate '2024-04-03' must report NOT posted, including when tx.date is late at '2024-04-05'.",
+          "isScheduleOccurrencePosted > an unstamped transaction keeps today's date-comparison behaviour exactly: the existing it.each table in that describe block must keep passing unmodified, and a case with an unstamped tx dated two days after a late previous payment must report NOT posted, matching today.",
+          "isScheduleOccurrencePosted > a schedule carrying BOTH posts_transaction: true AND an op-'is' recurring date condition (the shape objection 2 names) matches exactly: a stamped transaction for that occurrence reports posted, a transaction stamped for the previous occurrence does not, and the fallback bound for that shape is exactly next_date with no lookback. The existing case 'uses exact date for auto-posted recurring schedules' cannot distinguish the two behaviours because it exercises the unreachable posts_transaction branch with no date condition."
+        ],
+        "path": "packages/loot-core/src/shared/schedules.test.ts"
+      },
+      {
+        "action": "edit",
+        "cases": [
+          "posting a schedule stamps the occurrence: after posting, the created transaction's schedule_occurrence equals the schedule's next_date, and its schedule equals the schedule id.",
+          "posting TODAY still stamps the occurrence, not the date: with today inside the occurrence, the transaction's date is currentDay() while its schedule_occurrence is the schedule's next_date.",
+          "re-dating a posted transaction 7 days EARLY must not un-pay the occurrence (the reported bug): seed via advanceSchedulesService, re-date the created transaction to seven days before next_date, then assert the schedule still reports paid and that the register keeps no duplicate forecast row. This case FAILS on current code and is the primary regression.",
+          "OBJECTION 1, monthly, dated INSIDE the window v4 introduced: next_date 2026-11-02 with an op-'is' monthly date condition, a transaction stamped for the 2026-10-02 occurrence and re-dated LATE to 2026-10-28. It must NOT report the November occurrence paid, and advanceSchedulesService must leave next_date at 2026-11-02 rather than advancing to 2026-12-02. This is the case v4 failed, dated inside the grace rather than outside it.",
+          "OBJECTION 1, weekly: occurrence P and next_date D = P+7, a transaction stamped for P and re-dated to P+1. It must NOT report D paid and must NOT advance next_date past D.",
+          "a LATE payment still counts - the guard against over-correcting: a transaction stamped for next_date 2026-11-02 but dated 2026-11-10 must still report paid and advanceSchedulesService must still advance. This is what an `$lte` upper bound would have broken, and what must not regress.",
+          "legacy unstamped transactions keep today's behaviour: a schedule-linked transaction inserted directly with no schedule_occurrence still matches by the unchanged date bound, both when dated before and when dated after next_date. Every budget that already exists must behave identically.",
+          "an auto-posted schedule (posts_transaction: true) carrying an op-'is' recurring date condition does not advance on an unstamped transaction from a previous occurrence - the shape the review named, and the shape of the existing 'continues auto-post catch-up after an already paid occurrence' fixture.",
+          "advanceSchedulesService terminates: assert next_date settles at the expected occurrence rather than advancing without bound. The regression for the runaway loop is that this file currently has no such assertion and the loop is unbounded.",
+          "the existing cases 'continues auto-post catch-up after an already paid occurrence', 'catches up an auto-post schedule moved `before` a weekend occurrence' and 'keeps a schedule posted today paid for the rest of the day' must keep passing. They seed UNSTAMPED transactions and they FAIL under a first attempt at this design; they are the cases that caught it."
+        ],
+        "path": "packages/loot-core/src/server/schedules/app.test.ts"
+      }
+    ],
+    "understanding": "Posting a scheduled transaction and then moving that transaction's date to an earlier day makes the schedule come back as an un-posted forecast row in the register and flips its status from 'Paid' back to 'Due'. The root cause is that 'has this occurrence been paid?' is answered by COMPARING DATES rather than by asking WHICH OCCURRENCE the transaction was posted for. postTransactionForSchedule (packages/loot-core/src/server/schedules/app.ts) builds a transaction dated exactly schedule.next_date and links it with `schedule: schedule.id` - nothing records which occurrence it came from. Both consumers of that link then re-derive the occurrence from the date. getHasTransactionsQuery (packages/loot-core/src/shared/schedules.ts) filters on a one-sided lower bound `date: { $gte: getScheduleOccurrenceMatchStartDate(schedule, next_date) }`, and isScheduleOccurrencePosted tests `tx.date >= matchStartDate && tx.date <= occurrenceDate`. For the recurring schedules this bug is reported against, the date condition op is 'is', so getScheduleOccurrenceMatchStartDate returns next_date itself - the bound is exactly the due date. Posting produces a transaction sitting exactly on the bound, so it matches; editing the date to any earlier day moves it below the bound, the query stops matching, getStatus falls through to comparing next_date with today and returns 'due', and computeSchedulePreviewTransactions regenerates the row because 'due' is in isForPreview. I reproduced this end to end in Chromium against $PREVIEW_URL using the demo budget: 'Phone bills' (Dominion Power, Bank of America, 120.00, monthly on the 2nd, date condition op 'is') read 'Due'; after 'Post transaction' it read 'Paid' and the register row disappeared; after setting the transaction's date to 09/26/2026 (SEVEN days before the due date) the register brought the row straight back as '10/02/2026 | Dominion Power | Phone bills | Due | 120.00' alongside the real linked transaction, and the Schedules page flipped 'Paid' -> 'Due'. I measured it at 1, 2, 3, 4, 5 and 7 days early - every gap breaks, there is no threshold below which the bug is absent - and it survives a page reload. No console errors and no page errors at any step. The defect is not the bound's width; it is that the link from a transaction to an occurrence is reconstructed from a mutable date instead of being recorded. Every rejected attempt so far (v3, v4) tried to widen or reshape the date window, which is why each one moved the breakage rather than removing it.",
+    "version": 5
+  }
 }
