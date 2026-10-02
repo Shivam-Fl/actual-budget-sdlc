@@ -367,6 +367,11 @@
       "at": "2026-10-02T20:30:36.516Z",
       "agent": "qa",
       "action": "qa attempt 1"
+    },
+    {
+      "at": "2026-10-02T21:10:40.379Z",
+      "agent": "qa",
+      "action": "re-routed to debug -> implement -> review -> qa (insert_stage review)"
     }
   ],
   "resume_at": null,
