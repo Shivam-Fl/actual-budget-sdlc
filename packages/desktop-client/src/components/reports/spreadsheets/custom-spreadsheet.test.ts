@@ -7,6 +7,8 @@ import type {
 } from '@actual-app/core/types/models';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { QueryDataEntity } from '#components/reports/ReportOptions';
+
 import type { createCustomSpreadsheetProps } from './custom-spreadsheet';
 import { createCustomSpreadsheet } from './custom-spreadsheet';
 import { createGroupedSpreadsheet } from './grouped-spreadsheet';
@@ -31,9 +33,59 @@ vi.mock('@actual-app/core/platform/client/connection', () => ({
   }),
 }));
 
-vi.mock('#queries/aqlQuery', () => ({
-  aqlQuery: async () => ({ data: [] }),
+// The rows the server would return for the query, standing in for it exactly
+// as the `send` stub above stands in for the budget endpoints. A test sets them
+// per case and `aqlQuery` splits them into assets and debts the way the query's
+// `amount` filter would, so a case can assert on money rather than on shape.
+// `vi.hoisted` because `vi.mock` is hoisted above this declaration.
+const { serverRows } = vi.hoisted(() => ({
+  serverRows: { current: [] as QueryDataEntity[] },
 }));
+
+function serveTheseRows(rows: QueryDataEntity[]) {
+  serverRows.current = rows;
+}
+
+vi.mock('#queries/aqlQuery', () => ({
+  aqlQuery: async (query: {
+    state: {
+      filterExpressions: Array<Record<string, Record<string, unknown>>>;
+    };
+  }) => {
+    const wantsDebts = query.state.filterExpressions.some(filter =>
+      Object.hasOwn(filter.amount ?? {}, '$lt'),
+    );
+
+    return {
+      data: serverRows.current.filter(row =>
+        wantsDebts ? row.amount < 0 : row.amount > 0,
+      ),
+    };
+  },
+}));
+
+// A debt as the server would return it: `makeQuery` groups by `$month`, so
+// `date` comes back already transformed to the report's interval key ('2024-01',
+// not a date). Debts are negative amounts, so they reach the report through the
+// debts query rather than the assets one.
+function debtRow(
+  category: string,
+  amount: number,
+  date = '2024-01',
+): QueryDataEntity {
+  return {
+    date,
+    category,
+    categoryHidden: false,
+    categoryGroup: category === 'c-cell' ? 'g-bills' : 'g-usual',
+    categoryGroupHidden: false,
+    account: 'a-checking',
+    accountOffBudget: false,
+    payee: 'p-store',
+    transferAccount: '',
+    amount,
+  };
+}
 
 const categoryGroups: CategoryGroupEntity[] = [
   { id: 'g-usual', name: 'Usual Expenses', sort_order: 0 },
@@ -125,6 +177,7 @@ function axisNames(rows: Array<{ id: string; name: string }>) {
 describe('category axis narrowing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    serveTheseRows([]);
   });
 
   it('drops unselected categories from the Category axis', async () => {
@@ -276,5 +329,131 @@ describe('category axis narrowing', () => {
       baseProps(makeFixture(), { conditions, groupBy: 'Group' }),
     );
     expect(axisNames(groupData.data)).toEqual(['g-bills', 'uncategorized']);
+  });
+});
+
+describe("'any of' must not narrow the axis past what the query fetches", () => {
+  // The query side unions every disjunct under 'any of' - `makeQuery` wraps the
+  // whole filter list in `$or`. An axis narrowed by one disjunct therefore
+  // renders fewer rows than the report fetched, and `recalculate` finds no row
+  // to attach the rest to, so their amounts vanish from every total with no
+  // error on screen. These cases pin the money, not just the shape.
+  const notesPlusCell = [
+    { field: 'notes', op: 'contains', value: 'e' },
+    { field: 'category', op: 'oneOf', value: ['c-cell'] },
+  ] as RuleConditionEntity[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    serveTheseRows([]);
+  });
+
+  it("keeps the rows 'any of' fetched money for", async () => {
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
+
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: notesPlusCell,
+        conditionsOp: 'or',
+      }),
+    );
+
+    // Both categories the query fetched are on the axis... (rows are sorted by
+    // amount, so compare the set rather than the order)
+    expect([...axisNames(data.data)].sort()).toEqual([
+      'Off budget',
+      'Transfers',
+      'Uncategorized',
+      'c-cell',
+      'c-food',
+      'c-rent',
+    ]);
+
+    // ...so all of it reaches the totals: -1000 (Food) + -500 (Cell).
+    expect(data.totalDebts).toBe(-1500);
+    expect(data.totalTotals).toBe(-1500);
+    expect(data.data.find(row => row.id === 'c-food')!.totalDebts).toBe(-1000);
+  });
+
+  it("keeps both groups on the axis under 'any of'", async () => {
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
+
+    const groups = await runGrouped(
+      baseProps(makeFixture(), {
+        conditions: notesPlusCell,
+        conditionsOp: 'or',
+      }),
+    );
+
+    // 'g-usual' is here because the notes disjunct populates it, and its
+    // categories are here because the table view renders them.
+    expect(groups.map(group => group.id)).toEqual([
+      'g-usual',
+      'g-bills',
+      'uncategorized',
+    ]);
+    expect(
+      groups
+        .find(group => group.id === 'g-usual')!
+        .categories!.map(category => category.id)
+        .sort(),
+    ).toEqual(['c-food', 'c-rent']);
+  });
+
+  it("keeps the notes-populated group on the Group split under 'any of'", async () => {
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
+
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: notesPlusCell,
+        conditionsOp: 'or',
+        groupBy: 'Group',
+      }),
+    );
+
+    expect(axisNames(data.data)).toEqual([
+      'g-usual',
+      'g-bills',
+      'uncategorized',
+    ]);
+    expect(data.data.find(row => row.id === 'g-usual')!.totalDebts).toBe(-1000);
+  });
+
+  it("still narrows 'all of', so the fix cannot be narrowing switched off", async () => {
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
+
+    const data = await runCustom(
+      baseProps(makeFixture(), { conditions: selectCellOnly }),
+    );
+
+    expect(axisNames(data.data)).toEqual([
+      'c-cell',
+      'Uncategorized',
+      'Off budget',
+      'Transfers',
+    ]);
+    // 'all of' with only the Bills category selected keeps only Cell's money.
+    expect(data.totalDebts).toBe(-500);
+  });
+
+  it("still narrows a single category condition under 'any of'", async () => {
+    // One disjunct is trivially a union of one, so the gate must not degenerate
+    // into 'op === or means never narrow'.
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
+
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: selectCellOnly,
+        conditionsOp: 'or',
+      }),
+    );
+
+    expect(axisNames(data.data)).toEqual([
+      'c-cell',
+      'Uncategorized',
+      'Off budget',
+      'Transfers',
+    ]);
+    expect(data.totalDebts).toBe(-500);
   });
 });
