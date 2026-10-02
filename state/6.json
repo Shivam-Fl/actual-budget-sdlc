@@ -453,6 +453,11 @@
         "ci:unknown:c1aaf6b6fa40e37b",
         "qa:unknown:1ebc64f1ef7241f8"
       ]
+    },
+    "triage": {
+      "verdict": "repair",
+      "diagnosis": "The QA session did its job and was killed before it could file the paperwork. 'Test it, adversarially' ran the full 205-minute step budget (duration_ms=12309560) against a 12-step Playwright plan and wrote 39 evidence files and a complete PR-SUMMARY.md, then the 20-minute 'Finish' session also hit its cap (duration_ms=1212235) — neither called StructuredOutput, so qa-report.json was never written and the 'Check that ... returned its result' step failed with exit 1. That timeout is bookkeeping, not the finding. The substantive result is in the qa-evidence artifact (ID 11254619918, 14.5 MB, 30-day retention): 16 cases, 15 passing, and one blocking defect QA reproduced deterministically three times. BUG-1 is real and I verified it against the code under test at pr15 head f1079db: advanceScheduleToDate in packages/loot-core/src/server/schedules/app.ts:564 loops `for (let attempts = 0; nextDate < date && attempts < 100; attempts++)`, and each iteration calls setNextDate({advance:true}), which advances exactly ONE occurrence. So the loop can move next_date at most 100 occurrences forward. A daily schedule with a custom '150-day' upcoming length previews 151 occurrences (getUpcomingDays accepts N-day unbounded, packages/loot-core/src/shared/schedules.ts:390), and posting the furthest previewed row (03/01/2027) leaves next_date stranded at 01/10/2027 — exactly 100 daily steps. The consequence is the reported issue-6 symptom, unchanged: the 03/01/2027 preview row survives beside its own real transaction, and the Schedules page shows the schedule Paid at 01/10/2027 when nothing was ever posted there, which is what AC-7 forbids. QA's control T-11 (90 occurrences, inside the budget) passes and lands exactly on the posted date, so the cap and not the mechanism is the sole differentiator. This is squarely inside the work order: its risks[] entry names this exact bound ('must still stop on a no-change advance and on an attempt cap') and AC-7 pins the invariant the cap breaks. Dispatch the implementer with this; re-running QA unchanged would spend another 205 minutes and hit the same cap.",
+      "evidence": "failed-run.log:1733 `##[end-action id=qa_agent.run;outcome=failure;duration_ms=12309560]` and :2518 `duration_ms=1212235` for qa_agent_finish — both are the workflow's own timeout-minutes: 205 and 20 (.github/workflows/sdlc-qa.yml:409 and :570), not a provider or network error; no 429/529 anywhere in the log. :2579 `##[error]the agent returned no result, even resumed: none of qa-report.json exists`. The work itself survived: :2596 'With the provided path, there will be 39 files uploaded' -> artifact qa-evidence ID 11254619918, 14585798 bytes, which I downloaded and read. qa-evidence/BOUNDARY-FINDING.md: 'NEXT_DATE BEFORE 10/02/2026 / POSTING OCCURRENCE 03/01/2027 / NEXT_DATE AFTER 01/10/2027' and '10/02/2026 + 100 daily occurrences = 01/10/2027 exactly. The loop stopped at its cap.' Verified at `git show pr15:packages/loot-core/src/server/schedules/app.ts`: line 558 `async function advanceScheduleToDate`, line 564 `for (let attempts = 0; nextDate < date && attempts < 100; attempts++)` — and that each pass calls `setNextDate({id, conditions, advance: true})`, one occurrence per call. `git show pr15:packages/loot-core/src/shared/schedules.ts:390` confirms getUpcomingDays has no upper bound on the N-day custom length. previous-work-order.json risks[0] names the cap as the hazard to be bounded; AC-7 forbids the state it produces. prior_signatures ['ci:unknown:c1aaf6b6fa40e37b','qa:unknown:1ebc64f1ef7241f8'] are different signatures from this one (f210f81789d09597), and occurrences=1 — this is not a repeat of a known flaky failure."
     }
   },
   "triage_history": [
@@ -471,6 +476,14 @@
       "confidence": 74,
       "diagnosis": "Nothing in QA's setup failed. The checkout, the dependency install, the app boot, the preview allowlist guard, the credentials step and the schema limits all succeeded; the failure is entirely in the agent's return. The QA session ran 408 turns over 91 minutes ($26.36) and the SDK ended it with subtype 'success' and is_error false but NO structured_output — it finished its turn without ever calling the StructuredOutput tool. The workflow's own rescue step, 'Finish — Test it, adversarially' (sdlc",
       "run": "37034150101"
+    },
+    {
+      "at": "2026-10-02T22:29:43.070Z",
+      "stage": "qa",
+      "verdict": "repair",
+      "confidence": 88,
+      "diagnosis": "The QA session did its job and was killed before it could file the paperwork. 'Test it, adversarially' ran the full 205-minute step budget (duration_ms=12309560) against a 12-step Playwright plan and wrote 39 evidence files and a complete PR-SUMMARY.md, then the 20-minute 'Finish' session also hit its cap (duration_ms=1212235) — neither called StructuredOutput, so qa-report.json was never written and the 'Check that ... returned its result' step failed with exit 1. That timeout is bookkeeping, n",
+      "run": "37047480820"
     }
   ],
   "follow_ups": {
