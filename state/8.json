@@ -295,5 +295,6 @@
   "work_order_version": 1,
   "work_order_posted_at": "2026-10-02T07:16:41.819Z",
   "work_order_from": "debug",
-  "work_order_comment": "5947237304"
+  "work_order_comment": "5947237304",
+  "implemented_version": 1
 }
