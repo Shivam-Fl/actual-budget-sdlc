@@ -126,7 +126,7 @@
       "action": "lock acquired"
     }
   ],
-  "resume_at": null,
+  "resume_at": "debug",
   "flow_plan": {
     "kind": "bug",
     "confidence": 90,
@@ -135,7 +135,7 @@
     "councils": {},
     "decided_at": "2026-10-02T09:29:57.046Z"
   },
-  "stopped_at": null,
+  "stopped_at": "debug",
   "dispatched_stage": "plan",
   "validated_from": "debug",
   "validated_at": "2026-10-02T14:14:06.392Z",
