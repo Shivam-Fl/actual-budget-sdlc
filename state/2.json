@@ -209,7 +209,17 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/accounts/balanceQuery.ts",
+    "packages/desktop-client/src/components/accounts/Account.tsx",
+    "packages/desktop-client/src/components/accounts/balanceQuery.test.ts",
+    "packages/desktop-client/e2e/accounts.test.ts",
+    "packages/desktop-client/e2e/page-models/account-page.ts",
+    "upcoming-release-notes/fix-running-balance-ascending-sort.md",
+    "packages/desktop-client/src/components/accounts/balanceQuery.test.ts",
+    "packages/desktop-client/e2e/accounts.test.ts",
+    "packages/loot-core/src/server/aql/exec.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
