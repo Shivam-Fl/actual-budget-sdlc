@@ -669,12 +669,14 @@ describe('Transaction rules', () => {
       expect(transactions).toEqual([]);
     }
 
-    // One log line per distinct pattern, not one per row scanned: five
-    // patterns over five rows is five lines, not twenty-five.
+    // Exactly one log line per distinct pattern, not one per row scanned: five
+    // patterns over five rows is five lines, not twenty-five. Asserted exactly,
+    // so a guard that stopped logging would fail here rather than pass an
+    // upper bound.
     const invalidRegexLogs = consoleSpy.mock.calls.filter(
       call => call[0] === 'invalid regexp in sqlite REGEXP',
     ).length;
-    expect(invalidRegexLogs).toBeLessThanOrEqual(patterns.length);
+    expect(invalidRegexLogs).toBe(patterns.length);
 
     // A valid pattern still matches every seeded row, so the guard is not a
     // blanket no-op

@@ -121,25 +121,28 @@ export async function asyncTransaction(
   }
 }
 
-// See the identically named set in ./index.ts: SQLite calls `regexp` once per
-// candidate row, so logging unguarded multiplies by the size of the budget.
-// Each distinct invalid pattern is reported once per session instead. The two
+// See the identically named factory in ./index.ts: SQLite calls `regexp` once
+// per candidate row, so logging unguarded multiplies by the size of the budget.
+// Each distinct invalid pattern is reported once per database instead. The two
 // files define `regexp` independently and share no module state, so this file
-// needs its own set.
-const reportedInvalidRegexps = new Set<string>();
+// needs its own set — and, as there, it is held in the closure rather than at
+// module scope, so its lifetime is the database handle's and not the process's.
+function createRegexp() {
+  const reportedInvalidRegexps = new Set<string>();
 
-function regexp(regex: string, text: string | null) {
-  try {
-    return new RegExp(regex).test(text || '') ? 1 : 0;
-  } catch (e) {
-    // See the identically named function in ./index.ts: a partially typed
-    // regex matches nothing rather than throwing out of the SQL engine.
-    if (!reportedInvalidRegexps.has(regex)) {
-      reportedInvalidRegexps.add(regex);
-      logger.log('invalid regexp in sqlite REGEXP', e);
+  return function regexp(regex: string, text: string | null) {
+    try {
+      return new RegExp(regex).test(text || '') ? 1 : 0;
+    } catch (e) {
+      // See the identically named function in ./index.ts: a partially typed
+      // regex matches nothing rather than throwing out of the SQL engine.
+      if (!reportedInvalidRegexps.has(regex)) {
+        reportedInvalidRegexps.add(regex);
+        logger.log('invalid regexp in sqlite REGEXP', e);
+      }
+      return 0;
     }
-    return 0;
-  }
+  };
 }
 
 export function openDatabase(pathOrBuffer: string | Buffer): SQL.Database {
@@ -153,7 +156,7 @@ export function openDatabase(pathOrBuffer: string | Buffer): SQL.Database {
     arg?.toUpperCase(),
   );
   db.function('UNICODE_LIKE', { deterministic: true }, unicodeLike);
-  db.function('REGEXP', { deterministic: true }, regexp);
+  db.function('REGEXP', { deterministic: true }, createRegexp());
   db.function('NORMALISE', { deterministic: true }, normalise);
   return db;
 }
