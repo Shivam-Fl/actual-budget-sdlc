@@ -72,6 +72,54 @@ export function isSupportedCategoryCondition(
   return false;
 }
 
+/**
+ * Narrows both halves of the report's category axis - the flat `list` and the
+ * `grouped` array whose members carry their own nested `categories` - using the
+ * same conditions the query side is filtered by.
+ *
+ * When no condition narrows anything, the input is returned unchanged by
+ * identity: that keeps `filterCategoriesByConditions`'s conservative
+ * "cannot safely interpret -> do not filter" fallback intact, and means a
+ * category group that is legitimately empty in an unfiltered report is not
+ * dropped on every load.
+ */
+export function narrowCategoriesByConditions(
+  categories: {
+    list: CategoryEntity[];
+    grouped: CategoryGroupEntity[];
+  },
+  conditions: RuleConditionEntity[] | undefined,
+  conditionsOp: BudgetDataConditionsOp | undefined,
+): { list: CategoryEntity[]; grouped: CategoryGroupEntity[] } {
+  const list = filterCategoriesByConditions(
+    categories.list,
+    categories.grouped,
+    conditions,
+    conditionsOp,
+  );
+
+  // `filterCategoriesByConditions` returns its input untouched whenever it
+  // cannot safely narrow, so the identity check keeps us from rebuilding the
+  // grouped array (and deleting empty groups) for nothing.
+  if (list === categories.list) {
+    return categories;
+  }
+
+  const keep = new Set(list.map(category => category.id));
+
+  return {
+    list,
+    grouped: categories.grouped
+      .map(group => ({
+        ...group,
+        categories: (group.categories ?? []).filter(category =>
+          keep.has(category.id),
+        ),
+      }))
+      .filter(group => group.categories.length > 0),
+  };
+}
+
 export function filterCategoriesByConditions(
   categories: CategoryEntity[],
   categoryGroups: CategoryGroupEntity[],

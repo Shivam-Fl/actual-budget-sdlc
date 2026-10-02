@@ -207,6 +207,67 @@ test.describe('Reports', () => {
       });
     });
 
+    test('Rows follow the category selection when "show empty rows" is on', async () => {
+      await customReportPage.selectMode('total');
+      await customReportPage.selectViz('Data Table');
+
+      const rows = page.locator('#list');
+
+      // `Unselect All` then the Bills group checkbox leaves exactly the five
+      // Bills categories selected. Clicking by checkbox id rather than by label
+      // text: two elements are labelled "Income".
+      await page.getByRole('button', { name: 'Unselect All' }).click();
+      await page
+        .locator(
+          `input#${await page.getByText('Bills', { exact: true }).first().getAttribute('for')}`,
+        )
+        .check();
+
+      await expect(
+        page.getByRole('button', {
+          name: 'category one of [Cell, Internet, Mortgage, 2 more items...]',
+        }),
+      ).toBeVisible();
+
+      // Control: with "show empty rows" off, only the selected categories
+      // render. The fix must not change this default.
+      await expect(rows).toContainText('Cell');
+      await expect(rows).not.toContainText('Food');
+      await expect(rows).not.toContainText('Income');
+
+      await page.getByRole('button', { name: 'Options', exact: true }).click();
+      await page
+        .getByRole('button', { name: 'Show empty rows', exact: true })
+        .click();
+      await page.keyboard.press('Escape');
+
+      // "Show empty rows" must not resurrect the unselected categories as 0.00
+      // rows. These all rendered before the category selection reached the row
+      // axis.
+      await expect(rows).toContainText('Cell');
+      for (const unselected of [
+        'Usual Expenses',
+        'Food',
+        'Restaurants',
+        'Entertainment',
+        'Clothing',
+        'General',
+        'Gift',
+        'Medical',
+        'Savings',
+        'Income',
+        'Starting Balances',
+        'Misc',
+      ]) {
+        await expect(rows).not.toContainText(unselected);
+      }
+
+      // The synthetic block has no sidebar checkbox and is appended after the
+      // narrowing, so it must still render.
+      await expect(rows).toContainText('Uncategorized & Off budget');
+      await expect(rows).toContainText('Uncategorized');
+    });
+
     test('Validates that "show summary" button shows the summary', async () => {
       await customReportPage.selectViz('Bar Graph');
       await customReportPage.showSummaryButton.click();
