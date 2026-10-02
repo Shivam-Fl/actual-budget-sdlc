@@ -410,7 +410,8 @@
         "detail": "`getBalanceQuery` replaces `orderExpressions` wholesale, which on the no-sort path silently drops the `starting_balance_flag` term that the AQL layer was supplying by default. That is an unreviewed behaviour change on the DEFAULT view (no sort applied) - the state most users are in - and nothing in the diff acknowledges or tests it.\n\n`packages/desktop-client/src/components/accounts/balanceQuery.ts:10`\n\nEvidence: On a fresh account page `sort` is `null` (Account.tsx:336) and `queries.transactions()` emits no `orderBy` (`queries/index.ts:73`), so `orderExpressions` is `[]` and `customizeQuery` substitutes the table default `[{date:'desc'}, 'starting_balance_flag', {sort_order:'desc'}, 'id']` (`schema/index.ts:267-283`) - which is why the pre-existing no-sort path was already newest-first and the PR is not a regression there. After the change the window becomes `[{date:'desc'}, {sort_order:'desc'}]` and `customizeQuery` appends only `'id'`. The two orders agree whenever the rows on a shared date are created in the usual order (starting-balance rows are created first, so they hold the smaller `sort_order` and land last either way); they diverge only when a starting-balance row shares a date with a normal transaction created after it, in which case the starting-balance row is now summed ahead of that transaction rather than after. Balances remain a correct running total of the same row set either way, which is why this is minor.\n\nFix: Either carry `starting_balance_flag` into `balanceOrderExpressions`, or state in the comment that the window deliberately uses its own tie-break and that same-date ordering is not guaranteed to match the table's."
       }
     ],
-    "pr": "10"
+    "pr": "10",
+    "filed": 13
   },
   "qa": {
     "verdict": "pass",
