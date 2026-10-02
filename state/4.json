@@ -779,7 +779,7 @@
   },
   "qa": {
     "verdict": "fail",
-    "introduced_bugs": 1,
+    "introduced_bugs": 2,
     "ac_ids": [
       "AC-1",
       "AC-2",
@@ -790,17 +790,24 @@
       "AC-7",
       "AC-8",
       "AC-9",
-      "AC-10"
+      "AC-10",
+      "AC-11",
+      "AC-12",
+      "AC-13"
     ],
-    "sha": "a049f45509aa868776cd070f3c1947f8fb3370f7",
-    "run_id": "36992252115",
-    "work_order_version": 1,
-    "at": "2026-10-02T11:07:50.802Z"
+    "sha": "1fa6be94fc4d0a19058b532066b12641b4e63923",
+    "run_id": "37034671669",
+    "work_order_version": 2,
+    "at": "2026-10-02T18:55:30.055Z"
   },
   "qa_open_bugs": [
     {
-      "id": "BUG-1",
-      "title": "Report silently under-reports spending when conditions are combined with \"any of\" (conditionsOp: or)"
+      "id": "BUG-2",
+      "title": "A Category filter with op 'contains' collapses the report to zero rows and 0.00 when the value contains a SQL LIKE wildcard"
+    },
+    {
+      "id": "BUG-3",
+      "title": "The same LIKE-wildcard mismatch re-enters BUG-1 under 'any of': two category conditions pass the gate, the axis narrows, spending is dropped silently"
     }
   ],
   "rejected_artifacts": {
