@@ -166,7 +166,12 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/platform/server/sqlite/index.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.electron.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+    "packages/loot-core/src/server/transactions/transaction-rules.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
