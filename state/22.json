@@ -51,5 +51,7 @@
     "gates": {},
     "councils": {},
     "decided_at": "2026-10-02T21:33:54.860Z"
-  }
+  },
+  "stopped_at": null,
+  "dispatched_stage": "debug"
 }
