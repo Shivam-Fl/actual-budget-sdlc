@@ -76,5 +76,121 @@
     "decided_at": "2026-10-02T09:29:57.046Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "debug"
+  "dispatched_stage": "debug",
+  "validated_work_order": {
+    "issue": 7,
+    "version": 1,
+    "kind": "bug",
+    "reproduced": true,
+    "confidence": 88,
+    "confidence_rationale": "Reproduced end-to-end in the real app against $PREVIEW_URL, and the observed status transition (paid -> due, preview row regenerated) matches the pure functions traced in isolation. The mechanism is a single shared helper with three callers, all read. What I could not verify is the intended behaviour for every caller: widening the match window also changes forecast balances and the auto-post service, so the correct fix boundary is a judgement call I am asking the implementer to confirm against the existing tests.",
+    "understanding": "Posting a scheduled transaction and then moving that transaction's date to an earlier day makes the schedule reappear as an un-posted row in the transactions table. Reproduced against the demo budget in the real browser: the 'Phone bills' schedule (next_date 2026-10-02, monthly recurring, date condition op 'is') was posted via Schedules > right-click > Post transaction, which correctly removed the schedule row from the Bank of America register. Editing the posted transaction's date to 2026-10-01 brought the row straight back, now reading '10/02/2026 | Bank of America | Dominion Power | Phone bills | Due | 120.00', and the Schedules page flipped that schedule back from 'Paid' to 'Due'. It survives a full page reload, so this is persisted state, not a stale render. The user now has two rows for one bill: the real transaction and the schedule, both for Dominion Power.",
+    "root_cause": "A schedule's 'already paid' status is derived purely from a date window around schedule.next_date, not from the fact that a transaction exists which is linked to that schedule. getScheduleOccurrenceMatchStartDate returns next_date itself as the lower bound when the schedule's date condition op is 'is' (packages/loot-core/src/shared/schedules.ts:90-102), and getHasTransactionsQuery then selects only transactions with schedule = <id> AND date >= that bound (schedules.ts:165-193). Posting creates the transaction dated exactly next_date, so it matches and the status becomes 'paid'. Editing the transaction's date to any earlier day moves it below the lower bound, so the same query stops matching it, hasTrans goes false, getStatus falls back to the next_date/today comparison and returns 'due', and computeSchedulePreviewTransactions regenerates the schedule row because 'due' is in the isForPreview list (schedules.ts:425-434, 436-516). The transaction remains linked to the schedule the whole time; only the date comparison changed. Nothing in the date-edit path touches schedules, so nothing repairs the link.",
+    "approach": "Fix the cause in the shared occurrence-matching helper rather than in the register UI: a schedule occurrence should count as posted when a transaction linked to that schedule exists in a window around the occurrence that includes early payments, not only transactions dated on or after it. getScheduleOccurrenceMatchStartDate already has a 2-day lookback for manual recurring schedules (posts_transaction false, no date condition op) and the code comments say the lookback exists precisely 'to catch early payments' (schedules.ts:163). The defect is that the op 'is' branch short-circuits to the exact occurrence date and so never gets that lookback. Give the op 'is' recurring case the same early-payment lookback as the manual recurring case, keeping the exact-date behaviour for auto-posted schedules (posts_transaction true) where the comment explains a lookback would wrongly make yesterday's auto-posted transaction match today's occurrence. The helper is the right seam: all three callers (getHasTransactionsQuery, used by useSchedules for the status badge and by advanceSchedulesService; and isScheduleOccurrencePosted, used by forecast-schedules) get the fix together, and forecast already applies its own upper bound of occurrenceDate so it is not double-counting. Before widening, confirm against the existing tests in schedules.test.ts:307-373, which assert the exact-date behaviour for op 'is' and will need updating to state the new early-payment contract rather than being deleted silently.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/shared/schedules.ts",
+        "action": "edit",
+        "change": "In getScheduleOccurrenceMatchStartDate, stop returning the bare occurrenceDate for the op 'is' date-condition branch when the schedule is a manually-posted (posts_transaction false) recurring schedule; apply the same early-payment lookback the manual recurring branch already uses, so a transaction dated a few days before the occurrence still counts as paying that occurrence. Keep the exact-date result for posts_transaction true schedules and for one-time (non-recurring) schedules, and keep the upper-bound semantics unchanged.",
+        "why": "This single helper defines the date window for all three callers (getHasTransactionsQuery in useSchedules and advanceSchedulesService, and isScheduleOccurrencePosted in forecast-schedules). Changing it here fixes the register row, the Schedules page status badge and the forecast consistently, instead of special-casing one rendering path."
+      },
+      {
+        "path": "packages/loot-core/src/shared/schedules.ts",
+        "action": "edit",
+        "change": "Update the doc comment above getScheduleOccurrenceMatchStartDate to state the corrected contract: the lower bound exists so that a transaction paid a little before the due date still satisfies the occurrence, and explain why auto-posted schedules are excluded from the lookback (their transaction dates are always exact, and a lookback would let yesterday's auto-post match today's occurrence).",
+        "why": "The existing comment claims the 2-day lookback is there 'to catch early payments', which is exactly the behaviour the op 'is' branch was missing; the comment and the code must agree after the change."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/shared/schedules.test.ts",
+        "action": "edit",
+        "cases": [
+          "getScheduleOccurrenceMatchStartDate: for a manually-posted recurring schedule with a date condition op 'is', the start date is earlier than the occurrence date (the early-payment lookback), replacing the current assertion that it equals the occurrence date exactly",
+          "getScheduleOccurrenceMatchStartDate: still returns the exact occurrence date for a schedule with posts_transaction true, so auto-posted schedules keep precise matching",
+          "getScheduleOccurrenceMatchStartDate: still returns the exact occurrence date for a one-time (non-recurring) schedule whose date condition op is 'is' with a plain date value",
+          "Regression test for the reported flow, failing on current code and passing after the fix: a monthly recurring schedule with date condition op 'is', next_date 2017-01-01, a linked transaction posted at 2017-01-01 and then re-dated to 2016-12-31 must still report getStatus(...) === 'paid' and must NOT produce a preview row for next_date via computeSchedulePreviewTransactions",
+          "Regression test for the reporter's future-due-date variant: a schedule due 2017-01-11 that is posted and then re-dated to today 2017-01-01 must still read as paid and must not reappear as an upcoming row"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/server/schedules/app.test.ts",
+        "action": "edit",
+        "cases": [
+          "advanceSchedulesService / schedule status: a recurring schedule with date condition op 'is' whose linked transaction was re-dated a day before next_date is still treated as paid and its next_date is advanced rather than being left to re-post"
+        ]
+      }
+    ],
+    "qa_script": [
+      "1. yarn start and open $PREVIEW_URL, click 'Try the demo' on the welcome screen.\n2. Go to Schedules. Note a monthly recurring schedule whose date condition is 'is' (the demo's 'Phone bills' is created with op 'is' on the date field - see packages/loot-core/src/mocks/budget.ts:966).\n3. Right-click that schedule row and choose 'Post transaction'. Confirm the Schedules page shows it as 'Paid'.\n4. Open Bank of America, the account the schedule posts into. Confirm the schedule row is gone from the register and only the posted transaction remains.\n5. Click the posted transaction, click its date cell, and change the date to one or two days EARLIER than the original due date. Save.\n6. The bug: the schedule row reappears in the register with a status badge (Due/Upcoming/Missed) and the Schedules page flips back from 'Paid'.\n7. After the fix, step 5 must leave the register with only the posted transaction and the Schedules page must still read 'Paid'. Reload the page and confirm it stays that way.\n8. Regression sweep: on the Schedules page, 'Skip next scheduled date' and 'Post transaction today' must still behave as before, and a forecast for an account with a re-dated scheduled transaction must not double-count the bill."
+    ],
+    "evidence": [
+      "Reproduced against $PREVIEW_URL (http://localhost:3001) in Chromium with the demo budget, single session, following the reporter's steps exactly.\n\nStep 1 - register, Bank of America, three schedule rows present:\n  10/03/2026 | Bank of America | (No payee) | Utilities | Upcoming | 1,900.00\n  10/02/2026 | Bank of America | Dominion Power | Phone bills | Due | 120.00\n  10/01/2026 | Bank of America | Fast Internet | Internet bill | Missed | 140.00\n\nStep 2 - Schedules page, right-click 'Phone bills' > 'Post transaction'. Schedules page then shows 'Phone bills | Dominion Power | Bank of America | 10/02/2026 | Paid | ~ | 120.00'. Register correctly drops the schedule row:\n  10/02/2026 | Bank of America | Dominion Power | Categorize | 120.00\n\nStep 3 - click the posted transaction, click its date cell, pick 10/01/2026.\n\nStep 4 - THE BUG, the schedule is back:\n  10/03/2026 | Bank of America | (No payee) | Utilities | Upcoming | 1,900.00\n  10/02/2026 | Bank of America | Dominion Power | Phone bills | Due | 120.00     <-- resurrected\n  10/01/2026 | Bank of America | Fast Internet | Internet bill | Missed | 140.00\n  10/01/2026 | Bank of America | Dominion Power | Categorize | 120.00\n\nPersists across reload (p.reload + 9s): identical four rows, and the Schedules page shows 'Phone bills | Dominion Power | Bank of America | 10/02/2026 | Due | ~ | 120.00'. So this is persisted state, not a stale render. No console errors or page errors were emitted at any step.\n\nIsolated confirmation of the mechanism, run as a temporary vitest against the real exported functions with MockDate pinned so monthUtils.currentDay() === '2017-01-01' (it is hard-coded under global.IS_TESTING, packages/loot-core/src/shared/months.ts:173-179), for an op 'is' monthly schedule with next_date 2017-01-01:\n  occurrenceMatchStartDate: '2017-01-01'\n  postedDateMatches: true\n  editedDate '2016-12-31' matches: false\n  statusWhilePosted: 'paid'  |  statusAfterDateEdit: 'due'\n  previewRowsRegenerated: ['2017-01-02', '2017-01-01']\n\nThe demo schedule's date condition op is 'is', confirmed from the fixture that creates it (packages/loot-core/src/mocks/budget.ts:966-975); the 'is approximately' label in the edit form belongs to the amount condition, not the date. The scratch test files and probe scripts used for this diagnosis were deleted; `git status` is clean apart from the untracked plan/ directory."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Unlink the schedule from the transaction when the user edits its date (clear transactions.schedule in the date-edit path).",
+        "rejected_because": "It makes the symptom go away by destroying information. The link is the user's record that this bill came from a schedule; dropping it also breaks the Schedules page 'Linked transactions' view and the schedule's history. It treats the wrong thing: the transaction is still correctly linked, only the match window is wrong."
+      },
+      {
+        "approach": "Fix the rendering: stop computeSchedulePreviewTransactions from emitting a row for a schedule that already has any linked transaction, regardless of date.",
+        "rejected_because": "It papers over the symptom in one view. The Schedules page status badge (useSchedules -> getStatus, a separate code path) would still flip 'Paid' back to 'Due', the SchedulesTable would keep offering to post the bill again, and advanceSchedulesService could re-post it. It also cannot distinguish 'this occurrence is paid' from 'this is a different future occurrence of the same recurring schedule'."
+      },
+      {
+        "approach": "Give getHasTransactionsQuery an unbounded date filter (any linked transaction marks the schedule paid).",
+        "rejected_because": "Wrong for recurring schedules: one transaction linked to a monthly schedule would mark every future occurrence paid and hide all of them from the forecast. The date window is load-bearing, only its lower bound is wrong."
+      },
+      {
+        "approach": "Widen the lookback to an unbounded or very large value to cover any early payment.",
+        "rejected_because": "A large lookback reintroduces exactly the false match the code comments warn about (shared/schedules.ts:155-163): an old transaction for the same schedule would be credited against an unrelated occurrence. The early-payment case is a small, bounded offset."
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "After posting a scheduled transaction and changing that transaction's date to an earlier day, the schedule does not reappear as a separate un-posted row in the transactions table",
+        "how_to_verify": "Follow qa_script steps 1-6: post 'Phone bills' from the Schedules page, re-date the posted Bank of America transaction one or two days earlier, and confirm the register still shows only the posted transaction",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "The schedule's status stays 'Paid' on the Schedules page after its posted transaction's date is edited to an earlier day, and stays 'Paid' across a page reload",
+        "how_to_verify": "qa_script steps 6-7: the Schedules page row keeps its Paid status after the date edit and after a reload",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "getScheduleOccurrenceMatchStartDate returns an early-payment lookback for a manually-posted recurring schedule with date condition op 'is', so a transaction dated a few days before the occurrence still satisfies it",
+        "how_to_verify": "New case in schedules.test.ts under the getScheduleOccurrenceMatchStartDate describe block, replacing the assertion that the start date equals the occurrence date",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "Auto-posted schedules keep exact-date matching, so an auto-posted transaction is never credited against a different occurrence",
+        "how_to_verify": "Retained cases in schedules.test.ts assert getScheduleOccurrenceMatchStartDate still returns the exact occurrence date when posts_transaction is true, plus the server-side advanceSchedulesService case",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "The forecast for an account does not double-count a re-dated scheduled transaction",
+        "how_to_verify": "Run the loot-core test suite; forecast-schedules.ts consumes the same helper via isScheduleOccurrencePosted and must not credit one transaction to two occurrences",
+        "verify": "test"
+      }
+    ],
+    "risks": [
+      "Widening the lower bound is a shared-behaviour change. isScheduleOccurrencePosted (forecast-schedules.ts:207) reuses the helper and applies its own upper bound of occurrenceDate, so forecast should not double-count - but this must be confirmed by running the forecast tests, not assumed.",
+      "The auto-post path in advanceSchedulesService reads the same status. If the window widens too far, a genuinely missed occurrence could be treated as paid and never auto-posted. That is why posts_transaction schedules must keep the exact-date bound.",
+      "Existing tests at schedules.test.ts:307-373 assert the current exact-date behaviour for op 'is'. They encode the bug and must be deliberately updated to the new contract, not deleted or loosened, or the fix will be reverted by a later contributor who trusts them.",
+      "The demo fixture's 'Phone bills' uses op 'is', which makes it a good manual QA case, but the manual QA step should confirm the behaviour for an 'is approximately' date schedule too, since that branch already has a lookback and should be unaffected."
+    ],
+    "out_of_scope": [
+      "The 'Upcoming' schedule row with no payee ('Utilities', 1,900.00) visible in the same register is unrelated to this ticket and was left alone.",
+      "Whether posting a schedule whose due date is in the future should advance next_date at all is a separate design question; this change does not alter when posting happens, only whether an already-posted occurrence is recognised after its date is edited.",
+      "No change to .sdlc/memory/**, docs/spec/**, docs/prd.md, docs/trd.md, docs/ui.md, .github/** or .sdlc/**."
+    ],
+    "mode": "committed"
+  },
+  "validated_from": "debug",
+  "validated_at": "2026-10-02T10:10:08.398Z",
+  "validated_ac_changes": []
 }
