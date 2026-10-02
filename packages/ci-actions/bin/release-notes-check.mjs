@@ -7,6 +7,7 @@ import matter from 'gray-matter';
 import {
   categoryAutocorrections,
   categoryOrder,
+  findNonPersonAuthors,
 } from '../src/release-notes/util.mjs';
 
 const execFile = promisify(childProcess.execFile);
@@ -57,6 +58,13 @@ function validateFile(path) {
   }
   if (!Array.isArray(data.authors)) {
     reportError(`Release note ${path} authors should be a list.`);
+    return false;
+  }
+  const nonPersonAuthors = findNonPersonAuthors(data.authors);
+  if (nonPersonAuthors.length > 0) {
+    reportError(
+      `Release note ${path} authors must be GitHub usernames of people, not bots or agents: ${nonPersonAuthors.join(', ')}.`,
+    );
     return false;
   }
 

@@ -21,6 +21,31 @@ export const categoryOrder = [
   'Maintenance',
 ];
 
+// Authors are published verbatim as "@<author>" in the changelog, so a bot or
+// agent login here ships to readers as thanks to a tool. This is an identity
+// denylist rather than a handle-shape check because `claude` is a
+// syntactically valid GitHub handle — shape alone cannot tell the tool from the
+// person. The list is short on purpose: looking authors up over the network was
+// rejected as slow and token-dependent, so a future agent login would still
+// need to be added here by hand.
+export const NON_PERSON_AUTHORS = ['claude', 'github-actions'];
+
+const BOT_SUFFIX = /\[bot\]$/;
+
+/**
+ * Returns the authors that are known bots or agents rather than people, in
+ * input order, so the caller can name them in its error. Returns the offending
+ * values instead of a boolean because they are already in hand here.
+ */
+export function findNonPersonAuthors(authors) {
+  return authors.filter(author => {
+    const normalized = author.toLowerCase().trim();
+    return (
+      NON_PERSON_AUTHORS.includes(normalized) || BOT_SUFFIX.test(normalized)
+    );
+  });
+}
+
 export async function parseReleaseNotes(dir, owner, repo, historyRef, only) {
   const allowed = only == null ? null : new Set(only);
   const files = (await fs.readdir(dir)).filter(
