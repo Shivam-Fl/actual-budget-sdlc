@@ -431,8 +431,8 @@
     "pr": "9"
   },
   "qa": {
-    "verdict": "blocked",
-    "introduced_bugs": 0,
+    "verdict": "fail",
+    "introduced_bugs": 1,
     "ac_ids": [
       "AC-1",
       "AC-2",
@@ -445,10 +445,15 @@
       "AC-9",
       "AC-10"
     ],
-    "sha": "604bd786e5e6fda5607476fb733ede7cbd4b3146",
-    "run_id": "36984276689",
+    "sha": "a049f45509aa868776cd070f3c1947f8fb3370f7",
+    "run_id": "36992252115",
     "work_order_version": 1,
-    "at": "2026-10-02T09:46:45.534Z"
+    "at": "2026-10-02T11:07:50.802Z"
   },
-  "qa_open_bugs": []
+  "qa_open_bugs": [
+    {
+      "id": "BUG-1",
+      "title": "Report silently under-reports spending when conditions are combined with \"any of\" (conditionsOp: or)"
+    }
+  ]
 }
