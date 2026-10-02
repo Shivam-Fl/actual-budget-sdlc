@@ -375,7 +375,7 @@
       "action": "qa attempt 1"
     }
   ],
-  "resume_at": null,
+  "resume_at": "qa",
   "flow_plan": {
     "kind": "bug",
     "confidence": 90,
@@ -384,7 +384,7 @@
     "councils": {},
     "decided_at": "2026-10-02T04:33:57.411Z"
   },
-  "stopped_at": null,
+  "stopped_at": "qa",
   "dispatched_stage": "qa",
   "validated_from": "debug",
   "validated_at": "2026-10-02T05:53:26.654Z",
