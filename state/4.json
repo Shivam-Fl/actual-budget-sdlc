@@ -270,7 +270,7 @@
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-02T04:33:26.308Z",
-  "updated_at": "2026-10-02T19:38:49.741Z",
+  "updated_at": "2026-10-02T19:39:08.654Z",
   "history": [
     {
       "at": "2026-10-02T04:33:30.362Z",
@@ -596,6 +596,11 @@
       "at": "2026-10-02T19:38:49.741Z",
       "agent": "watchdog",
       "action": "-> budget-exceeded"
+    },
+    {
+      "at": "2026-10-02T19:39:08.654Z",
+      "agent": "planner",
+      "action": "lock released"
     }
   ],
   "resume_at": null,
