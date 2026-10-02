@@ -1,0 +1,482 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import type { TransactionForRules } from '#server/transactions/transaction-rules';
+import { getCurrency } from '#shared/currencies';
+import { setCachedUserPreferences } from '#shared/formulas/customFunctions';
+
+import { Action } from './action';
+
+describe('Formula-based rule actions', () => {
+  beforeEach(() => {
+    setCachedUserPreferences({
+      currency: getCurrency('USD'),
+      numberFormat: 'comma-dot',
+      decimalPlaces: 2,
+      thousandsSeparator: ',',
+      decimalSeparator: '.',
+      locale: 'en-US',
+      currencySymbolPosition: 'before',
+      currencySpaceBetweenAmountAndSymbol: false,
+    });
+  });
+
+  it('should execute a simple math formula', () => {
+    const action = new Action('set', 'amount', null, {});
+    const transaction: Partial<TransactionForRules> = { amount: 500 };
+    const result = action.executeFormulaSync('=100 + 200', transaction);
+
+    expect(result).toBe(30000);
+  });
+
+  it('should use transaction field variables', () => {
+    const action = new Action('set', 'notes', null, {});
+    const transaction = { amount: 5000 };
+    const result = action.executeFormulaSync('=amount / 100', transaction);
+
+    expect(result).toBe(5000);
+  });
+
+  it('should support IF function with transaction fields', () => {
+    const action = new Action('set', 'notes', null, {});
+
+    const transaction1 = { amount: 1000 };
+    const result1 = action.executeFormulaSync(
+      '=IF(amount > 0, "Income", "Expense")',
+      transaction1,
+    );
+    expect(result1).toBe('Income');
+
+    const transaction2 = { amount: -1000 };
+    const result2 = action.executeFormulaSync(
+      '=IF(amount > 0, "Income", "Expense")',
+      transaction2,
+    );
+    expect(result2).toBe('Expense');
+  });
+
+  it('should support UPPER string function', () => {
+    const action = new Action('set', 'notes', null, {});
+    const transaction = { notes: 'hello world' };
+    const result = action.executeFormulaSync('=UPPER(notes)', transaction);
+
+    expect(result).toBe('HELLO WORLD');
+  });
+
+  it('should support CONCATENATE function', () => {
+    const action = new Action('set', 'notes', null, {});
+    const transaction = {
+      imported_payee: 'Store Name',
+      notes: 'Purchase',
+    };
+    const result = action.executeFormulaSync(
+      '=CONCATENATE(imported_payee, " - ", notes)',
+      transaction,
+    );
+
+    expect(result).toBe('Store Name - Purchase');
+  });
+
+  it('should support LEFT function', () => {
+    const action = new Action('set', 'notes', null, {});
+    const transaction = { imported_payee: 'Store Name' };
+    const result = action.executeFormulaSync(
+      '=LEFT(imported_payee, 5)',
+      transaction,
+    );
+
+    expect(result).toBe('Store');
+  });
+
+  it('should provide today variable', () => {
+    const action = new Action('set', 'date', null, {});
+    const transaction = { date: '2024-01-01' };
+    const result = action.executeFormulaSync(
+      '=TEXT(today,"YYYY-MM-DD")',
+      transaction,
+    );
+
+    // Should be a date string in YYYY-MM-DD format
+    expect(typeof result).toBe('string');
+    expect(result).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('should throw error for invalid formula', () => {
+    const action = new Action('set', 'notes', null, {});
+    const transaction = { amount: 100 };
+
+    expect(() => {
+      action.executeFormulaSync('=INVALID_FUNCTION()', transaction);
+    }).toThrow();
+  });
+
+  it('should throw error for formula without = prefix', () => {
+    const action = new Action('set', 'notes', null, {});
+    const transaction = { amount: 100 };
+
+    expect(() => {
+      action.executeFormulaSync('amount + 100', transaction);
+    }).toThrow('Formula must start with =');
+  });
+
+  it('should support balance field variable', () => {
+    const action = new Action('set', 'notes', null, {});
+    const transaction: Partial<TransactionForRules> = {
+      balance: 1500,
+      notes: 'original',
+    };
+    const result = action.executeFormulaSync('=balance * 2', transaction);
+
+    expect(result).toBe(300000);
+  });
+
+  it('should support BALANCE_OF with prefetched map', () => {
+    const action = new Action('set', 'notes', null, {});
+    const transaction: Partial<TransactionForRules> = {
+      notes: 'original',
+      _balanceOfPrefetched: new Map([
+        ['Savings', 50000],
+        ['550e8400-e29b-41d4-a716-446655440000', 1200],
+      ]),
+    };
+    const byName = action.executeFormulaSync(
+      '=BALANCE_OF("Savings") + 100',
+      transaction,
+    );
+    expect(byName).toBe(5010000);
+
+    const byId = action.executeFormulaSync(
+      '=BALANCE_OF("550e8400-e29b-41d4-a716-446655440000")',
+      transaction,
+    );
+    expect(byId).toBe(120000);
+  });
+
+  it('should return 0 for BALANCE_OF when literal missing from prefetch map', () => {
+    const action = new Action('set', 'amount', null, {});
+    const transaction: Partial<TransactionForRules> = {
+      amount: 100,
+      _balanceOfPrefetched: new Map(),
+    };
+    const result = action.executeFormulaSync(
+      '=BALANCE_OF("Unknown")',
+      transaction,
+    );
+    expect(result).toBe(0);
+  });
+
+  it('should execute formula and convert to number type', () => {
+    const action = new Action('set', 'amount', null, {
+      formula: '=500 + 250',
+    });
+
+    const transaction = { amount: 100 };
+    action.exec(transaction);
+
+    expect(transaction.amount).toBe(75000);
+  });
+
+  it('should execute formula and convert to string type', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=UPPER("hello")',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('HELLO');
+  });
+
+  it('should handle formula errors gracefully', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=1/0', // Division by zero
+    });
+
+    const transaction = { notes: 'original' };
+
+    // Should not throw, but keep original value on error
+    expect(() => {
+      action.exec(transaction);
+    }).not.toThrow();
+
+    // Original value should be preserved
+    expect(transaction.notes).toBe('original');
+  });
+
+  it('should validate numeric field output', () => {
+    const action = new Action('set', 'amount', null, {
+      formula: '=UPPER("test")', // Returns string for numeric field
+    });
+
+    const transaction = { amount: 100 };
+    action.exec(transaction);
+
+    // Should keep original value when formula produces non-numeric result
+    expect(transaction.amount).toBe(100);
+  });
+
+  it('should convert non-string results to string for text fields', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=500 + 250', // Returns number
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    // Should convert number to string
+    expect(transaction.notes).toBe('75000');
+  });
+
+  it('should format numbers with thousands separators using FORMATNUMBER', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATNUMBER(1234567.89, 2)',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('1,234,567.89');
+  });
+
+  it('should format numbers using number-format preferences with FORMATNUMBER', () => {
+    setCachedUserPreferences({
+      currency: getCurrency('USD'),
+      numberFormat: 'dot-comma',
+      decimalPlaces: 2,
+      thousandsSeparator: '.',
+      decimalSeparator: ',',
+      locale: 'en-US',
+      currencySymbolPosition: 'before',
+      currencySpaceBetweenAmountAndSymbol: false,
+    });
+
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATNUMBER(1234567.89, 2)',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('1.234.567,89');
+  });
+
+  it('should format numbers using decimal-place preferences with FORMATNUMBER', () => {
+    setCachedUserPreferences({
+      currency: getCurrency('JPY'),
+      numberFormat: 'comma-dot',
+      decimalPlaces: 0,
+      thousandsSeparator: ',',
+      decimalSeparator: '.',
+      locale: 'en-US',
+      currencySymbolPosition: 'before',
+      currencySpaceBetweenAmountAndSymbol: false,
+    });
+
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATNUMBER(1234567.89)',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('1,234,568');
+  });
+
+  it('should let FORMATNUMBER decimals override decimal-place preferences', () => {
+    setCachedUserPreferences({
+      currency: getCurrency('JPY'),
+      numberFormat: 'comma-dot',
+      decimalPlaces: 0,
+      thousandsSeparator: ',',
+      decimalSeparator: '.',
+      locale: 'en-US',
+      currencySymbolPosition: 'before',
+      currencySpaceBetweenAmountAndSymbol: false,
+    });
+
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATNUMBER(1234567.89, 2)',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('1,234,567.89');
+  });
+
+  it('should format numbers with custom separators using FORMATNUMBER', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATNUMBER(1234567.89, 2, ".", ",")',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('1.234.567,89');
+  });
+
+  it('should format numbers without decimals using FORMATNUMBER', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATNUMBER(1234567, 0)',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('1,234,567');
+  });
+
+  it('should let IFERROR catch invalid FORMATNUMBER values', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=IFERROR(FORMATNUMBER("not a number"), "fallback")',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('fallback');
+  });
+
+  it('should format currency with default settings using FORMATCURRENCY', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATCURRENCY(1234567.89)',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('$1,234,567.89');
+  });
+
+  it('should use cached currency preferences when FORMATCURRENCY arguments are omitted', () => {
+    setCachedUserPreferences({
+      currency: getCurrency('BRL'),
+      numberFormat: 'dot-comma',
+      decimalPlaces: 2,
+      thousandsSeparator: '.',
+      decimalSeparator: ',',
+      locale: 'pt-BR',
+      currencySymbolPosition: 'before',
+      currencySpaceBetweenAmountAndSymbol: false,
+    });
+
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATCURRENCY(SUM(1, 2, 3))',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('R$6,00');
+  });
+
+  it('should use cached currency symbol position and spacing preferences', () => {
+    setCachedUserPreferences({
+      currency: getCurrency('BRL'),
+      numberFormat: 'dot-comma',
+      decimalPlaces: 2,
+      thousandsSeparator: '.',
+      decimalSeparator: ',',
+      locale: 'pt-BR',
+      currencySymbolPosition: 'after',
+      currencySpaceBetweenAmountAndSymbol: true,
+    });
+
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATCURRENCY(SUM(1, 2, 3))',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('6,00\u202FR$');
+  });
+
+  it('should format currency with custom symbol using FORMATCURRENCY', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATCURRENCY(1234567.89, "€")',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('€1,234,567.89');
+  });
+
+  it('should use cached currency position and spacing preferences with custom symbols', () => {
+    setCachedUserPreferences({
+      currency: getCurrency('BRL'),
+      numberFormat: 'dot-comma',
+      decimalPlaces: 2,
+      thousandsSeparator: '.',
+      decimalSeparator: ',',
+      locale: 'pt-BR',
+      currencySymbolPosition: 'after',
+      currencySpaceBetweenAmountAndSymbol: true,
+    });
+
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATCURRENCY(1234567.89, "€")',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('1.234.567,89\u202F€');
+  });
+
+  it('should override cached currency position and spacing preferences with custom arguments', () => {
+    setCachedUserPreferences({
+      currency: getCurrency('BRL'),
+      numberFormat: 'dot-comma',
+      decimalPlaces: 2,
+      thousandsSeparator: '.',
+      decimalSeparator: ',',
+      locale: 'pt-BR',
+      currencySymbolPosition: 'after',
+      currencySpaceBetweenAmountAndSymbol: true,
+    });
+
+    const action = new Action('set', 'notes', null, {
+      formula:
+        '=FORMATCURRENCY(1234567.89, "€", 2, ".", ",", "before", FALSE())',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('€1.234.567,89');
+  });
+
+  it('should format negative currency correctly using FORMATCURRENCY', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATCURRENCY(-1234567.89)',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('-$1,234,567.89');
+  });
+
+  it('should format currency with custom separators using FORMATCURRENCY', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=FORMATCURRENCY(1234567.89, "€", 2, ".", ",")',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('€1.234.567,89');
+  });
+
+  it('should let IFERROR catch invalid FORMATCURRENCY values', () => {
+    const action = new Action('set', 'notes', null, {
+      formula: '=IFERROR(FORMATCURRENCY("not a number"), "fallback")',
+    });
+
+    const transaction = { notes: 'original' };
+    action.exec(transaction);
+
+    expect(transaction.notes).toBe('fallback');
+  });
+});

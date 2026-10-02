@@ -1,0 +1,153 @@
+import type { UnsafeZipMeta } from '#shared/errors';
+
+// TODO: normalize error types
+export class PostError extends Error {
+  meta: { meta: string } | undefined;
+  reason: string;
+  type: 'PostError';
+
+  constructor(reason: string, meta?: { meta: string }, options?: ErrorOptions) {
+    super('PostError: ' + reason, options);
+    this.type = 'PostError';
+    this.reason = reason;
+    this.meta = meta;
+  }
+}
+
+export class BankSyncError extends Error {
+  reason: string;
+  category: string;
+  code: string;
+  type: 'BankSyncError';
+
+  constructor(reason: string, category: string, code: string) {
+    super('BankSyncError: ' + reason);
+    this.type = 'BankSyncError';
+    this.reason = reason;
+    this.category = category;
+    this.code = code;
+  }
+}
+
+export class HTTPError extends Error {
+  statusCode: number;
+  responseBody: string;
+
+  constructor(code: number, body: string) {
+    super(`HTTPError: unsuccessful status code (${code}): ${body}`);
+    this.statusCode = code;
+    this.responseBody = body;
+  }
+}
+
+export class SyncError extends Error {
+  meta:
+    | {
+        isMissingKey: boolean;
+      }
+    | {
+        error: { message: string; stack: string };
+        query: { sql: string; params: Array<string | number> };
+      }
+    | undefined;
+  reason: string;
+
+  constructor(
+    reason: string,
+    meta?:
+      | {
+          isMissingKey: boolean;
+        }
+      | {
+          error: { message: string; stack: string };
+          query: { sql: string; params: Array<string | number> };
+        },
+  ) {
+    super('SyncError: ' + reason);
+    this.reason = reason;
+    this.meta = meta;
+  }
+}
+
+/**
+ * Thrown when the folder Actual stores budget files in cannot be created or
+ * accessed (for example, Windows Controlled Folder Access blocking
+ * `Documents\Actual`). Carries the path and the underlying filesystem error
+ * code so the UI can tell the user exactly what went wrong.
+ */
+export class DocumentDirError extends Error {
+  type: 'DocumentDirError';
+  path: string;
+  code: string | undefined;
+
+  constructor(path: string, cause: unknown) {
+    const code =
+      cause && typeof cause === 'object' && 'code' in cause
+        ? String(cause.code)
+        : undefined;
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+
+    super(`DocumentDirError: could not access ${path} (${causeMessage})`, {
+      cause,
+    });
+    this.type = 'DocumentDirError';
+    this.path = path;
+    this.code = code;
+  }
+}
+
+export class ValidationError extends Error {}
+
+export class TransactionError extends Error {}
+
+export class RuleError extends Error {
+  type: string;
+
+  constructor(name: string, message: string) {
+    super('RuleError: ' + message);
+    this.type = name;
+  }
+}
+
+export function APIError(
+  msg: string,
+  meta?: {
+    conditionErrors: string[];
+    actionErrors: string[];
+  },
+) {
+  return { type: 'APIError', message: msg, meta };
+}
+
+/**
+ * Tag an error with a stable, machine-readable failure code (e.g.
+ * 'network-failure', 'invalid-password', 'budget-not-found'). The code is
+ * kept when the error crosses the worker boundary (see
+ * `#platform/server/connection`), so API consumers can branch on `err.code`
+ * instead of parsing the English message.
+ */
+export function withErrorCode<E extends Error>(
+  error: E,
+  code: string | undefined,
+): E & { code?: string } {
+  return code == null ? error : Object.assign(error, { code });
+}
+
+export function FileDownloadError(
+  reason: string,
+  meta?: {
+    fileId?: string;
+    isMissingKey?: boolean;
+    name?: string;
+    id?: string;
+  } & Partial<UnsafeZipMeta>,
+) {
+  return { type: 'FileDownloadError', reason, meta };
+}
+
+export function FileUploadError(
+  reason: string,
+  meta?: { isMissingKey: boolean },
+) {
+  return { type: 'FileUploadError', reason, meta };
+}

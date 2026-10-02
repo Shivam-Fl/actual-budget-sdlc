@@ -1,0 +1,394 @@
+import type { Page } from '@playwright/test';
+
+import { expect, test } from './fixtures';
+import type { AccountPage } from './page-models/account-page';
+import { ConfigurationPage } from './page-models/configuration-page';
+import { Navigation } from './page-models/navigation';
+
+test.describe('Transactions', () => {
+  let page: Page;
+  let navigation: Navigation;
+  let accountPage: AccountPage;
+  let configurationPage: ConfigurationPage;
+
+  test.beforeEach(async ({ browser }) => {
+    page = await browser.newPage();
+    navigation = new Navigation(page);
+    configurationPage = new ConfigurationPage(page);
+
+    await page.goto('/');
+    await configurationPage.createTestFile();
+
+    accountPage = await navigation.goToAccountPage('Ally Savings');
+  });
+
+  test.afterEach(async () => {
+    await page?.close();
+  });
+
+  test('checks the page visuals', async () => {
+    await expect(page).toMatchThemeScreenshots();
+  });
+
+  test.describe('filters transactions', () => {
+    // Reset filters
+    test.afterEach(async () => {
+      await accountPage.removeFilter(0);
+    });
+
+    test('by date', async () => {
+      const filterTooltip = await accountPage.filterBy('Date');
+      await expect(filterTooltip.locator).toMatchThemeScreenshots();
+
+      // Open datepicker
+      await page.keyboard.press('Space');
+      const datepicker = page.getByTestId('date-select-tooltip');
+      await expect(datepicker).toMatchThemeScreenshots();
+
+      // Select "is xxxxx"
+      await datepicker.getByText('20', { exact: true }).click();
+      await filterTooltip.applyButton.click();
+
+      // Assert that there are no transactions
+      await expect(accountPage.transactionTable).toHaveText('No transactions');
+      await expect(page).toMatchThemeScreenshots();
+    });
+
+    test('by category', async () => {
+      const filterTooltip = await accountPage.filterBy('Category');
+      await expect(filterTooltip.locator).toMatchThemeScreenshots();
+
+      // Type in the autocomplete box
+      const autocomplete = page.getByTestId('autocomplete');
+      await expect(autocomplete).toMatchThemeScreenshots();
+
+      // Ensure that autocomplete filters properly
+      await page.keyboard.type('C');
+      await expect(autocomplete).toMatchThemeScreenshots();
+
+      // Select the active item
+      await page.getByTestId('Clothing-category-item').click();
+      await filterTooltip.applyButton.click();
+
+      // Assert that there are only clothing transactions
+      for (let i = 0; i < 5; i++) {
+        await expect(accountPage.getNthTransaction(i).category).toHaveText(
+          'Clothing',
+        );
+      }
+      await expect(page).toMatchThemeScreenshots();
+    });
+
+    test('by category group', async () => {
+      // Use Capital One Checking because it has transactions that aren't just Clothing
+      accountPage = await navigation.goToAccountPage('Capital One Checking');
+
+      const filterTooltip = await accountPage.filterBy('Category');
+
+      await filterTooltip.locator
+        .getByRole('button', { name: 'Category', exact: true })
+        .click();
+      await page
+        .getByRole('button', { name: 'Category group', exact: true })
+        .click();
+
+      await expect(filterTooltip.locator).toMatchThemeScreenshots();
+
+      // Type in the autocomplete box
+      const autocomplete = page.getByTestId('autocomplete');
+      await expect(autocomplete).toMatchThemeScreenshots();
+
+      // Ensure that autocomplete filters properly
+      await page.keyboard.type('U');
+      await expect(autocomplete).toMatchThemeScreenshots();
+
+      // Select the active item
+      await page.getByTestId('Usual Expenses-category-group-item').click();
+      await filterTooltip.applyButton.click();
+
+      // Assert that there are only transactions with categories in the Usual Expenses group
+      for (let i = 0; i < 5; i++) {
+        await expect(accountPage.getNthTransaction(i).category).toHaveText(
+          /^(Savings|Medical|Gift|General|Clothing|Entertainment|Restaurants|Food)$/,
+        );
+      }
+      await expect(page).toMatchThemeScreenshots();
+    });
+
+    test('by payee', async () => {
+      accountPage = await navigation.goToAccountPage('Capital One Checking');
+      const filterTooltip = await accountPage.filterBy('Payee');
+      const filtersMenuTooltip = page.getByTestId('filters-menu-tooltip');
+      await expect(filterTooltip.locator).toMatchThemeScreenshots();
+
+      // Type in the autocomplete box
+      const autocomplete = filtersMenuTooltip.getByLabel('Payee');
+      await expect(autocomplete).toMatchThemeScreenshots();
+
+      // Open the textbox, auto-open is currently broken for anything that's not "is not"
+      await autocomplete.click();
+
+      await page.getByTestId('Kroger-payee-item').click();
+      await filterTooltip.applyButton.click();
+
+      // Assert that all Payees are Kroger
+      for (let i = 0; i < 10; i++) {
+        await expect(accountPage.getNthTransaction(i).payee).toHaveText(
+          'Kroger',
+        );
+      }
+      await accountPage.removeFilter(0);
+
+      await accountPage.filterBy('Payee');
+      await filtersMenuTooltip
+        .getByRole('button', { name: 'contains' })
+        .click();
+      const textInput = filtersMenuTooltip.getByPlaceholder('nothing');
+
+      await textInput.fill('De');
+      await filterTooltip.applyButton.click();
+      // Assert that all Payees are Deposit
+      for (let i = 0; i < 9; i++) {
+        await expect(accountPage.getNthTransaction(i).payee).toHaveText(
+          'Deposit',
+        );
+      }
+
+      await accountPage.removeFilter(0);
+
+      await accountPage.filterBy('Payee');
+      await filtersMenuTooltip
+        .getByRole('button', { name: 'contains' })
+        .click();
+
+      await textInput.fill('l');
+      await filterTooltip.applyButton.click();
+      // Assert that both Payees contain the letter 'l'
+      for (let i = 0; i < 2; i++) {
+        await expect(accountPage.getNthTransaction(i).payee).toHaveText(/l/);
+      }
+
+      await accountPage.removeFilter(0);
+
+      await accountPage.filterBy('Payee');
+      await filtersMenuTooltip
+        .getByRole('button', { name: 'does not contain' })
+        .click();
+
+      await textInput.fill('l');
+      await filterTooltip.applyButton.click();
+      // Assert that all Payees DO NOT contain the letter 'l'
+      for (let i = 0; i < 19; i++) {
+        await expect(accountPage.getNthTransaction(i).payee).not.toHaveText(
+          /l/,
+        );
+      }
+
+      await expect(page).toMatchThemeScreenshots();
+    });
+  });
+
+  test('creates a test transaction', async () => {
+    await accountPage.createSingleTransaction({
+      payee: 'Home Depot',
+      notes: 'Notes field',
+      category: 'Food',
+      debit: '12.34',
+    });
+
+    const transaction = accountPage.getNthTransaction(0);
+    await expect(transaction.payee).toHaveText('Home Depot');
+    await expect(transaction.notes).toHaveText('Notes field');
+    await expect(transaction.category).toHaveText('Food');
+    await expect(transaction.debit).toHaveText('12.34');
+    await expect(transaction.credit).toHaveText('');
+    await expect(page).toMatchThemeScreenshots();
+  });
+
+  test('creates a split test transaction', async () => {
+    await accountPage.createSplitTransaction([
+      {
+        payee: 'Krogger',
+        notes: 'Notes',
+        debit: '333.33',
+      },
+      {
+        category: 'General',
+        debit: '222.22',
+      },
+      {
+        debit: '111.11',
+      },
+    ]);
+
+    const firstTransaction = accountPage.getNthTransaction(0);
+    await expect(firstTransaction.payee).toHaveText('Krogger');
+    await expect(firstTransaction.notes).toHaveText('Notes');
+    await expect(firstTransaction.category).toHaveText('Split');
+    await expect(firstTransaction.debit).toHaveText('333.33');
+    await expect(firstTransaction.credit).toHaveText('');
+
+    const secondTransaction = accountPage.getNthTransaction(1);
+    await expect(secondTransaction.payee).toHaveText('Krogger');
+    await expect(secondTransaction.notes).toHaveText('');
+    await expect(secondTransaction.category).toHaveText('General');
+    await expect(secondTransaction.debit).toHaveText('222.22');
+    await expect(secondTransaction.credit).toHaveText('');
+
+    const thirdTransaction = accountPage.getNthTransaction(2);
+    await expect(thirdTransaction.payee).toHaveText('Krogger');
+    await expect(thirdTransaction.notes).toHaveText('');
+    await expect(thirdTransaction.category).toHaveText('Categorize');
+    await expect(thirdTransaction.debit).toHaveText('111.11');
+    await expect(thirdTransaction.credit).toHaveText('');
+    await expect(page).toMatchThemeScreenshots();
+  });
+
+  test('creates a transfer test transaction', async () => {
+    await accountPage.enterSingleTransaction({
+      payee: 'Bank of America',
+      notes: 'Notes field',
+      debit: '12.34',
+    });
+
+    let transaction = accountPage.getEnteredTransaction();
+    await expect(transaction.category.locator('input')).toHaveValue('Transfer');
+    await expect(page).toMatchThemeScreenshots();
+
+    const balanceBeforeTransaction =
+      await accountPage.accountBalance.textContent();
+    const allAccountsBefore =
+      await accountPage.sidebarAllAccountsBalance.textContent();
+    const onBudgetBefore =
+      await accountPage.sidebarOnBudgetBalance.textContent();
+
+    await accountPage.addEnteredTransaction();
+
+    transaction = accountPage.getNthTransaction(0);
+    await expect(transaction.payee).toHaveText('Bank of America');
+    await expect(transaction.notes).toHaveText('Notes field');
+    await expect(transaction.category).toHaveText('Transfer');
+    await expect(transaction.debit).toHaveText('12.34');
+    await expect(transaction.credit).toHaveText('');
+
+    // Wait for balance to update after adding transaction
+    await expect(async () => {
+      const balanceAfterTransaction =
+        await accountPage.accountBalance.textContent();
+      expect(balanceAfterTransaction).not.toBe(balanceBeforeTransaction);
+    }).toPass();
+
+    // For an on-budget transfer, net totals should be unchanged
+    await expect(async () => {
+      const allAccounts =
+        await accountPage.sidebarAllAccountsBalance.textContent();
+      const onBudget = await accountPage.sidebarOnBudgetBalance.textContent();
+      expect(allAccounts).toBe(allAccountsBefore);
+      expect(onBudget).toBe(onBudgetBefore);
+    }).toPass();
+
+    await expect(page).toMatchThemeScreenshots();
+  });
+
+  test.describe('notes tooltip', () => {
+    test('shows the full note and its tags only when the note is truncated', async () => {
+      const longNote =
+        'This is a deliberately long note about a grocery run that should overflow the notes column and get truncated with an ellipsis #groceries at the very end of the note text.';
+
+      await accountPage.createSingleTransaction({
+        payee: 'Home Depot',
+        notes: longNote,
+      });
+      await accountPage.createSingleTransaction({
+        payee: 'Kroger',
+        notes: 'short note',
+      });
+
+      const truncatedTransaction = accountPage.getNthTransaction(1);
+      const shortTransaction = accountPage.getNthTransaction(0);
+      await expect(truncatedTransaction.payee).toHaveText('Home Depot');
+      await expect(shortTransaction.payee).toHaveText('Kroger');
+
+      const truncatedNotes = truncatedTransaction.notes;
+      const shortNotes = shortTransaction.notes;
+
+      // A short note that fits in the column never shows a tooltip, even
+      // after waiting past the tooltip's hover delay.
+      await shortNotes.hover();
+      await page.waitForTimeout(700);
+      await expect(page.getByRole('tooltip')).not.toBeVisible();
+
+      // A truncated note shows the full text, with tags rendered as pills,
+      // in a tooltip.
+      await truncatedNotes.hover();
+      const tooltip = page.getByRole('tooltip');
+      await expect(tooltip).toBeVisible();
+      await expect(tooltip).toContainText(longNote);
+      await expect(
+        tooltip.getByRole('button', { name: '#groceries' }),
+      ).toBeVisible();
+    });
+  });
+
+  test.describe('column manager', () => {
+    test('hides and reorders columns', async () => {
+      const header = page.getByTestId('transaction-table-header');
+      await expect(header).toContainText('Notes');
+
+      const modal = await accountPage.openTransactionColumnsModal();
+      await expect(modal).toBeVisible();
+      await expect(modal).toMatchThemeScreenshots();
+
+      // Hide the notes column
+      await modal.locator('label[for="toggle-column-notes"]').click();
+
+      // Reorder the category column with the keyboard-accessible drag handle.
+      // Two steps up moves it above the (hidden) notes row and then above
+      // payee, so the saved order visibly changes in the table header.
+      const dragHandle = modal.getByRole('button', {
+        name: 'Reorder Category column',
+      });
+      await dragHandle.focus();
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('ArrowUp');
+      await page.keyboard.press('ArrowUp');
+      await page.keyboard.press('Enter');
+
+      await modal.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(modal).not.toBeVisible();
+
+      // The saved layout has notes hidden and category moved before payee
+      await expect(header).toHaveText('DateCategoryPayeePaymentDeposit✓');
+      await expect(page).toMatchThemeScreenshots();
+
+      // Reopen: the saved configuration should be reflected in the modal
+      await accountPage.openTransactionColumnsModal();
+      await expect(modal.locator('#toggle-column-notes')).not.toBeChecked();
+
+      // Reset to default restores the original layout
+      await modal
+        .getByRole('button', { name: 'Reset to default', exact: true })
+        .click();
+      await modal.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(modal).not.toBeVisible();
+
+      await expect(header).toHaveText('DatePayeeNotesCategoryPaymentDeposit✓');
+    });
+
+    test('applies columns to all transaction tables when enabled', async () => {
+      const header = page.getByTestId('transaction-table-header');
+
+      // Hide the notes column for every transaction table
+      const modal = await accountPage.openTransactionColumnsModal();
+      await modal.locator('label[for="toggle-column-notes"]').click();
+      await modal.getByText('Apply to all transaction tables').click();
+      await modal.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(modal).not.toBeVisible();
+      await expect(header).not.toContainText('Notes');
+
+      // Another account follows the shared layout
+      accountPage = await navigation.goToAccountPage('Bank of America');
+      await expect(header).not.toContainText('Notes');
+    });
+  });
+});

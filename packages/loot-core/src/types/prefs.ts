@@ -1,0 +1,185 @@
+export type FeatureFlag =
+  | 'newSidebarUI'
+  | 'goalTemplatesEnabled'
+  | 'goalTemplatesUIEnabled'
+  | 'actionTemplating'
+  | 'formulaMode'
+  | 'currency'
+  | 'balanceForecastReport'
+  | 'customThemes'
+  | 'budgetAnalysisReport'
+  | 'enableBanking'
+  | 'sankeyReport'
+  | 'akahuBankSync'
+  | 'mobileCalculator'
+  | 'monteCarloReport';
+
+/**
+ * Cross-device preferences. These sync across devices when they are changed.
+ */
+export type SyncedPrefs = Partial<
+  Record<
+    | 'budgetType'
+    | 'upcomingScheduledTransactionLength'
+    | 'firstDayOfWeekIdx'
+    | 'dateFormat'
+    | 'numberFormat'
+    | 'hideFraction'
+    | 'isPrivacyEnabled'
+    | 'currencySymbolPosition'
+    | 'currencySpaceBetweenAmountAndSymbol'
+    | 'defaultCurrencyCode'
+    | `show-account-${string}-net-worth-chart`
+    | `side-nav.show-balance-history-${string}`
+    // @deprecated: superseded by `transaction-table-columns-${string}`; only
+    // read as a fallback for budgets that never used the column manager
+    | `show-balances-${string}`
+    | `show-extra-balances-${string}`
+    // @deprecated: superseded by `transaction-table-columns-${string}`; only
+    // read as a fallback for budgets that never used the column manager
+    | `hide-cleared-${string}`
+    | `hide-reconciled-${string}`
+    | 'transaction-table-columns'
+    | `transaction-table-columns-${string}`
+    | `show-group-${string}`
+    | 'sync-transfer-date'
+    // TODO: pull from src/components/modals/ImportTransactions.js
+    | `parse-date-${string}-${'csv' | 'qif'}`
+    | `import-reimport-deleted-${string}`
+    | `csv-mappings-${string}`
+    | `csv-delimiter-${string}`
+    | `csv-skip-start-lines-${string}`
+    | `csv-skip-end-lines-${string}`
+    | `csv-in-out-mode-${string}`
+    | `csv-out-value-${string}`
+    | `csv-has-header-${string}`
+    | `custom-sync-mappings-${string}`
+    | `sync-import-pending-${string}`
+    | `sync-reimport-deleted-${string}`
+    | `sync-import-notes-${string}`
+    | `sync-import-transactions-${string}`
+    | `sync-update-dates-${string}`
+    | `ofx-fallback-missing-payee-${string}`
+    | `ofx-swap-payee-memo-${string}`
+    | `qif-swap-payee-memo-${string}`
+    | `camt-swap-payee-memo-${string}`
+    | `flip-amount-${string}-${'csv' | 'qif'}`
+    | `flags.${FeatureFlag}`
+    | `learn-categories`
+    | `show-hidden-tags`,
+    string
+  >
+>;
+
+/**
+ * Preferences that are stored in the `metadata.json` file along with the
+ * core database.
+ */
+export type MetadataPrefs = Partial<{
+  budgetName: string;
+  id: string;
+  lastUploaded: string;
+  cloudFileId: string;
+  groupId: string;
+  encryptKeyId: string;
+  lastSyncedTimestamp: string;
+  resetClock: boolean;
+  lastScheduleRun: string;
+  userId: string; // TODO: delete this (unused)
+}>;
+
+/**
+ * Local preferences applicable to a single device. Stored in local storage.
+ */
+export type LocalPrefs = Partial<{
+  'ui.showClosedAccounts': boolean;
+  'sidebar.accountsOpenState': Record<string, boolean>;
+  'expand-splits': boolean;
+  'budget.collapsed': string[];
+  'budget.summaryCollapsed': boolean;
+  'budget.showHiddenCategories': boolean;
+  'budget.startMonth': string;
+  'flags.updateNotificationShownForVersion': string;
+  'tour.introSeen': boolean;
+  'schedules.showCompleted': boolean;
+  reportsViewLegend: boolean;
+  reportsViewSummary: boolean;
+  reportsViewLabel: boolean;
+  sidebarWidth: number;
+  'mobile.showSpentColumn': boolean;
+  'mobile.bankSyncProvidersCollapsed': boolean;
+}>;
+
+export type Theme = 'light' | 'dark' | 'auto' | 'midnight' | string;
+export type DarkTheme = 'dark' | 'midnight';
+
+// GlobalPrefs are the parsed global-store.json values
+export type GlobalPrefs = Partial<{
+  floatingSidebar: boolean;
+  maxMonths: number;
+  categoryExpandedState: number;
+  keyId?: string;
+  language: string;
+  theme: Theme;
+  preferredDarkTheme: DarkTheme;
+  plugins: boolean;
+  pluginThemes: Record<
+    string,
+    {
+      id: string;
+      displayName: string;
+      description?: string;
+      baseTheme?: 'light' | 'dark' | 'midnight';
+      colors: Record<string, string>;
+    }
+  >; // Complete plugin theme metadata
+  installedCustomLightTheme?: string; // JSON of InstalledTheme for light custom theme (also used as single custom theme in non-auto mode)
+  installedCustomDarkTheme?: string; // JSON of InstalledTheme for auto-mode dark custom theme
+  customCssOverride?: string; // User-pasted CSS override applied on top of any theme. Empty string or undefined means no override.
+  documentDir: string; // Electron only
+  serverSelfSignedCert: string; // Electron only
+  syncServerConfig?: {
+    // Electron only
+    autoStart?: boolean;
+    port?: number;
+  };
+  notifyWhenUpdateIsAvailable: boolean;
+  lastSeenNewsDate: string; // YYYY-MM-DD of the newest news entry the user has seen on this device
+  showNewsFeed: boolean; // Whether in-app notifications (bell, Notifications page, release toast) are shown.
+}>;
+
+// GlobalPrefsJson represents what's saved in the global-store.json file
+export type GlobalPrefsJson = Partial<{
+  'user-id'?: string;
+  'user-key'?: string;
+  'encrypt-keys'?: string;
+  lastBudget?: string;
+  readOnly?: string;
+  'server-url'?: string;
+  'did-bootstrap'?: boolean;
+  'user-token'?: string;
+  'floating-sidebar'?: string; // "true" or "false"
+  'max-months'?: string; // e.g. "2" or "3"
+  'category-expanded-state'?: string; // "0" or "1" or "2"
+  'document-dir'?: GlobalPrefs['documentDir'];
+  'encrypt-key'?: string;
+  language?: GlobalPrefs['language'];
+  theme?: GlobalPrefs['theme'];
+  'preferred-dark-theme'?: GlobalPrefs['preferredDarkTheme'];
+  'installed-custom-theme'?: GlobalPrefs['installedCustomLightTheme'];
+  'installed-custom-dark-theme'?: GlobalPrefs['installedCustomDarkTheme'];
+  'custom-css-override'?: GlobalPrefs['customCssOverride'];
+  plugins?: string; // "true" or "false"
+  'plugin-theme'?: string; // JSON string of complete plugin theme (current selected plugin theme)
+  'server-self-signed-cert'?: GlobalPrefs['serverSelfSignedCert'];
+  syncServerConfig?: GlobalPrefs['syncServerConfig'];
+  notifyWhenUpdateIsAvailable?: GlobalPrefs['notifyWhenUpdateIsAvailable'];
+  lastSeenNewsDate?: GlobalPrefs['lastSeenNewsDate'];
+  showNewsFeed?: GlobalPrefs['showNewsFeed'];
+}>;
+
+export type AuthMethods = 'password' | 'openid';
+
+export type ServerPrefs = Partial<{
+  'flags.plugins': 'true' | 'false';
+}>;
