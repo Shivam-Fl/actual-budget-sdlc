@@ -66,5 +66,142 @@
     "decided_at": "2026-10-02T04:33:33.066Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "debug"
+  "dispatched_stage": "debug",
+  "validated_work_order": {
+    "issue": 2,
+    "version": 1,
+    "kind": "bug",
+    "reproduced": true,
+    "confidence": 88,
+    "confidence_rationale": "Reproduced end-to-end in the running app on the dev server, and the mechanism was confirmed independently at the SQL layer with a throwaway vitest in the loot-core AQL harness ($sumOver under date ASC returns nonsense balances: t0=75, t1=-25, t2=25 instead of 100/50/75). What holds confidence below 100: I did not observe the exact intermediate `state.balances` value through the React tree, so the Account.tsx -> visibleColumns link is confirmed by DOM observation (header + cells vanish) plus code reading, not by direct state inspection; and the ideal fix (make the window order-independent vs. compute descending under an ascending display sort) is an implementation choice I am leaving to the implementer.",
+    "understanding": "Reported: on the desktop register, enabling the running-balance column works, sorting Date descending shows correct balances, but a second Date click (ascending) makes the whole Balance column disappear and removes the Balance toggle from 'Manage table columns', so it cannot be turned back on without first changing the sort. Reproduced in the running app at $PREVIEW_URL against the demo budget, on a single real account (Capital One Checking), using the reporter's steps in order. Observed: with the Balance column enabled, one Date click gave header 'Date|Payee|Notes|Category|Payment|Deposit|Balance|...' with 25 balance cells and first row 10/02/2026; the second Date click gave header 'Date|Payee|Notes|Category|Payment|Deposit|' (no Balance) with 0 balance cells and first row 08/17/2026 (oldest first, so the sort genuinely flipped to asc). A third Date click (back to desc) restored the column and the toggle. Opening 'Manage table columns' while descending listed 'toggle-column-balance=true'; opening the same modal while ascending listed no balance entry at all. So the loss of the column and the loss of the toggle are the same condition, and the condition is exactly 'sort is date/asc' - not search, not filters, not the account being a pseudo-view.",
+    "root_cause": "Account.tsx:687-703 `canCalculateBalance()` returns true only when the sort is absent, or is `field === 'date' && ascDesc === 'desc'`. It is a direction gate, not a data gate: when it returns false, (a) `calculateBalances()` (Account.tsx:705-721) short-circuits and returns `null`, so `this.state.balances` is set to `null` by the `onData` handler at Account.tsx:537-539; (b) `render()` passes `showBalances={!!allBalances}` (Account.tsx:1931), and `allBalances` is that same `null`, so `showBalances` is false; (c) `visibleColumns` in TransactionsTable.tsx:3088-3099 then filters the 'balance' column out of the render list, removing both the header cell and every row cell; and (d) `onManageColumns()` (Account.tsx:929-933) filters the 'balance' column out of the columns passed to the modal, which is why the toggle vanishes. The gate exists because the balance query uses `$sumOver`, which compiles to `SUM(amount) OVER (ORDER BY <the query's own orderExpressions> ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)` (compiler.ts:550-560, with the orders threaded in from compileSelect at compiler.ts:1146-1150). `calculateBalances()` passes `this.paged.query`, which already carries the user's display sort. The window frame always runs CURRENT ROW -> UNBOUNDED FOLLOWING, so it only yields a correct running balance when the ordering runs newest-to-oldest. Under date/asc the same window sums each row forward toward newer transactions and returns wrong numbers, and the guard suppresses the column rather than showing them. The bug is that the correct answer was made unreachable instead of computed: the balance per transaction is a property of the transaction, not of the display order, and the sort is only being used as the window's frame.",
+    "evidence": [
+      "Reproduction script driven with Playwright against $PREVIEW_URL=http://localhost:3001 (Vite dev server, OPFS demo budget loaded via 'Try the demo', single account 'Capital One Checking'). Output:\n\n  [after-enable] header=\"Date|Payee|Notes|Category|Payment|Deposit|Balance|check\" balanceCells=25 firstRowDate=10/02/2026\n  [desc]         header=\"Date|Payee|Notes|Category|Payment|Deposit|Balance|check\" balanceCells=25 firstRowDate=10/02/2026\n  [MODAL-under-DESC] modal toggles: [payee=true, notes=true, group=false, category=true, payment=true, deposit=true, balance=true, cleared=true]\n                 balance toggle present: true\n  [asc]          header=\"Date|Payee|Notes|Category|Payment|Deposit|check\"          balanceCells=0  firstRowDate=08/17/2026\n  [MODAL-under-ASC]  modal toggles: [payee=true, notes=true, group=false, category=true, payment=true, deposit=true, cleared=true]\n                 balance toggle present: false\n  re-open modal under asc: #toggle-column-balance count = 0\n\n(firstRowDate moving 10/02 -> 08/17 confirms the sort really flipped to ascending, so the column loss is not a stale-render artifact. The third Date click restored header+Balance and balanceCells=25, confirming desc is the only direction affected.)\n\nMechanism confirmed independently at the SQL layer. A throwaway test in packages/loot-core (aql/exec.test.ts harness style: insert 3 transactions dated 2024-01-01/02/03 with amounts 100/-50/25, so correct running balances are 100/50/75) selecting `[{ balance: { $sumOver: '$amount' } }]` gave:\n\n  ORDER BY date desc -> [t2=75, t1=50, t0=100]   (correct)\n  ORDER BY date asc  -> [t0=75,  t1=-25, t0... t2=25]  (wrong: not running balances)\n\nCommand: `cd packages/loot-core && ENV=node npx vitest --run src/server/aql/<scratch>.test.ts` (scratch file deleted afterwards; `git status` clean apart from untracked plan/). No console errors or failed network requests accompanied the failure - the column is removed by a render-time filter, not by an exception, which is why it fails silently.\n\nSecondary observation, same guard, different trigger: on the pseudo-account views (`/accounts/onbudget`, `/accounts/offbudget`, `/accounts/uncategorized`) `canCalculateBalance()` returns false because `accounts.find(a => a.id === accountId)` finds nothing (these ids are not real accounts), so the Balance column is filtered out of the modal there too and cannot be enabled at all. I confirmed this on `/accounts/onbudget`. It is a distinct trigger from the reported sort bug and is deliberately left out of this change (see out_of_scope) but it shares the guard."
+    ],
+    "approach": "Make the running balance independent of the display sort direction, then drop the direction clause from `canCalculateBalance()` so the column and its toggle survive an ascending sort. Concretely: in `Account.tsx`, build the balance query so its window ordering is always newest-to-oldest, independent of `this.paged.query`'s user sort - the natural form is to take the query without the user's order expressions and apply an explicit `{ date: 'desc' }` (plus whatever tiebreaker keeps it deterministic, matching how `applySort` appends `sort_order`) before selecting `$sumOver`. Note `Query.orderBy` appends to `orderExpressions`, so the user's sort must be dropped rather than appended to; `reset()` on the query or constructing from `makeRootTransactionsQuery()` + reapplying filters are both viable, and `packages/desktop-client/src/queries/pagedQuery.ts` already uses `getPrimaryOrderBy` from `@actual-app/core/shared/query` for a closely related purpose. Then relax `canCalculateBalance()` from `sort.field === 'date' && sort.ascDesc === 'desc'` to accept a date sort in either direction (keep returning false for a non-date sort field, a non-empty search, and active filter conditions - those genuinely make a running balance meaningless, because a filtered set does not accumulate to the account total). Once the guard no longer excludes ascending, both consumers fix themselves: `state.balances` stops being nulled, `showBalances={!!allBalances}` stays true so `visibleColumns` keeps the column, and `onManageColumns()` keeps passing the balance column to the modal so the toggle stays available.\n\nPrefer this over simply deleting the guard: deleting it alone would render the Balance column with the wrong numbers the AQL probe above produced (75/-25/25), trading a missing column for a silently wrong one. The values must stay correct under ascending display, not merely present.\n\nDo not change `$sumOver` itself in compiler.ts - the CURRENT ROW -> UNBOUNDED FOLLOWING frame is a correct, general window; the bug is that a display sort is being allowed to define it. Callers of the guard are `calculateBalances()`, the reconciled-rows filter at Account.tsx:483-488, and `onManageColumns()`; all three are in this file and all three should follow from the one guard change. `calculateRunningBalancesTopDown` in packages/desktop-client/src/hooks/useTransactions.ts:219-259 is the mobile equivalent and already handles ascending, but it is a separate client-side path with its own (independently questionable) index arithmetic and is not in scope.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/accounts/Account.tsx",
+        "action": "edit",
+        "change": "In `calculateBalances()` (lines 705-721), build the `$sumOver` query with a window ordering that is always newest-to-oldest, so the running balance per transaction no longer depends on the user's display sort: drop the user sort expressions off the query and apply an explicit `{ date: 'desc' }` (plus a deterministic tiebreaker) before `.select([{ balance: { $sumOver: '$amount' } }])`. `Query.orderBy` appends rather than replaces, so the existing sort must be removed first - not appended after. In `canCalculateBalance()` (lines 687-703), replace the clause `this.state.sort.field === 'date' && this.state.sort.ascDesc === 'desc'` with an acceptance of a date sort in either direction, so an ascending sort no longer returns false. Keep returning false for a non-date sort field, a non-empty `search`, and non-empty `filterConditions`.",
+        "why": "Both halves of the reported symptom trace to this one guard: it nulls `state.balances`, which makes `showBalances` false and drops the column in TransactionsTable's `visibleColumns`, and it also removes the column from the columns list passed to 'Manage table columns'. The guard is direction-based because the balance window currently inherits the user's sort; making the window order-independent is what removes the need for the direction clause."
+      },
+      {
+        "path": "packages/desktop-client/e2e/transactions.test.ts",
+        "action": "edit",
+        "change": "Add a Playwright test that encodes the reproduction: enable the Balance column via `accountPage.setTransactionColumnVisibility('balance', true)`, click the Date column header once (descending) and assert the header still contains 'Balance' and rows render a `data-testid=\"balance\"` cell, then click the Date header again (ascending) and assert the Balance column is STILL present with a balance cell per row and that the rows are in ascending date order. Additionally assert the 'Manage table columns' modal still exposes `#toggle-column-balance` while the ascending sort is active. Add a `sortByColumn(name)` helper to the AccountPage page model if one does not exist.",
+        "why": "This is the exact sequence that failed in the live app; today the ascending assertions fail, which is the regression test the fix must turn green."
+      },
+      {
+        "path": "packages/desktop-client/e2e/page-models/account-page.ts",
+        "action": "edit",
+        "change": "Add a `sortByColumn(columnId)` helper that clicks the header button for a given column (the clickable element is the `<button>` inside the header cell's `[data-testid=\"<columnId>\"]` wrapper - clicking the wrapper itself does not trigger `onSort`) and waits for the table to settle. Reuse the existing `openTransactionColumnsModal()` / `setTransactionColumnVisibility()` helpers rather than re-implementing them.",
+        "why": "The header's sort affordance is a react-aria `Button` nested inside the cell div; an e2e test that clicks the cell wrapper silently does nothing, which is exactly the dead end the investigation hit. Encoding the working selector here keeps future column tests from rediscovering it."
+      },
+      {
+        "path": "upcoming-release-notes/fix-running-balance-ascending-sort.md",
+        "action": "create",
+        "change": "Short release note describing that the running-balance column no longer disappears (and can no longer be un-togglable) when the transaction list is sorted oldest-first. Use a short descriptive slug filename; the PR link is resolved at release time.",
+        "why": "User-visible regression fix in the desktop register; AGENTS.md requires a release note for such changes."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/e2e/transactions.test.ts",
+        "action": "edit",
+        "cases": [
+          "Running balance column stays visible when the Date column is sorted oldest-first: enable the Balance column, click Date once (descending) and assert the header contains 'Balance' and at least one row has a `data-testid=\"balance\"` cell, then click Date again (ascending) and assert the header STILL contains 'Balance' and the row count with a non-empty balance cell equals the total row count.",
+          "Running balance values are correct under an ascending sort: with three known transactions (oldest to newest, amounts 100, -50, 25) sorted oldest-first, assert the rendered balance cells read 100, 50, 75 in that row order - the same values the descending view shows for the same transactions. This is the case that fails today and must not be traded for a merely-present-but-wrong column.",
+          "The Balance column remains toggleable while sorted oldest-first: with an ascending Date sort active, open 'Manage table columns' and assert `#toggle-column-balance` exists (today it is absent entirely), and that unchecking then rechecking it still works.",
+          "Sorting back to descending after an ascending sort leaves the balance column and its values intact (no stale or cleared balances on the round trip)."
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/server/aql/exec.test.ts",
+        "action": "edit",
+        "cases": [
+          "Regression-lock the finding that motivated the fix: `select([{ balance: { $sumOver: '$amount' } }])` over transactions ordered `date desc` yields the correct running balances (100/50/75 for amounts 100/-50/25 dated oldest-to-newest), documenting that the CURRENT ROW -> UNBOUNDED FOLLOWING frame is only correct for a newest-first ordering. This test passes today and must keep passing after the change, so it pins the window semantics the fix relies on rather than the guard being removed."
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "On a single account with the running-balance column enabled, clicking the Date column header to sort oldest-first leaves the Balance column header rendered and every transaction row rendering a balance value.",
+        "how_to_verify": "Drive the app: enable the Balance column via 'Manage table columns', click Date twice, then assert the header still contains 'Balance' and `[data-testid=\"balance\"]` cells exist for all rows.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "The running-balance values shown while sorted oldest-first are the correct running balances for the same transactions, identical to the values shown when sorted newest-first - not merely present.",
+        "how_to_verify": "With transactions of known amounts sorted both ways, compare the rendered balance cells against the expected accumulation (e.g. 100, 50, 75 for amounts 100, -50, 25 dated oldest-to-newest).",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "With an ascending Date sort active, the 'Manage table columns' modal still lists the Balance column and its toggle can be turned off and back on.",
+        "how_to_verify": "Open 'Account menu' -> 'Manage table columns' while sorted oldest-first and assert `#toggle-column-balance` is present and operable.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-4",
+        "check": "The existing restrictions on the running balance are preserved: an active search text or an active filter condition still suppresses the Balance column, and sorting by a non-date column still does not produce a running balance.",
+        "how_to_verify": "Apply a search or a filter on an account with the Balance column enabled and assert the column is suppressed as before; run the existing transaction-table e2e suite for regressions.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "Sorting back to newest-first after an ascending sort shows correct balances again (the round trip neither clears nor duplicates the balance values).",
+        "how_to_verify": "Toggle the Date sort desc -> asc -> desc and assert the balance cells match the descending-view values at each step.",
+        "verify": "browser"
+      }
+    ],
+    "qa_script": [
+      "1. Start the app and open the demo budget ('Try the demo'), then open a real single account from the sidebar (e.g. 'Capital One Checking'). Do NOT use /accounts/onbudget or another pseudo-account - the balance column is unavailable there for an unrelated reason (see out_of_scope).\n2. Note the header row and the first row's date. Record the first and last dates so you can tell the sort direction apart.\n3. Account menu -> 'Manage table columns' -> tick 'Balance' -> Save. Confirm the header now contains 'Balance' and rows show balance values.\n4. Click the Date column header once. Confirm the first row is the newest transaction, the Balance column is still present, and balances look correct (the top row's balance should equal the account's current balance).\n5. Click the Date header again. THIS IS THE FAILING STEP on current code. Confirm the first row is now the OLDEST transaction. Assert the header STILL contains 'Balance' and every row still shows a balance value.\n6. Cross-check the numbers: for the same three transactions, the balance shown next to a given transaction must be the same whether the list is sorted oldest-first or newest-first (e.g. amounts 100, -50, 25 dated oldest-to-newest must read 100, 50, 75 in both directions). A column that is present but showing different or nonsensical numbers is still a failure.\n7. While still sorted oldest-first, open 'Account menu' -> 'Manage table columns'. Confirm 'Balance' is still listed and its toggle works (uncheck, Save, reopen, check, Save) without changing the sort first.\n8. Click the Date header a third time to return to newest-first. Confirm the Balance column and its correct values come back.\n9. Negative check: type a search term or apply a filter. Confirm the Balance column is still suppressed (existing behaviour that must not regress), and that clearing the search restores it.\n10. Regression: run `yarn typecheck` and `yarn lint:fix`, plus the desktop-client unit tests and the transactions e2e suite."
+    ],
+    "risks": [
+      "The most likely wrong fix is deleting the ascDesc guard without making the window order-independent. That turns a missing column into a silently WRONG column: the AQL probe showed date-asc returns 75/-25/25 instead of 100/50/75. AC-2 exists specifically to catch that, and reviewers should treat a diff that only touches `canCalculateBalance()` as incomplete.",
+      "The balance query is built from `this.paged.query`, which also carries any active filters and the reconciled-rows filter applied at Account.tsx:483-488. Dropping the user's sort expressions must not also drop filters, or the balances will be computed over the wrong row set.",
+      "`Query.orderBy` appends to `orderExpressions` rather than replacing them, so naively appending `{ date: 'desc' }` to the existing query would leave the user's ascending sort in front of it and silently change nothing.",
+      "Making the balance column appear under conditions where it previously did not (ascending sort) means more users will hit the balance query path; it is a `$sumOver` window over the account's transactions, so its cost on very large accounts should be sanity-checked.",
+      "`onSaveColumns` (Account.tsx:988-1005) has a side effect when the balance column is re-enabled: it clears `transactions`, `filterConditions`, `search`, and `sort`, then refetches. If the modal now offers the balance toggle in states where it previously did not, this reset will fire in more situations. Verify it does not silently discard a user's search/filter without the UI saying so.",
+      "The account page also uses `canCalculateBalance()` for the reconciled-rows filter (Account.tsx:483-488). Relaxing the guard changes which rows are loaded when reconciled transactions are hidden - correct in principle, but it is a second behavioural effect of the same change and should be checked, not assumed.",
+      "This repository is an imported snapshot (single 'Import actualbudget/actual' commit), so `git log -S`/`git blame` on `canCalculateBalance` yields no history and cannot say when the guard was introduced or why. The intent behind the direction check is inferred from the `$sumOver` frame semantics and the AQL probe, not from a commit message. An implementer with upstream history available should sanity-check that inference."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Just delete the sort-direction clause from `canCalculateBalance()` so the column always shows.",
+        "rejected_because": "The column would render with wrong numbers. `$sumOver` compiles to `SUM(amount) OVER (ORDER BY <query orders> ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)` and the frame direction is fixed, so under date/asc it sums forward toward newer rows. Measured: 75/-25/25 where 100/50/75 is correct. Replaces a visible bug with a silent data bug."
+      },
+      {
+        "approach": "Compute the running balance client-side in JS (as the mobile path does with `calculateRunningBalancesTopDown` in hooks/useTransactions.ts) instead of via the `$sumOver` window.",
+        "rejected_because": "Works, but it discards the database-side window that exists precisely to avoid loading and accumulating the whole transaction set in the browser, and it forks the desktop and mobile balance logic into two implementations. The smaller, more faithful fix is to keep the window and stop letting a display sort define its ordering."
+      },
+      {
+        "approach": "Extend `$sumOver` in packages/loot-core/src/server/aql/compiler.ts to accept an explicit frame (e.g. UNBOUNDED PRECEDING AND CURRENT ROW) so ascending orderings work without changing the query.",
+        "rejected_because": "Changes a general, correct, shared AQL primitive to serve one caller's display state. `CURRENT ROW AND UNBOUNDED FOLLOWING` is not wrong; it is just the wrong frame for an ascending display order. Widening the AQL surface is a bigger blast radius than fixing the query that builds the window."
+      },
+      {
+        "approach": "Keep the guard and instead make the UI reset the sort (or refuse to sort ascending) when the balance column is on.",
+        "rejected_because": "Fights the user: it removes a sort the table advertises as available and diverges from the mobile view, which already supports running balances in both directions. The data supports both orderings; only the query construction was direction-bound."
+      }
+    ],
+    "out_of_scope": [
+      "Pseudo-account views (`/accounts/onbudget`, `/accounts/offbudget`, `/accounts/uncategorized`): `canCalculateBalance()` returns false there because `accounts.find(a => a.id === accountId)` matches nothing for these ids, so the Balance column is filtered out of the modal and cannot be enabled at all. Confirmed on `/accounts/onbudget` during this investigation. Same guard, different trigger, separate fix - it needs a decision about what a running balance means across a set of accounts, not just an ordering change.",
+      "`calculateRunningBalancesTopDown` (hooks/useTransactions.ts:219-259), the mobile equivalent. Its index arithmetic looks independently questionable (index 0 sets `startingBalance`, the last index sets the bare `transaction.amount`, and everything between subtracts the previous amount), but mobile running balances were not part of the reproduction and were not exercised here.",
+      "The reconciled-rows interaction at Account.tsx:483-488 beyond verifying it does not regress (covered by AC-4)."
+    ],
+    "assumptions": [
+      "The desktop register's 'Manage table columns' modal is the feature the reporter called the hamburger menu / 'show running balance' toggle - in this codebase version the running balance is a Balance column toggled there, not a separate menu item. The reproduction confirms that modal is where the toggle lives.",
+      "`calculateBalances()` is the only producer of `state.balances` on this page (the two call sites are the `onData` fast path at Account.tsx:502-504 and the normal path at Account.tsx:537-539), so fixing its ordering fixes every consumer without touching `TransactionsTable`."
+    ],
+    "unknowns": [
+      "Whether upstream fixed this differently - the repository is a squashed import with no usable history, and issue 3808 is still open upstream as of the report.",
+      "Whether the search and filterConditions exclusions in `canCalculateBalance()` are deliberate product decisions or inherited conservatism. The fix preserves them either way, but a follow-up ticket could reasonably revisit them."
+    ]
+  },
+  "validated_from": "debug",
+  "validated_at": "2026-10-02T05:14:06.972Z",
+  "validated_ac_changes": []
 }
