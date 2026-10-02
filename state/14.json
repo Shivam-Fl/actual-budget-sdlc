@@ -452,7 +452,7 @@
           "Any accessibility audit beyond this one warning."
         ],
         "kind": "bug",
-        "issue": null
+        "issue": 21
       },
       {
         "title": "Reports dashboard loads without React's nested-button warning",
@@ -477,6 +477,7 @@
     "deferred": []
   },
   "children": [
-    20
+    20,
+    21
   ]
 }
