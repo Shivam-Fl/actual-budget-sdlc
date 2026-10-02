@@ -378,6 +378,21 @@
       ],
       "run_url": "https://github.com/Shivam-Fl/actual-budget-sdlc/actions/runs/37021492966",
       "prior_signatures": []
+    },
+    "triage": {
+      "verdict": "rerun",
+      "diagnosis": "The failure is not in PR #15's code. It is a nondeterministic race on a shared TypeScript build-output directory. loot-core is a composite project referenced by both packages/api and packages/desktop-client, and each package's typecheck script is `tsgo -b`, which BUILDS its references and rewrites their emitted declarations into the single shared directory packages/loot-core/@types/. In this run lage (concurrency: 2) started @actual-app/api typecheck and @actual-app/web typecheck at the same instant — the log shows api queued and started immediately before web, both resolving the same loot-core project. Both processes then read and rewrote packages/loot-core/@types/src/types/models/ concurrently. desktop-client's compiler read the barrel file index.d.ts (or enablebanking.d.ts) at the moment the api-side tsgo was mid-write on it, saw a truncated file, and reported the enablebanking re-exports as absent — producing exactly the six TS2305 'has no exported member' errors, all of them confined to the enablebanking types, while every other member of the same barrel resolved fine. I verified the mechanism directly: with loot-core built, deleting only packages/loot-core/@types/.tsbuildinfo and then running `yarn workspace @actual-app/web run typecheck` measurably rewrote packages/loot-core/@types/src/types/models/index.d.ts, and `yarn workspace @actual-app/api run typecheck` likewise rewrote enablebanking.d.ts in that same directory — both tasks are writers to one shared output. The PR itself cannot be the cause: `git diff --name-only b593293 pr15` touches no file under packages/loot-core/src/types/models/ (enablebanking.ts and the barrel are byte-identical to main), and the failing imports are pre-existing on main. main@b593293 typechecks clean both locally and in CI, and the same PR head typechecks clean locally from a cleared-artifact state, including under --no-cache and pinned to two CPUs. Typecheck was the only failing step: lint passed and every unit-test package passed. Nothing about the repository needs to change for the next run to pass, so the stage should simply run again — but note the underlying concurrency: 2 setting in lage.config.js will keep making this intermittently possible, and that deserves a separate look by a human rather than being folded into this ticket.",
+      "evidence": "failed-run.log:512-523 — `@actual-app/web typecheck failed, took 9.96s` with all six errors being TS2305 `Module '\"@actual-app/core/types/models\"' has no exported member 'SyncServerEnableBankingAccount'/'EnableBankingAspsp'`, and no other member of that barrel missing; failed-run.log:503-511 — `@actual-app/api typecheck` queued and started immediately before web, both resolving packages/loot-core as a `references` entry; the web step died inside `tsgo -b` (9.96s vs ~35s for a full web typecheck) before `tsc-strict` ever ran, so the error is a build/reference-resolution failure, not a type error in the PR's own source. Confirmed experimentally in this checkout: `yarn workspace @actual-app/web run typecheck` and `yarn workspace @actual-app/api run typecheck` each rewrite packages/loot-core/@types/src/types/models/{index,enablebanking}.d.ts (mtime changes after removing only packages/loot-core/@types/.tsbuildinfo), and packages/loot-core/package.json maps `./types/models` -> `./src/types/models/index.ts` while packages/loot-core/tsconfig.json sets `\"outDir\": \"@types\"`. `git diff --name-only b593293 pr15 | grep -c types/models` returns 0."
     }
-  }
+  },
+  "triage_history": [
+    {
+      "at": "2026-10-02T15:40:10.664Z",
+      "stage": "ci",
+      "verdict": "rerun",
+      "confidence": 74,
+      "diagnosis": "The failure is not in PR #15's code. It is a nondeterministic race on a shared TypeScript build-output directory. loot-core is a composite project referenced by both packages/api and packages/desktop-client, and each package's typecheck script is `tsgo -b`, which BUILDS its references and rewrites their emitted declarations into the single shared directory packages/loot-core/@types/. In this run lage (concurrency: 2) started @actual-app/api typecheck and @actual-app/web typecheck at the same ins",
+      "run": "37021524139"
+    }
+  ]
 }
