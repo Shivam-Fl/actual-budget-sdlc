@@ -18,7 +18,168 @@
   },
   "halted": null,
   "pending": null,
-  "work_order": null,
+  "work_order": {
+    "issue": 3,
+    "version": 1,
+    "kind": "bug",
+    "reproduced": true,
+    "confidence": 86,
+    "confidence_rationale": "Reproduced twice in a live browser against the demo budget (the reporter's exact configuration, plus a Daily control that isolates the shortfall), and independently re-derived at unit level with a test I wrote and ran: weekRangeInclusive emits a bucket for days makeQuery's $lte bound excludes. The corrected clamp rule was then verified by simulating the proposed validateEnd branch in a test rather than asserting it from reading. What I have NOT verified is the saved-report reload path end-to-end in a browser (I traced it in code: setReportData assigns endDate without calling validateEnd) -- that is a residual risk, not an open question about the defect, and it argues for the load-path widening named in files[1].",
+    "understanding": "A Weekly custom report on a static From/To pair silently drops six of the seven days of the final week. The From: and To: pickers offer week-START dates only -- I confirmed this in the running app, where the To: menu listed 53 options that are all Sundays (09/27, 09/20, 09/13, 09/06, 08/30, 08/23, 08/16, ... 09/28/2025). Choosing To: 09/27/2026 therefore produces a report whose query is bounded by `date <= 2026-09-27` at day granularity, while `weekRangeInclusive` still renders a full-looking bucket labelled 09/27. Reproduced on this checkout (Actual v26.9.0, local demo budget, 2026-10-02): Weekly + Static + From 08/30/2026 + To 09/27/2026 + Time mode renders five weekly buckets at x-positions 580/780/990/1200/1400, and the per-bucket tooltip totals for the three that hover cleanly were 617.37 (09/13), 683.99 (09/20) and 47.98 (09/27) -- the final bucket is a one-day stub. The Daily control over the same final week reported 179.40 for 10/02 alone, giving a shortfall of 131.42 against the 47.98 the weekly bucket reports. A second run reproduced the same shape independently (47.98 vs siblings 722.03 and 601.05 in a prior run; 74.66 vs 195.98 for a single later day in another). Separately, and independently observable: when the interval is Weekly the To: picker clamps the stored value to today -- selecting Static with an end of 10/31/2026 produced a To: button reading 10/02/2026. That clamp is the same `boundedRange` Weekly branch that will clamp the fix, and it is why the correct end bound is a rule, not a fixed date.",
+    "root_cause": "`validateEnd` in reportRanges.ts normalises the end bound for Monthly (getMonthEnd) and Yearly (+'-12-31') but sends Weekly through `default: dateEnd = end`, so the report's endDate stays the week-START the picker can only offer. `makeQuery` then applies that value as a day-granular `$lte`, admitting only the first day of the final week, while `weekRangeInclusive` independently emits a bucket for that whole week -- so the chart renders a complete-looking seven-day column filled from one day. Weekly is the only interval whose pickers yield sub-period dates while its query bound is never widened. The final bucket's `intervalEndDate` is a second, separate wrong value with the same origin: both custom-spreadsheet.ts and recalculate.ts compute `subDays(intervals[index + 1], 1)` for every bucket except the last, which falls back to the raw `endDate` -- the same un-widened week-start that is stored on the report and read by the drilldown in ReportTableRow.tsx.",
+    "approach": "ONE rule, stated once, and every value in this change is an instance of it:\n\n  effectiveEnd = min( getWeekEnd(end, firstDayOfWeekIdx), currentDay() )\n\n`getWeekEnd` supplies the week's true last day; `currentDay()` is the existing `boundedRange` Weekly clamp, which is what stops an in-progress week projecting into the future. The min of the two is the single end bound, and both the query's `$lte` and the final bucket's `intervalEndDate` must read that same clamped value -- which is what makes AC-2 and AC-3 compatible instead of contradictory.\n\nFix site: normalise the Weekly end bound in BOTH places the bound enters, so that the picker path and the saved-report load path both get it. This is a correction to v1, which named `validateEnd` alone; tracing the callers showed that is incomplete. `validateEnd` is called from exactly one place -- the To: picker's onChange in ReportSidebar.tsx:658 -- so a report whose range is never re-picked never reaches it. `CustomReport.tsx` `setReportData` assigns `input.startDate`/`input.endDate` straight into state (lines ~751-753) with no `validateEnd` call, and the initial `useState(loadReport.startDate/endDate)` (lines 268-269) is the same story. So every already-saved weekly report, and every dashboard widget rendering one via GetCardData.tsx -> createCustomSpreadsheet/createGroupedSpreadsheet, keeps the truncated bound under a validateEnd-only fix. Widening at the consumption sites (the two spreadsheet factories) covers picker, saved-report and dashboard-widget paths with one mechanism, and leaves the To: picker's stored value alone -- which matters, because that value is also the Select's `value` and its option list is week-starts, so returning a widened date from validateEnd would put the control into `defaultLabel` fallback (Select.tsx:74-76, `targetOption` found by exact match against options) and break the picker's own selection display. Normalising downstream avoids that entirely.\n\nThe clamp must be `currentDay()`, not a bare `getWeekEnd`: without it, a report whose final week is still in progress would pull in future-dated rows. Do not bypass `boundedRange` to achieve the widening -- if the normalisation happens inside the spreadsheet factories it must apply the same `min` with `currentDay()` explicitly, because those factories do not currently route through `boundedRange` at all.\n\nDo NOT change `validateEnd`. Its Weekly branch is already correct in the sense that matters here (it does not over-widen), and its clamp behaviour is what AC-3 depends on; touching it would also change what the picker stores, for the Select-fallback reason above.\n\nSecond, correct the final bucket's `intervalEndDate` in custom-spreadsheet.ts and recalculate.ts so it reads the same clamped bound the query used, rather than the raw `endDate`. Today both compute `subDays(intervals[index + 1], 1)` for every bucket except the last, which falls back to the raw endDate. Keep the two files' copies identical -- they are duplicated today and must not diverge. Note the bucket's `intervalStartDate` is correct already (the week-start), so only the end is wrong.\n\nCaller sweep, run on this checkout: `createCustomSpreadsheet` is called from CustomReport.tsx:551 and GetCardData.tsx:146; `createGroupedSpreadsheet` from CustomReport.tsx:515 and GetCardData.tsx:127. `fetchSpreadsheetQueryData` (which calls `makeQuery`) is called from exactly those two spreadsheet factories plus grouped-spreadsheet.ts -- NOT from spending-spreadsheet, which builds its own queries and does not go through the custom report's From/To picker. `intervalEndDate` is consumed by StackedBarGraph.tsx:319, LineGraph.tsx:203 and ReportTableRow.tsx:172 (the drilldown's `showActivity` endDate) -- all three read the value these two files produce, so correcting it there fixes the tooltip and the drilldown together with no change to the consumers.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.ts",
+        "action": "edit",
+        "change": "Compute the effective end bound once, near the top of the returned async function, as `interval === 'Weekly' ? min(monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx), monthUtils.currentDay()) : endDate`, and use that value for BOTH the `endDate` passed to `fetchSpreadsheetQueryData` (so makeQuery's `$lte` admits the whole final week, clamped to today) and the final bucket's `intervalEndDate`. Leave `startDate`, the `intervals` array from `weekRangeInclusive`, and every non-Weekly branch byte-identical: Daily, Monthly and Yearly keep their raw endDate. Do not widen the range passed to `weekRangeInclusive` -- the bucket list must stay exactly as it is; only the query bound and the last bucket's label change.",
+        "why": "This is the site that covers all three entry paths (picker, saved-report load via setReportData, and dashboard widgets via GetCardData), none of which besides the picker reach validateEnd."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/grouped-spreadsheet.ts",
+        "action": "edit",
+        "change": "Apply the identical effective-end-bound computation as in custom-spreadsheet.ts to the `endDate` passed to `fetchSpreadsheetQueryData`. grouped-spreadsheet calls the same `fetchSpreadsheetQueryData` and the same `recalculate`, so leaving it untouched would make the grouped/table view of the same weekly report disagree with the graph view -- same numbers, different source.",
+        "why": "It shares makeQuery and recalculate with custom-spreadsheet; the two must not diverge or the same report renders differently depending on which spreadsheet view is active."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/recalculate.ts",
+        "action": "edit",
+        "change": "Change the final interval's `intervalEndDate` so it reports the same effective end bound the query used: `interval === 'Weekly' ? min(getWeekEnd(intervals[index], firstDayOfWeekIdx), currentDay()) : endDate`, replacing the raw-`endDate` fallback. Add a `firstDayOfWeekIdx` prop to the signature (it is not currently passed) and thread it from both callers, custom-spreadsheet.ts:275 and grouped-spreadsheet.ts:96/112, since getWeekEnd honours the user's first-day-of-week preference and must not assume Sunday. Non-final buckets keep `subDays(intervals[index + 1], 1)` unchanged. This must state the same rule, in the same form, as custom-spreadsheet.ts.",
+        "why": "This is the value ReportTableRow.tsx:172 hands to the drilldown's showActivity, and the tooltip value the reporter screenshotted as wrong. Fixing only the query bound would make the numbers right and the label still lie."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+        "action": "create",
+        "cases": [
+          "The single rule, elapsed week: with Weekly, startDate 2026-08-30, endDate 2026-10-03 and currentDay pinned to 2026-10-05, the effective end bound is 2026-10-03 and the final bucket's intervalEndDate is 2026-10-03 (the week's true end). Fails today -- the current code reports 2026-10-03 only by coincidence of the raw endDate; with the original endDate 2026-09-27 it reports 2026-09-27, which is the bug",
+          "The single rule, in-progress week: with Weekly, startDate 2026-08-30, endDate 2026-09-27 and currentDay pinned to 2026-10-02, the effective end bound and the final bucket's intervalEndDate are BOTH 2026-10-02 -- min(getWeekEnd, currentDay()). This is the clamp, not a contradiction of the case above; the two cases differ only in the pinned currentDay",
+          "The effective end bound is what the query receives: assert that fetchSpreadsheetQueryData (or the makeQuery it wraps) is called with an endDate of 2026-10-03 for an elapsed week, so the widening reaches the `$lte` filter and not only the label. Mock send/aqlQuery as the sibling spending-spreadsheet.test.ts does",
+          "Non-final buckets are unchanged: for Weekly the intermediate buckets keep intervalEndDate = subDays(nextBucket, 1) -- 08/30 -> 09/05, 09/06 -> 09/12, 09/13 -> 09/19, 09/20 -> 09/26 -- proving only the final bucket's value moved",
+          "firstDayOfWeekIdx is honoured, not hardcoded to Sunday: with firstDayOfWeekIdx '1' (Monday), endDate 2026-09-28 and currentDay pinned past the week, the effective end bound is 2026-10-04, not 2026-10-03",
+          "Monthly and Daily are untouched: Monthly with endDate 2026-09 keeps the existing getMonthEnd behaviour and Daily with endDate 2026-09-27 keeps intervalEndDate 2026-09-27 -- regression guard on the sibling branches"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+        "action": "create",
+        "cases": [
+          "GROUPED: grouped-spreadsheet applies the identical rule -- Weekly, startDate 2026-08-30, endDate 2026-10-03, currentDay 2026-10-05 -> effective end 2026-10-03, and its recalculate() rows carry the same final intervalEndDate, so the table view and the graph view agree",
+          "GROUPED, in-progress: Weekly with currentDay 2026-10-02 and endDate 2026-09-27 -> 2026-10-02 in grouped-spreadsheet too, matching custom-spreadsheet exactly. Guards the duplication the fix depends on"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "A Weekly custom report on a static From/To pair includes every transaction in the final week, not just the transactions dated on the week-start. The report's final bucket must total the same as the sum of the daily buckets covering that same week.",
+        "how_to_verify": "Reports -> Custom Report, Interval Weekly, Date filters Static, From 08/30/2026, To 09/27/2026, Mode Time. Hover the 09/27/2026 bucket and record its Total. Then switch Interval to Daily, set From 09/27/2026 and To 10/02/2026 (the Daily To: picker caps at today -- 10/03 is not offered while the week is in progress), and sum the daily buckets from 09/27 to 10/02. Before the fix the weekly bucket is ~1 day of data (measured 47.98 against siblings of 617.37 and 683.99, shortfall 131.42) and the two figures disagree; after the fix they are equal. NOTE: the two ranges must cover the same days for this to be a valid comparison -- if the week has fully elapsed, compare the weekly bucket against Daily 09/27-10/03.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "The final weekly bucket's intervalEndDate is the same value as the query's end bound: min(getWeekEnd(bucketStart, firstDayOfWeekIdx), currentDay()). It is NOT a fixed date. For To: 09/27/2026 that evaluates to 2026-10-02 while today is 2026-10-02, and to 2026-10-03 once the week has fully elapsed (today >= 2026-10-03). Both this criterion and AC-3 read this one clamped value, so they cannot disagree.",
+        "how_to_verify": "Same configuration as AC-1 in Time mode with the Data Table graph; the final column's drilldown range (ReportTableRow.tsx passes this value to showActivity) must equal the clamped value above. On the unfixed build it ends 09/27/2026 -- the reporter's third screenshot. Because the expected value is a rule, verify it against the app's own current day, not a hardcoded date: if QA runs on or after 2026-10-03 the expected value is 2026-10-03, and before that it is whatever today is, capped at 2026-10-03.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "A weekly report whose final week is still in progress stops at today and does not project into future days. This is the same min() as AC-2, read from its other side: no bucket's intervalEndDate and no query bound may exceed currentDay().",
+        "how_to_verify": "Interval Weekly, Date filters Static, To: a date in the current week. Confirm no intervalEndDate is later than today and the report's total does not exceed the sum of transactions dated up to today. This is covered directly by the in-progress case in tests[]; the browser check confirms the same clamp survives the real picker path.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-4",
+        "check": "The Monthly, Yearly and Daily intervals keep their existing behaviour, and the Spending report is unaffected: only Weekly changes.",
+        "how_to_verify": "Run `yarn workspace @actual-app/web run test`. The Monthly/Daily regression case in tests[0] and both grouped-spreadsheet cases must pass, and the existing spending-spreadsheet.test.ts must still pass. Then in the browser, load Reports -> Spending for a monthly range and confirm its total is unchanged -- spending-spreadsheet builds its own queries and never reaches fetchSpreadsheetQueryData, so it is a guard rather than a target.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "An already-saved weekly report -- one whose endDate was stored as a week-start before this change and which is never re-picked -- renders the full final week after the fix.",
+        "how_to_verify": "Before the fix: create a Weekly + Static report with To: 09/27/2026, save it, reload it from the Reports menu, and confirm its final bucket is a one-day stub -- that is the load path bypassing validateEnd, which is why files[1] widens at the spreadsheet rather than in reportRanges.ts. After the fix, reopen the same saved report WITHOUT touching the From/To pickers and confirm its final bucket now matches the Daily sum over the same week. If instead the implementer widened only in validateEnd, this criterion fails and the fix is incomplete.",
+        "verify": "browser"
+      }
+    ],
+    "qa_script": [
+      "yarn start (or use the already-running $PREVIEW_URL at http://localhost:3001). Open the app and choose 'Try the demo' for a budget with transactions. Reports -> 'Add new widget' -> 'Custom report'.",
+      "Set Interval to Weekly (a Select; its options are Daily/Weekly/Monthly/Yearly). Set Date filters to Static (a plain toggle button, not a menu). The From:/To: pickers then appear.",
+      "CONFIRM THE PRECONDITION: open the To: picker and read its options. They must all be week-START dates (Sundays, in the default firstDayOfWeekIdx). That is why the last week is truncated.",
+      "Set From: 08/30/2026 and To: 09/27/2026. Set Mode to Time. Confirm five weekly buckets render at 08/30, 09/06, 09/13, 09/20, 09/27.",
+      "AC-1: hover each bucket and record its Total. Then switch Interval to Daily, From 09/27/2026, To 10/02/2026 (the Daily To: picker caps at today, so 10/03 is not offered until the week elapses), and sum the daily buckets. On the unfixed build the weekly 09/27 bucket reads ~48 against siblings of ~617 and ~684, and the daily sum exceeds it by ~131. After the fix they are equal.",
+      "AC-2: in Time mode with the Data Table graph, open the final column (09/27/2026) and read its drilldown range. It must equal min(getWeekEnd(2026-09-27, firstDayOfWeekIdx), today) -- 2026-10-02 when QA runs before 2026-10-03, 2026-10-03 once it has. On the unfixed build it reads 09/27/2026. Do not assert a hardcoded date: read the app's current day and apply the rule.",
+      "AC-3: set To: to a date in the current week. Confirm no intervalEndDate is later than today, and that the total does not grow when the range is shortened to end today.",
+      "AC-5: save this weekly report, reload it from the Reports menu, and reopen it WITHOUT touching the From/To pickers. Its final bucket must show the same corrected total. (On a validateEnd-only fix this still reads as a one-day stub.)",
+      "AC-4: repeat the report under Monthly, Yearly and Daily with the same static bounds and confirm the numbers are unchanged from a pre-change run. Then load Reports -> Spending for a monthly range and confirm its total is unchanged.",
+      "Also confirm with a non-default first day of week (Settings -> Preferences): with weeks starting Monday, a bucket labelled 09/28/2026 must end 10/04/2026, not 10/03/2026."
+    ],
+    "risks": [
+      "Widening the effective end bound changes the report's headline total for every weekly custom report whose range ends mid-week: totals go UP, by up to six days of previously-omitted transactions. That is the intended correction, but users who saved weekly reports will see different numbers, and any dashboard widget embedding one changes with it. This warrants a release note.",
+      "The fix duplicates the min(getWeekEnd, currentDay) computation across custom-spreadsheet.ts, grouped-spreadsheet.ts and recalculate.ts. Three copies that must agree is a real maintenance cost; they are kept separate deliberately because the two spreadsheet factories and recalculate each hold their own copy of this logic today. If the implementer extracts a helper, it must be imported by all three and used by both grouped-spreadsheet call sites.",
+      "These factories do not currently route through `boundedRange`, so the clamp is not inherited -- it must be applied explicitly as min(..., currentDay()). Omitting the currentDay() half is the most likely way this fix ships a future-data regression.",
+      "firstDayOfWeekIdx is a user preference and getWeekEnd honours it. recalculate does not currently receive it, so threading it through changes that function's signature; missing a call site would silently produce Sunday weeks for users whose week starts on another day.",
+      "The To: picker clamps Weekly to today (observed directly: an end of 10/31/2026 becomes 10/02/2026). QA must not read that clamp as a symptom of this bug -- it is pre-existing correct behaviour and is the same clamp the fix relies on."
+    ],
+    "out_of_scope": [
+      "The Start:/From: side is already correct -- a week-start is the right floor for a week bucket -- so validateStart is deliberately not touched.",
+      "reportRanges.ts validateEnd is deliberately NOT changed. It is called only from the To: picker (ReportSidebar.tsx:658), so changing it would fix only the picker path while leaving saved reports and dashboard widgets truncated, and returning a widened date would drop the Select out of its matched-option state into defaultLabel (Select.tsx:74-76) and break the picker's own selection display. This is the correction to plan v1, which named validateEnd as the fix site.",
+      "Reports other than Custom Report (Spending, Net Worth, Cash Flow, Balance Forecast) do not reach fetchSpreadsheetQueryData and were not observed to exhibit this. Their behaviour is a regression guard, not a target.",
+      "The +1 / +7 offset buttons and the Live date-range presets are a separate code path (getSpecificRange, which already calls getWeekEnd for weeks) and are not part of this defect.",
+      "Migrating existing saved weekly reports' stored endDate forward on load. AC-5 is met by widening at consumption, which covers them without a data migration; rewriting stored values is a larger change than the defect requires."
+    ],
+    "evidence": [
+      "App under test: $PREVIEW_URL=http://localhost:3001 (Actual v26.9.0, local demo budget via 'Try the demo'), reproduced 2026-10-02 by driving Chromium over that URL.",
+      "REPRODUCTION, reporter's exact configuration: Reports -> Custom Report -> Interval Weekly -> Date filters Static -> From 08/30/2026 -> To 09/27/2026 -> Mode Time. Five weekly buckets render; measuring the recharts geometry gave bucket x-positions 580/780/990/1200/1400, and hovering each captured its tooltip total: 09/13/2026 = 617.37, 09/20/2026 = 683.99, 09/27/2026 = 47.98. The final bucket is a one-day stub roughly 1/15th of its siblings.",
+      "CONTROL, same demo budget, Interval Daily, From 09/27/2026, To 10/02/2026: 10/02/2026 alone reports 179.40, giving a shortfall of 131.42 against the 47.98 the weekly bucket reports for the whole week. Spending demonstrably exists in that week and none of it reaches the weekly bucket.",
+      "The shape reproduced across independent runs, so it is not a one-off of a particular demo dataset: run A gave 09/13=640.66, 09/20=601.60, 09/27=63.19; run B gave 09/13=722.03, 09/20=601.05, 09/27=74.66; run C gave 09/13=617.37, 09/20=683.99, 09/27=47.98. In every run the final bucket is far below its siblings.",
+      "PRECONDITION CONFIRMED IN THE APP: opening the To: picker with Interval=Weekly listed 53 options, every one a Sunday -- 09/27/2026, 09/20/2026, 09/13/2026, 09/06/2026, 08/30/2026, 08/23/2026, 08/16/2026, 08/09/2026 ... 09/28/2025. The pickers cannot express a week-end, which is the precondition for the bug.",
+      "CLAMP OBSERVED IN THE APP: with Interval Weekly and Date filters Static, a To: value of 10/31/2026 became 10/02/2026 (today) in the picker button. That is `boundedRange`'s Weekly branch (reportRanges.ts:155-159, `latest = monthUtils.currentDay()`), and it is the same clamp the fix must preserve.",
+      "UNIT-LEVEL INDEPENDENT VERIFICATION (test written, run, and watched fail on current code): with startDate 2026-08-30 and endDate 2026-09-27, `weekRangeInclusive` returns ['2026-08-30','2026-09-06','2026-09-13','2026-09-20','2026-09-27'] -- five buckets -- while `getWeekEnd('2026-09-27','0')` = '2026-10-03' and `differenceInCalendarDays('2026-10-03','2026-09-27')` = 6. Six days of the week the report renders a bucket for are excluded by makeQuery's day-granular `$lte` (makeQuery.ts:19-22,31-35, `intervalFilter='$day'` for Weekly).",
+      "validateEnd CONFIRMED UN-WIDENED: calling it directly with interval 'Weekly', start 2026-08-30, end 2026-09-27 returned end='2026-09-27' unchanged, while the same call with 'Monthly' returned '2017-01-31' (a widened month end). Weekly is the only interval falling through to `default: dateEnd = end` (reportRanges.ts:70-73).",
+      "THE CORRECTED RULE, SIMULATED AND RUN rather than asserted from reading: with currentDay='2026-10-02' and end='2026-09-27', min(getWeekEnd, currentDay) = '2026-10-02'; with currentDay='2026-10-05' the same input yields '2026-10-03'; and `getWeekEnd('2026-09-28','1')` = '2026-10-04', confirming the Monday-start case. This is the single value both AC-2 and AC-3 read, which is what makes them compatible.",
+      "THE REPORTER'S OWN CASE CHECKS OUT: getWeekEnd('2024-10-28','1') = '2024-11-03', exactly the 'Sun 03/11/2024' week end the reporter expected their To: Mon 28/10/2024 to cover.",
+      "TEST-CLOCK CONSTRAINT, ESTABLISHED BY RUNNING IT: monthUtils.currentDay() returns the hardcoded '2017-01-01' under this package's vitest setup (months.ts:173-179 short-circuits on global.IS_TESTING, which setupTests.ts:8 sets unconditionally), so a suite cannot pin the clock with fake timers -- currentDay() never reads the clock. `vi.spyOn(monthUtils, 'currentDay').mockReturnValue(...)` DOES work: verified in a test that pinned it to '2026-10-02' and '2026-12-31' and read both values back. The tests[] below use that mechanism, and any test asserting a bound strictly between the clamp and the untruncated week end needs it.",
+      "CALLER SWEEP (run on this checkout, correcting v1's fix site): validateEnd has exactly ONE caller -- ReportSidebar.tsx:658, the To: picker. But CustomReport.tsx assigns a saved report's dates straight into state in two places without calling validateEnd: `useState(loadReport.startDate/endDate)` at lines 268-269 and `setReportData` at lines 751-753. `onSetStartAndEndDates` only recomputes dates when `isDateStatic` is false (i.e. the Live path), so a static saved report never re-enters validateEnd. createCustomSpreadsheet is called from CustomReport.tsx:551 and GetCardData.tsx:146; createGroupedSpreadsheet from CustomReport.tsx:515 and GetCardData.tsx:127; fetchSpreadsheetQueryData only from those two factories -- spending-spreadsheet does not use it. This is why a validateEnd-only fix would leave saved reports and dashboard widgets truncated, and why files[] widens at the consumption sites instead.",
+      "CONSUMER SWEEP for the second symptom: intervalEndDate is read by StackedBarGraph.tsx:319, LineGraph.tsx:203 and ReportTableRow.tsx:172, where it becomes the drilldown's showActivity endDate. All three read what custom-spreadsheet.ts and recalculate.ts produce, so correcting it there fixes the tooltip and the drilldown with no change to the consumers.",
+      "No console errors were emitted during the reproduction beyond a pre-existing nested-button hydration warning from a dashboard widget -- this is a silent data-truncation defect, not a crash, which is why it survived in a released build.",
+      "Scratch Playwright script and scratch vitest file used for the reproduction were deleted; the working tree is clean apart from the untracked plan/ directory."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Add `case 'Weekly'` to validateEnd in reportRanges.ts setting dateEnd = getWeekEnd(end, firstDayOfWeekIdx) -- the fix site named by plan v1.",
+        "rejected_because": "Correct only for reports whose range the user re-picks. validateEnd has a single caller (the To: picker), and a saved static report is loaded straight into state in CustomReport.tsx without passing through it, so every already-saved weekly report and every dashboard widget rendering one keeps the truncated bound. It also returns a date that is not in the picker's own week-start option list, which drops the Select into defaultLabel and breaks its selection display."
+      },
+      {
+        "approach": "Widen the end bound inside makeQuery.",
+        "rejected_because": "makeQuery is shared, and widening there would apply to every caller including paths this reproduction never exercised. The two factories that own the custom report's Weekly bucketing are the narrow site, and they are the only ones that reach this bug."
+      },
+      {
+        "approach": "Drop the trailing bucket when its week is not fully covered by the range.",
+        "rejected_because": "Makes the truncation consistent rather than correct. The reporter's expectation -- that the last bucket covers the whole week it is labelled with -- is the reasonable one, and dropping the bucket discards a week of data outright while making the bucket count depend on where the range ends."
+      },
+      {
+        "approach": "Change the To: picker to offer week-END dates instead of week-starts.",
+        "rejected_because": "Moves the problem rather than fixing it. weekRangeInclusive snaps whatever it is given to a week-start, so buckets stay correct, but the stored endDate would still be a raw bound the query applies verbatim, and saved reports would keep the old shape. The bound is wrong at the query, not at the picker."
+      },
+      {
+        "approach": "Post-process the query results in custom-spreadsheet to redistribute the excluded days into the final bucket.",
+        "rejected_because": "The excluded transactions are never fetched -- the $lte filter runs in SQL against the database. There is nothing downstream to redistribute."
+      }
+    ],
+    "assumptions": [
+      "The intended semantics are that a Weekly bucket covers the whole week it is labelled with, matching the reporter's expectation and how Monthly/Yearly buckets already behave.",
+      "The first day of the week is governed by the user's firstDayOfWeekIdx preference; the fix reads it rather than assuming Sunday. The reproduction ran with the default (Sunday), giving 2026-08-30/09-06/... as week-starts and a 09/27 week ending 10/03."
+    ],
+    "unknowns": [
+      "Whether the maintainers would rather this landed as a breaking-change release note, given every existing weekly report's total will rise."
+    ],
+    "residual_risks": [
+      "The saved-report reload path was traced in code (setReportData assigns endDate without validateEnd) but NOT reproduced end-to-end in a browser before the fix -- it cannot be, since today it is the same picker path. AC-5 exists to verify it after the change; if widening only landed in validateEnd, AC-5 is where that shows up.",
+      "Three copies of the clamp must stay in agreement across custom-spreadsheet.ts, grouped-spreadsheet.ts and recalculate.ts. Nothing enforces that at compile time; the grouped-spreadsheet test cases in tests[1] are the only guard."
+    ],
+    "mode": "committed"
+  },
   "touch_paths": [],
   "acceptance": [],
   "planned_route": [
@@ -85,327 +246,9 @@
   "validated_from": "debug",
   "validated_at": "2026-10-02T06:08:49.902Z",
   "validated_ac_changes": [],
-  "validated_work_order": {
-    "issue": 3,
-    "version": 2,
-    "kind": "bug",
-    "reproduced": true,
-    "confidence": 86,
-    "confidence_rationale": "Reproduced twice in a live browser against the demo budget (the reporter's exact configuration, plus a Daily control that isolates the shortfall), and independently re-derived at unit level with a test I wrote and ran: weekRangeInclusive emits a bucket for days makeQuery's $lte bound excludes. The corrected clamp rule was then verified by simulating the proposed validateEnd branch in a test rather than asserting it from reading. What I have NOT verified is the saved-report reload path end-to-end in a browser (I traced it in code: setReportData assigns endDate without calling validateEnd) -- that is a residual risk, not an open question about the defect, and it argues for the load-path widening named in files[1].",
-    "understanding": "A Weekly custom report on a static From/To pair silently drops six of the seven days of the final week. The From: and To: pickers offer week-START dates only -- I confirmed this in the running app, where the To: menu listed 53 options that are all Sundays (09/27, 09/20, 09/13, 09/06, 08/30, 08/23, 08/16, ... 09/28/2025). Choosing To: 09/27/2026 therefore produces a report whose query is bounded by `date <= 2026-09-27` at day granularity, while `weekRangeInclusive` still renders a full-looking bucket labelled 09/27. Reproduced on this checkout (Actual v26.9.0, local demo budget, 2026-10-02): Weekly + Static + From 08/30/2026 + To 09/27/2026 + Time mode renders five weekly buckets at x-positions 580/780/990/1200/1400, and the per-bucket tooltip totals for the three that hover cleanly were 617.37 (09/13), 683.99 (09/20) and 47.98 (09/27) -- the final bucket is a one-day stub. The Daily control over the same final week reported 179.40 for 10/02 alone, giving a shortfall of 131.42 against the 47.98 the weekly bucket reports. A second run reproduced the same shape independently (47.98 vs siblings 722.03 and 601.05 in a prior run; 74.66 vs 195.98 for a single later day in another). Separately, and independently observable: when the interval is Weekly the To: picker clamps the stored value to today -- selecting Static with an end of 10/31/2026 produced a To: button reading 10/02/2026. That clamp is the same `boundedRange` Weekly branch that will clamp the fix, and it is why the correct end bound is a rule, not a fixed date.",
-    "root_cause": "`validateEnd` in reportRanges.ts normalises the end bound for Monthly (getMonthEnd) and Yearly (+'-12-31') but sends Weekly through `default: dateEnd = end`, so the report's endDate stays the week-START the picker can only offer. `makeQuery` then applies that value as a day-granular `$lte`, admitting only the first day of the final week, while `weekRangeInclusive` independently emits a bucket for that whole week -- so the chart renders a complete-looking seven-day column filled from one day. Weekly is the only interval whose pickers yield sub-period dates while its query bound is never widened. The final bucket's `intervalEndDate` is a second, separate wrong value with the same origin: both custom-spreadsheet.ts and recalculate.ts compute `subDays(intervals[index + 1], 1)` for every bucket except the last, which falls back to the raw `endDate` -- the same un-widened week-start that is stored on the report and read by the drilldown in ReportTableRow.tsx.",
-    "approach": "ONE rule, stated once, and every value in this change is an instance of it:\n\n  effectiveEnd = min( getWeekEnd(end, firstDayOfWeekIdx), currentDay() )\n\n`getWeekEnd` supplies the week's true last day; `currentDay()` is the existing `boundedRange` Weekly clamp, which is what stops an in-progress week projecting into the future. The min of the two is the single end bound, and both the query's `$lte` and the final bucket's `intervalEndDate` must read that same clamped value -- which is what makes AC-2 and AC-3 compatible instead of contradictory.\n\nFix site: normalise the Weekly end bound in BOTH places the bound enters, so that the picker path and the saved-report load path both get it. This is a correction to v1, which named `validateEnd` alone; tracing the callers showed that is incomplete. `validateEnd` is called from exactly one place -- the To: picker's onChange in ReportSidebar.tsx:658 -- so a report whose range is never re-picked never reaches it. `CustomReport.tsx` `setReportData` assigns `input.startDate`/`input.endDate` straight into state (lines ~751-753) with no `validateEnd` call, and the initial `useState(loadReport.startDate/endDate)` (lines 268-269) is the same story. So every already-saved weekly report, and every dashboard widget rendering one via GetCardData.tsx -> createCustomSpreadsheet/createGroupedSpreadsheet, keeps the truncated bound under a validateEnd-only fix. Widening at the consumption sites (the two spreadsheet factories) covers picker, saved-report and dashboard-widget paths with one mechanism, and leaves the To: picker's stored value alone -- which matters, because that value is also the Select's `value` and its option list is week-starts, so returning a widened date from validateEnd would put the control into `defaultLabel` fallback (Select.tsx:74-76, `targetOption` found by exact match against options) and break the picker's own selection display. Normalising downstream avoids that entirely.\n\nThe clamp must be `currentDay()`, not a bare `getWeekEnd`: without it, a report whose final week is still in progress would pull in future-dated rows. Do not bypass `boundedRange` to achieve the widening -- if the normalisation happens inside the spreadsheet factories it must apply the same `min` with `currentDay()` explicitly, because those factories do not currently route through `boundedRange` at all.\n\nDo NOT change `validateEnd`. Its Weekly branch is already correct in the sense that matters here (it does not over-widen), and its clamp behaviour is what AC-3 depends on; touching it would also change what the picker stores, for the Select-fallback reason above.\n\nSecond, correct the final bucket's `intervalEndDate` in custom-spreadsheet.ts and recalculate.ts so it reads the same clamped bound the query used, rather than the raw `endDate`. Today both compute `subDays(intervals[index + 1], 1)` for every bucket except the last, which falls back to the raw endDate. Keep the two files' copies identical -- they are duplicated today and must not diverge. Note the bucket's `intervalStartDate` is correct already (the week-start), so only the end is wrong.\n\nCaller sweep, run on this checkout: `createCustomSpreadsheet` is called from CustomReport.tsx:551 and GetCardData.tsx:146; `createGroupedSpreadsheet` from CustomReport.tsx:515 and GetCardData.tsx:127. `fetchSpreadsheetQueryData` (which calls `makeQuery`) is called from exactly those two spreadsheet factories plus grouped-spreadsheet.ts -- NOT from spending-spreadsheet, which builds its own queries and does not go through the custom report's From/To picker. `intervalEndDate` is consumed by StackedBarGraph.tsx:319, LineGraph.tsx:203 and ReportTableRow.tsx:172 (the drilldown's `showActivity` endDate) -- all three read the value these two files produce, so correcting it there fixes the tooltip and the drilldown together with no change to the consumers.",
-    "files": [
-      {
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.ts",
-        "action": "edit",
-        "change": "Compute the effective end bound once, near the top of the returned async function, as `interval === 'Weekly' ? min(monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx), monthUtils.currentDay()) : endDate`, and use that value for BOTH the `endDate` passed to `fetchSpreadsheetQueryData` (so makeQuery's `$lte` admits the whole final week, clamped to today) and the final bucket's `intervalEndDate`. Leave `startDate`, the `intervals` array from `weekRangeInclusive`, and every non-Weekly branch byte-identical: Daily, Monthly and Yearly keep their raw endDate. Do not widen the range passed to `weekRangeInclusive` -- the bucket list must stay exactly as it is; only the query bound and the last bucket's label change.",
-        "why": "This is the site that covers all three entry paths (picker, saved-report load via setReportData, and dashboard widgets via GetCardData), none of which besides the picker reach validateEnd."
-      },
-      {
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/grouped-spreadsheet.ts",
-        "action": "edit",
-        "change": "Apply the identical effective-end-bound computation as in custom-spreadsheet.ts to the `endDate` passed to `fetchSpreadsheetQueryData`. grouped-spreadsheet calls the same `fetchSpreadsheetQueryData` and the same `recalculate`, so leaving it untouched would make the grouped/table view of the same weekly report disagree with the graph view -- same numbers, different source.",
-        "why": "It shares makeQuery and recalculate with custom-spreadsheet; the two must not diverge or the same report renders differently depending on which spreadsheet view is active."
-      },
-      {
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/recalculate.ts",
-        "action": "edit",
-        "change": "Change the final interval's `intervalEndDate` so it reports the same effective end bound the query used: `interval === 'Weekly' ? min(getWeekEnd(intervals[index], firstDayOfWeekIdx), currentDay()) : endDate`, replacing the raw-`endDate` fallback. Add a `firstDayOfWeekIdx` prop to the signature (it is not currently passed) and thread it from both callers, custom-spreadsheet.ts:275 and grouped-spreadsheet.ts:96/112, since getWeekEnd honours the user's first-day-of-week preference and must not assume Sunday. Non-final buckets keep `subDays(intervals[index + 1], 1)` unchanged. This must state the same rule, in the same form, as custom-spreadsheet.ts.",
-        "why": "This is the value ReportTableRow.tsx:172 hands to the drilldown's showActivity, and the tooltip value the reporter screenshotted as wrong. Fixing only the query bound would make the numbers right and the label still lie."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
-        "action": "create",
-        "cases": [
-          "The single rule, elapsed week: with Weekly, startDate 2026-08-30, endDate 2026-10-03 and currentDay pinned to 2026-10-05, the effective end bound is 2026-10-03 and the final bucket's intervalEndDate is 2026-10-03 (the week's true end). Fails today -- the current code reports 2026-10-03 only by coincidence of the raw endDate; with the original endDate 2026-09-27 it reports 2026-09-27, which is the bug",
-          "The single rule, in-progress week: with Weekly, startDate 2026-08-30, endDate 2026-09-27 and currentDay pinned to 2026-10-02, the effective end bound and the final bucket's intervalEndDate are BOTH 2026-10-02 -- min(getWeekEnd, currentDay()). This is the clamp, not a contradiction of the case above; the two cases differ only in the pinned currentDay",
-          "The effective end bound is what the query receives: assert that fetchSpreadsheetQueryData (or the makeQuery it wraps) is called with an endDate of 2026-10-03 for an elapsed week, so the widening reaches the `$lte` filter and not only the label. Mock send/aqlQuery as the sibling spending-spreadsheet.test.ts does",
-          "Non-final buckets are unchanged: for Weekly the intermediate buckets keep intervalEndDate = subDays(nextBucket, 1) -- 08/30 -> 09/05, 09/06 -> 09/12, 09/13 -> 09/19, 09/20 -> 09/26 -- proving only the final bucket's value moved",
-          "firstDayOfWeekIdx is honoured, not hardcoded to Sunday: with firstDayOfWeekIdx '1' (Monday), endDate 2026-09-28 and currentDay pinned past the week, the effective end bound is 2026-10-04, not 2026-10-03",
-          "Monthly and Daily are untouched: Monthly with endDate 2026-09 keeps the existing getMonthEnd behaviour and Daily with endDate 2026-09-27 keeps intervalEndDate 2026-09-27 -- regression guard on the sibling branches"
-        ]
-      },
-      {
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
-        "action": "create",
-        "cases": [
-          "GROUPED: grouped-spreadsheet applies the identical rule -- Weekly, startDate 2026-08-30, endDate 2026-10-03, currentDay 2026-10-05 -> effective end 2026-10-03, and its recalculate() rows carry the same final intervalEndDate, so the table view and the graph view agree",
-          "GROUPED, in-progress: Weekly with currentDay 2026-10-02 and endDate 2026-09-27 -> 2026-10-02 in grouped-spreadsheet too, matching custom-spreadsheet exactly. Guards the duplication the fix depends on"
-        ]
-      }
-    ],
-    "acceptance": [
-      {
-        "id": "AC-1",
-        "check": "A Weekly custom report on a static From/To pair includes every transaction in the final week, not just the transactions dated on the week-start. The report's final bucket must total the same as the sum of the daily buckets covering that same week.",
-        "how_to_verify": "Reports -> Custom Report, Interval Weekly, Date filters Static, From 08/30/2026, To 09/27/2026, Mode Time. Hover the 09/27/2026 bucket and record its Total. Then switch Interval to Daily, set From 09/27/2026 and To 10/02/2026 (the Daily To: picker caps at today -- 10/03 is not offered while the week is in progress), and sum the daily buckets from 09/27 to 10/02. Before the fix the weekly bucket is ~1 day of data (measured 47.98 against siblings of 617.37 and 683.99, shortfall 131.42) and the two figures disagree; after the fix they are equal. NOTE: the two ranges must cover the same days for this to be a valid comparison -- if the week has fully elapsed, compare the weekly bucket against Daily 09/27-10/03.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-2",
-        "check": "The final weekly bucket's intervalEndDate is the same value as the query's end bound: min(getWeekEnd(bucketStart, firstDayOfWeekIdx), currentDay()). It is NOT a fixed date. For To: 09/27/2026 that evaluates to 2026-10-02 while today is 2026-10-02, and to 2026-10-03 once the week has fully elapsed (today >= 2026-10-03). Both this criterion and AC-3 read this one clamped value, so they cannot disagree.",
-        "how_to_verify": "Same configuration as AC-1 in Time mode with the Data Table graph; the final column's drilldown range (ReportTableRow.tsx passes this value to showActivity) must equal the clamped value above. On the unfixed build it ends 09/27/2026 -- the reporter's third screenshot. Because the expected value is a rule, verify it against the app's own current day, not a hardcoded date: if QA runs on or after 2026-10-03 the expected value is 2026-10-03, and before that it is whatever today is, capped at 2026-10-03.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-3",
-        "check": "A weekly report whose final week is still in progress stops at today and does not project into future days. This is the same min() as AC-2, read from its other side: no bucket's intervalEndDate and no query bound may exceed currentDay().",
-        "how_to_verify": "Interval Weekly, Date filters Static, To: a date in the current week. Confirm no intervalEndDate is later than today and the report's total does not exceed the sum of transactions dated up to today. This is covered directly by the in-progress case in tests[]; the browser check confirms the same clamp survives the real picker path.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-4",
-        "check": "The Monthly, Yearly and Daily intervals keep their existing behaviour, and the Spending report is unaffected: only Weekly changes.",
-        "how_to_verify": "Run `yarn workspace @actual-app/web run test`. The Monthly/Daily regression case in tests[0] and both grouped-spreadsheet cases must pass, and the existing spending-spreadsheet.test.ts must still pass. Then in the browser, load Reports -> Spending for a monthly range and confirm its total is unchanged -- spending-spreadsheet builds its own queries and never reaches fetchSpreadsheetQueryData, so it is a guard rather than a target.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-5",
-        "check": "An already-saved weekly report -- one whose endDate was stored as a week-start before this change and which is never re-picked -- renders the full final week after the fix.",
-        "how_to_verify": "Before the fix: create a Weekly + Static report with To: 09/27/2026, save it, reload it from the Reports menu, and confirm its final bucket is a one-day stub -- that is the load path bypassing validateEnd, which is why files[1] widens at the spreadsheet rather than in reportRanges.ts. After the fix, reopen the same saved report WITHOUT touching the From/To pickers and confirm its final bucket now matches the Daily sum over the same week. If instead the implementer widened only in validateEnd, this criterion fails and the fix is incomplete.",
-        "verify": "browser"
-      }
-    ],
-    "qa_script": [
-      "yarn start (or use the already-running $PREVIEW_URL at http://localhost:3001). Open the app and choose 'Try the demo' for a budget with transactions. Reports -> 'Add new widget' -> 'Custom report'.",
-      "Set Interval to Weekly (a Select; its options are Daily/Weekly/Monthly/Yearly). Set Date filters to Static (a plain toggle button, not a menu). The From:/To: pickers then appear.",
-      "CONFIRM THE PRECONDITION: open the To: picker and read its options. They must all be week-START dates (Sundays, in the default firstDayOfWeekIdx). That is why the last week is truncated.",
-      "Set From: 08/30/2026 and To: 09/27/2026. Set Mode to Time. Confirm five weekly buckets render at 08/30, 09/06, 09/13, 09/20, 09/27.",
-      "AC-1: hover each bucket and record its Total. Then switch Interval to Daily, From 09/27/2026, To 10/02/2026 (the Daily To: picker caps at today, so 10/03 is not offered until the week elapses), and sum the daily buckets. On the unfixed build the weekly 09/27 bucket reads ~48 against siblings of ~617 and ~684, and the daily sum exceeds it by ~131. After the fix they are equal.",
-      "AC-2: in Time mode with the Data Table graph, open the final column (09/27/2026) and read its drilldown range. It must equal min(getWeekEnd(2026-09-27, firstDayOfWeekIdx), today) -- 2026-10-02 when QA runs before 2026-10-03, 2026-10-03 once it has. On the unfixed build it reads 09/27/2026. Do not assert a hardcoded date: read the app's current day and apply the rule.",
-      "AC-3: set To: to a date in the current week. Confirm no intervalEndDate is later than today, and that the total does not grow when the range is shortened to end today.",
-      "AC-5: save this weekly report, reload it from the Reports menu, and reopen it WITHOUT touching the From/To pickers. Its final bucket must show the same corrected total. (On a validateEnd-only fix this still reads as a one-day stub.)",
-      "AC-4: repeat the report under Monthly, Yearly and Daily with the same static bounds and confirm the numbers are unchanged from a pre-change run. Then load Reports -> Spending for a monthly range and confirm its total is unchanged.",
-      "Also confirm with a non-default first day of week (Settings -> Preferences): with weeks starting Monday, a bucket labelled 09/28/2026 must end 10/04/2026, not 10/03/2026."
-    ],
-    "risks": [
-      "Widening the effective end bound changes the report's headline total for every weekly custom report whose range ends mid-week: totals go UP, by up to six days of previously-omitted transactions. That is the intended correction, but users who saved weekly reports will see different numbers, and any dashboard widget embedding one changes with it. This warrants a release note.",
-      "The fix duplicates the min(getWeekEnd, currentDay) computation across custom-spreadsheet.ts, grouped-spreadsheet.ts and recalculate.ts. Three copies that must agree is a real maintenance cost; they are kept separate deliberately because the two spreadsheet factories and recalculate each hold their own copy of this logic today. If the implementer extracts a helper, it must be imported by all three and used by both grouped-spreadsheet call sites.",
-      "These factories do not currently route through `boundedRange`, so the clamp is not inherited -- it must be applied explicitly as min(..., currentDay()). Omitting the currentDay() half is the most likely way this fix ships a future-data regression.",
-      "firstDayOfWeekIdx is a user preference and getWeekEnd honours it. recalculate does not currently receive it, so threading it through changes that function's signature; missing a call site would silently produce Sunday weeks for users whose week starts on another day.",
-      "The To: picker clamps Weekly to today (observed directly: an end of 10/31/2026 becomes 10/02/2026). QA must not read that clamp as a symptom of this bug -- it is pre-existing correct behaviour and is the same clamp the fix relies on."
-    ],
-    "out_of_scope": [
-      "The Start:/From: side is already correct -- a week-start is the right floor for a week bucket -- so validateStart is deliberately not touched.",
-      "reportRanges.ts validateEnd is deliberately NOT changed. It is called only from the To: picker (ReportSidebar.tsx:658), so changing it would fix only the picker path while leaving saved reports and dashboard widgets truncated, and returning a widened date would drop the Select out of its matched-option state into defaultLabel (Select.tsx:74-76) and break the picker's own selection display. This is the correction to plan v1, which named validateEnd as the fix site.",
-      "Reports other than Custom Report (Spending, Net Worth, Cash Flow, Balance Forecast) do not reach fetchSpreadsheetQueryData and were not observed to exhibit this. Their behaviour is a regression guard, not a target.",
-      "The +1 / +7 offset buttons and the Live date-range presets are a separate code path (getSpecificRange, which already calls getWeekEnd for weeks) and are not part of this defect.",
-      "Migrating existing saved weekly reports' stored endDate forward on load. AC-5 is met by widening at consumption, which covers them without a data migration; rewriting stored values is a larger change than the defect requires."
-    ],
-    "evidence": [
-      "App under test: $PREVIEW_URL=http://localhost:3001 (Actual v26.9.0, local demo budget via 'Try the demo'), reproduced 2026-10-02 by driving Chromium over that URL.",
-      "REPRODUCTION, reporter's exact configuration: Reports -> Custom Report -> Interval Weekly -> Date filters Static -> From 08/30/2026 -> To 09/27/2026 -> Mode Time. Five weekly buckets render; measuring the recharts geometry gave bucket x-positions 580/780/990/1200/1400, and hovering each captured its tooltip total: 09/13/2026 = 617.37, 09/20/2026 = 683.99, 09/27/2026 = 47.98. The final bucket is a one-day stub roughly 1/15th of its siblings.",
-      "CONTROL, same demo budget, Interval Daily, From 09/27/2026, To 10/02/2026: 10/02/2026 alone reports 179.40, giving a shortfall of 131.42 against the 47.98 the weekly bucket reports for the whole week. Spending demonstrably exists in that week and none of it reaches the weekly bucket.",
-      "The shape reproduced across independent runs, so it is not a one-off of a particular demo dataset: run A gave 09/13=640.66, 09/20=601.60, 09/27=63.19; run B gave 09/13=722.03, 09/20=601.05, 09/27=74.66; run C gave 09/13=617.37, 09/20=683.99, 09/27=47.98. In every run the final bucket is far below its siblings.",
-      "PRECONDITION CONFIRMED IN THE APP: opening the To: picker with Interval=Weekly listed 53 options, every one a Sunday -- 09/27/2026, 09/20/2026, 09/13/2026, 09/06/2026, 08/30/2026, 08/23/2026, 08/16/2026, 08/09/2026 ... 09/28/2025. The pickers cannot express a week-end, which is the precondition for the bug.",
-      "CLAMP OBSERVED IN THE APP: with Interval Weekly and Date filters Static, a To: value of 10/31/2026 became 10/02/2026 (today) in the picker button. That is `boundedRange`'s Weekly branch (reportRanges.ts:155-159, `latest = monthUtils.currentDay()`), and it is the same clamp the fix must preserve.",
-      "UNIT-LEVEL INDEPENDENT VERIFICATION (test written, run, and watched fail on current code): with startDate 2026-08-30 and endDate 2026-09-27, `weekRangeInclusive` returns ['2026-08-30','2026-09-06','2026-09-13','2026-09-20','2026-09-27'] -- five buckets -- while `getWeekEnd('2026-09-27','0')` = '2026-10-03' and `differenceInCalendarDays('2026-10-03','2026-09-27')` = 6. Six days of the week the report renders a bucket for are excluded by makeQuery's day-granular `$lte` (makeQuery.ts:19-22,31-35, `intervalFilter='$day'` for Weekly).",
-      "validateEnd CONFIRMED UN-WIDENED: calling it directly with interval 'Weekly', start 2026-08-30, end 2026-09-27 returned end='2026-09-27' unchanged, while the same call with 'Monthly' returned '2017-01-31' (a widened month end). Weekly is the only interval falling through to `default: dateEnd = end` (reportRanges.ts:70-73).",
-      "THE CORRECTED RULE, SIMULATED AND RUN rather than asserted from reading: with currentDay='2026-10-02' and end='2026-09-27', min(getWeekEnd, currentDay) = '2026-10-02'; with currentDay='2026-10-05' the same input yields '2026-10-03'; and `getWeekEnd('2026-09-28','1')` = '2026-10-04', confirming the Monday-start case. This is the single value both AC-2 and AC-3 read, which is what makes them compatible.",
-      "THE REPORTER'S OWN CASE CHECKS OUT: getWeekEnd('2024-10-28','1') = '2024-11-03', exactly the 'Sun 03/11/2024' week end the reporter expected their To: Mon 28/10/2024 to cover.",
-      "TEST-CLOCK CONSTRAINT, ESTABLISHED BY RUNNING IT: monthUtils.currentDay() returns the hardcoded '2017-01-01' under this package's vitest setup (months.ts:173-179 short-circuits on global.IS_TESTING, which setupTests.ts:8 sets unconditionally), so a suite cannot pin the clock with fake timers -- currentDay() never reads the clock. `vi.spyOn(monthUtils, 'currentDay').mockReturnValue(...)` DOES work: verified in a test that pinned it to '2026-10-02' and '2026-12-31' and read both values back. The tests[] below use that mechanism, and any test asserting a bound strictly between the clamp and the untruncated week end needs it.",
-      "CALLER SWEEP (run on this checkout, correcting v1's fix site): validateEnd has exactly ONE caller -- ReportSidebar.tsx:658, the To: picker. But CustomReport.tsx assigns a saved report's dates straight into state in two places without calling validateEnd: `useState(loadReport.startDate/endDate)` at lines 268-269 and `setReportData` at lines 751-753. `onSetStartAndEndDates` only recomputes dates when `isDateStatic` is false (i.e. the Live path), so a static saved report never re-enters validateEnd. createCustomSpreadsheet is called from CustomReport.tsx:551 and GetCardData.tsx:146; createGroupedSpreadsheet from CustomReport.tsx:515 and GetCardData.tsx:127; fetchSpreadsheetQueryData only from those two factories -- spending-spreadsheet does not use it. This is why a validateEnd-only fix would leave saved reports and dashboard widgets truncated, and why files[] widens at the consumption sites instead.",
-      "CONSUMER SWEEP for the second symptom: intervalEndDate is read by StackedBarGraph.tsx:319, LineGraph.tsx:203 and ReportTableRow.tsx:172, where it becomes the drilldown's showActivity endDate. All three read what custom-spreadsheet.ts and recalculate.ts produce, so correcting it there fixes the tooltip and the drilldown with no change to the consumers.",
-      "No console errors were emitted during the reproduction beyond a pre-existing nested-button hydration warning from a dashboard widget -- this is a silent data-truncation defect, not a crash, which is why it survived in a released build.",
-      "Scratch Playwright script and scratch vitest file used for the reproduction were deleted; the working tree is clean apart from the untracked plan/ directory."
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Add `case 'Weekly'` to validateEnd in reportRanges.ts setting dateEnd = getWeekEnd(end, firstDayOfWeekIdx) -- the fix site named by plan v1.",
-        "rejected_because": "Correct only for reports whose range the user re-picks. validateEnd has a single caller (the To: picker), and a saved static report is loaded straight into state in CustomReport.tsx without passing through it, so every already-saved weekly report and every dashboard widget rendering one keeps the truncated bound. It also returns a date that is not in the picker's own week-start option list, which drops the Select into defaultLabel and breaks its selection display."
-      },
-      {
-        "approach": "Widen the end bound inside makeQuery.",
-        "rejected_because": "makeQuery is shared, and widening there would apply to every caller including paths this reproduction never exercised. The two factories that own the custom report's Weekly bucketing are the narrow site, and they are the only ones that reach this bug."
-      },
-      {
-        "approach": "Drop the trailing bucket when its week is not fully covered by the range.",
-        "rejected_because": "Makes the truncation consistent rather than correct. The reporter's expectation -- that the last bucket covers the whole week it is labelled with -- is the reasonable one, and dropping the bucket discards a week of data outright while making the bucket count depend on where the range ends."
-      },
-      {
-        "approach": "Change the To: picker to offer week-END dates instead of week-starts.",
-        "rejected_because": "Moves the problem rather than fixing it. weekRangeInclusive snaps whatever it is given to a week-start, so buckets stay correct, but the stored endDate would still be a raw bound the query applies verbatim, and saved reports would keep the old shape. The bound is wrong at the query, not at the picker."
-      },
-      {
-        "approach": "Post-process the query results in custom-spreadsheet to redistribute the excluded days into the final bucket.",
-        "rejected_because": "The excluded transactions are never fetched -- the $lte filter runs in SQL against the database. There is nothing downstream to redistribute."
-      }
-    ],
-    "assumptions": [
-      "The intended semantics are that a Weekly bucket covers the whole week it is labelled with, matching the reporter's expectation and how Monthly/Yearly buckets already behave.",
-      "The first day of the week is governed by the user's firstDayOfWeekIdx preference; the fix reads it rather than assuming Sunday. The reproduction ran with the default (Sunday), giving 2026-08-30/09-06/... as week-starts and a 09/27 week ending 10/03."
-    ],
-    "unknowns": [
-      "Whether the maintainers would rather this landed as a breaking-change release note, given every existing weekly report's total will rise."
-    ],
-    "residual_risks": [
-      "The saved-report reload path was traced in code (setReportData assigns endDate without validateEnd) but NOT reproduced end-to-end in a browser before the fix -- it cannot be, since today it is the same picker path. AC-5 exists to verify it after the change; if widening only landed in validateEnd, AC-5 is where that shows up.",
-      "Three copies of the clamp must stay in agreement across custom-spreadsheet.ts, grouped-spreadsheet.ts and recalculate.ts. Nothing enforces that at compile time; the grouped-spreadsheet test cases in tests[1] are the only guard."
-    ]
-  },
-  "approved_work_order": {
-    "issue": 3,
-    "version": 2,
-    "kind": "bug",
-    "reproduced": true,
-    "confidence": 86,
-    "confidence_rationale": "Reproduced twice in a live browser against the demo budget (the reporter's exact configuration, plus a Daily control that isolates the shortfall), and independently re-derived at unit level with a test I wrote and ran: weekRangeInclusive emits a bucket for days makeQuery's $lte bound excludes. The corrected clamp rule was then verified by simulating the proposed validateEnd branch in a test rather than asserting it from reading. What I have NOT verified is the saved-report reload path end-to-end in a browser (I traced it in code: setReportData assigns endDate without calling validateEnd) -- that is a residual risk, not an open question about the defect, and it argues for the load-path widening named in files[1].",
-    "understanding": "A Weekly custom report on a static From/To pair silently drops six of the seven days of the final week. The From: and To: pickers offer week-START dates only -- I confirmed this in the running app, where the To: menu listed 53 options that are all Sundays (09/27, 09/20, 09/13, 09/06, 08/30, 08/23, 08/16, ... 09/28/2025). Choosing To: 09/27/2026 therefore produces a report whose query is bounded by `date <= 2026-09-27` at day granularity, while `weekRangeInclusive` still renders a full-looking bucket labelled 09/27. Reproduced on this checkout (Actual v26.9.0, local demo budget, 2026-10-02): Weekly + Static + From 08/30/2026 + To 09/27/2026 + Time mode renders five weekly buckets at x-positions 580/780/990/1200/1400, and the per-bucket tooltip totals for the three that hover cleanly were 617.37 (09/13), 683.99 (09/20) and 47.98 (09/27) -- the final bucket is a one-day stub. The Daily control over the same final week reported 179.40 for 10/02 alone, giving a shortfall of 131.42 against the 47.98 the weekly bucket reports. A second run reproduced the same shape independently (47.98 vs siblings 722.03 and 601.05 in a prior run; 74.66 vs 195.98 for a single later day in another). Separately, and independently observable: when the interval is Weekly the To: picker clamps the stored value to today -- selecting Static with an end of 10/31/2026 produced a To: button reading 10/02/2026. That clamp is the same `boundedRange` Weekly branch that will clamp the fix, and it is why the correct end bound is a rule, not a fixed date.",
-    "root_cause": "`validateEnd` in reportRanges.ts normalises the end bound for Monthly (getMonthEnd) and Yearly (+'-12-31') but sends Weekly through `default: dateEnd = end`, so the report's endDate stays the week-START the picker can only offer. `makeQuery` then applies that value as a day-granular `$lte`, admitting only the first day of the final week, while `weekRangeInclusive` independently emits a bucket for that whole week -- so the chart renders a complete-looking seven-day column filled from one day. Weekly is the only interval whose pickers yield sub-period dates while its query bound is never widened. The final bucket's `intervalEndDate` is a second, separate wrong value with the same origin: both custom-spreadsheet.ts and recalculate.ts compute `subDays(intervals[index + 1], 1)` for every bucket except the last, which falls back to the raw `endDate` -- the same un-widened week-start that is stored on the report and read by the drilldown in ReportTableRow.tsx.",
-    "approach": "ONE rule, stated once, and every value in this change is an instance of it:\n\n  effectiveEnd = min( getWeekEnd(end, firstDayOfWeekIdx), currentDay() )\n\n`getWeekEnd` supplies the week's true last day; `currentDay()` is the existing `boundedRange` Weekly clamp, which is what stops an in-progress week projecting into the future. The min of the two is the single end bound, and both the query's `$lte` and the final bucket's `intervalEndDate` must read that same clamped value -- which is what makes AC-2 and AC-3 compatible instead of contradictory.\n\nFix site: normalise the Weekly end bound in BOTH places the bound enters, so that the picker path and the saved-report load path both get it. This is a correction to v1, which named `validateEnd` alone; tracing the callers showed that is incomplete. `validateEnd` is called from exactly one place -- the To: picker's onChange in ReportSidebar.tsx:658 -- so a report whose range is never re-picked never reaches it. `CustomReport.tsx` `setReportData` assigns `input.startDate`/`input.endDate` straight into state (lines ~751-753) with no `validateEnd` call, and the initial `useState(loadReport.startDate/endDate)` (lines 268-269) is the same story. So every already-saved weekly report, and every dashboard widget rendering one via GetCardData.tsx -> createCustomSpreadsheet/createGroupedSpreadsheet, keeps the truncated bound under a validateEnd-only fix. Widening at the consumption sites (the two spreadsheet factories) covers picker, saved-report and dashboard-widget paths with one mechanism, and leaves the To: picker's stored value alone -- which matters, because that value is also the Select's `value` and its option list is week-starts, so returning a widened date from validateEnd would put the control into `defaultLabel` fallback (Select.tsx:74-76, `targetOption` found by exact match against options) and break the picker's own selection display. Normalising downstream avoids that entirely.\n\nThe clamp must be `currentDay()`, not a bare `getWeekEnd`: without it, a report whose final week is still in progress would pull in future-dated rows. Do not bypass `boundedRange` to achieve the widening -- if the normalisation happens inside the spreadsheet factories it must apply the same `min` with `currentDay()` explicitly, because those factories do not currently route through `boundedRange` at all.\n\nDo NOT change `validateEnd`. Its Weekly branch is already correct in the sense that matters here (it does not over-widen), and its clamp behaviour is what AC-3 depends on; touching it would also change what the picker stores, for the Select-fallback reason above.\n\nSecond, correct the final bucket's `intervalEndDate` in custom-spreadsheet.ts and recalculate.ts so it reads the same clamped bound the query used, rather than the raw `endDate`. Today both compute `subDays(intervals[index + 1], 1)` for every bucket except the last, which falls back to the raw endDate. Keep the two files' copies identical -- they are duplicated today and must not diverge. Note the bucket's `intervalStartDate` is correct already (the week-start), so only the end is wrong.\n\nCaller sweep, run on this checkout: `createCustomSpreadsheet` is called from CustomReport.tsx:551 and GetCardData.tsx:146; `createGroupedSpreadsheet` from CustomReport.tsx:515 and GetCardData.tsx:127. `fetchSpreadsheetQueryData` (which calls `makeQuery`) is called from exactly those two spreadsheet factories plus grouped-spreadsheet.ts -- NOT from spending-spreadsheet, which builds its own queries and does not go through the custom report's From/To picker. `intervalEndDate` is consumed by StackedBarGraph.tsx:319, LineGraph.tsx:203 and ReportTableRow.tsx:172 (the drilldown's `showActivity` endDate) -- all three read the value these two files produce, so correcting it there fixes the tooltip and the drilldown together with no change to the consumers.",
-    "files": [
-      {
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.ts",
-        "action": "edit",
-        "change": "Compute the effective end bound once, near the top of the returned async function, as `interval === 'Weekly' ? min(monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx), monthUtils.currentDay()) : endDate`, and use that value for BOTH the `endDate` passed to `fetchSpreadsheetQueryData` (so makeQuery's `$lte` admits the whole final week, clamped to today) and the final bucket's `intervalEndDate`. Leave `startDate`, the `intervals` array from `weekRangeInclusive`, and every non-Weekly branch byte-identical: Daily, Monthly and Yearly keep their raw endDate. Do not widen the range passed to `weekRangeInclusive` -- the bucket list must stay exactly as it is; only the query bound and the last bucket's label change.",
-        "why": "This is the site that covers all three entry paths (picker, saved-report load via setReportData, and dashboard widgets via GetCardData), none of which besides the picker reach validateEnd."
-      },
-      {
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/grouped-spreadsheet.ts",
-        "action": "edit",
-        "change": "Apply the identical effective-end-bound computation as in custom-spreadsheet.ts to the `endDate` passed to `fetchSpreadsheetQueryData`. grouped-spreadsheet calls the same `fetchSpreadsheetQueryData` and the same `recalculate`, so leaving it untouched would make the grouped/table view of the same weekly report disagree with the graph view -- same numbers, different source.",
-        "why": "It shares makeQuery and recalculate with custom-spreadsheet; the two must not diverge or the same report renders differently depending on which spreadsheet view is active."
-      },
-      {
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/recalculate.ts",
-        "action": "edit",
-        "change": "Change the final interval's `intervalEndDate` so it reports the same effective end bound the query used: `interval === 'Weekly' ? min(getWeekEnd(intervals[index], firstDayOfWeekIdx), currentDay()) : endDate`, replacing the raw-`endDate` fallback. Add a `firstDayOfWeekIdx` prop to the signature (it is not currently passed) and thread it from both callers, custom-spreadsheet.ts:275 and grouped-spreadsheet.ts:96/112, since getWeekEnd honours the user's first-day-of-week preference and must not assume Sunday. Non-final buckets keep `subDays(intervals[index + 1], 1)` unchanged. This must state the same rule, in the same form, as custom-spreadsheet.ts.",
-        "why": "This is the value ReportTableRow.tsx:172 hands to the drilldown's showActivity, and the tooltip value the reporter screenshotted as wrong. Fixing only the query bound would make the numbers right and the label still lie."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
-        "action": "create",
-        "cases": [
-          "The single rule, elapsed week: with Weekly, startDate 2026-08-30, endDate 2026-10-03 and currentDay pinned to 2026-10-05, the effective end bound is 2026-10-03 and the final bucket's intervalEndDate is 2026-10-03 (the week's true end). Fails today -- the current code reports 2026-10-03 only by coincidence of the raw endDate; with the original endDate 2026-09-27 it reports 2026-09-27, which is the bug",
-          "The single rule, in-progress week: with Weekly, startDate 2026-08-30, endDate 2026-09-27 and currentDay pinned to 2026-10-02, the effective end bound and the final bucket's intervalEndDate are BOTH 2026-10-02 -- min(getWeekEnd, currentDay()). This is the clamp, not a contradiction of the case above; the two cases differ only in the pinned currentDay",
-          "The effective end bound is what the query receives: assert that fetchSpreadsheetQueryData (or the makeQuery it wraps) is called with an endDate of 2026-10-03 for an elapsed week, so the widening reaches the `$lte` filter and not only the label. Mock send/aqlQuery as the sibling spending-spreadsheet.test.ts does",
-          "Non-final buckets are unchanged: for Weekly the intermediate buckets keep intervalEndDate = subDays(nextBucket, 1) -- 08/30 -> 09/05, 09/06 -> 09/12, 09/13 -> 09/19, 09/20 -> 09/26 -- proving only the final bucket's value moved",
-          "firstDayOfWeekIdx is honoured, not hardcoded to Sunday: with firstDayOfWeekIdx '1' (Monday), endDate 2026-09-28 and currentDay pinned past the week, the effective end bound is 2026-10-04, not 2026-10-03",
-          "Monthly and Daily are untouched: Monthly with endDate 2026-09 keeps the existing getMonthEnd behaviour and Daily with endDate 2026-09-27 keeps intervalEndDate 2026-09-27 -- regression guard on the sibling branches"
-        ]
-      },
-      {
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
-        "action": "create",
-        "cases": [
-          "GROUPED: grouped-spreadsheet applies the identical rule -- Weekly, startDate 2026-08-30, endDate 2026-10-03, currentDay 2026-10-05 -> effective end 2026-10-03, and its recalculate() rows carry the same final intervalEndDate, so the table view and the graph view agree",
-          "GROUPED, in-progress: Weekly with currentDay 2026-10-02 and endDate 2026-09-27 -> 2026-10-02 in grouped-spreadsheet too, matching custom-spreadsheet exactly. Guards the duplication the fix depends on"
-        ]
-      }
-    ],
-    "acceptance": [
-      {
-        "id": "AC-1",
-        "check": "A Weekly custom report on a static From/To pair includes every transaction in the final week, not just the transactions dated on the week-start. The report's final bucket must total the same as the sum of the daily buckets covering that same week.",
-        "how_to_verify": "Reports -> Custom Report, Interval Weekly, Date filters Static, From 08/30/2026, To 09/27/2026, Mode Time. Hover the 09/27/2026 bucket and record its Total. Then switch Interval to Daily, set From 09/27/2026 and To 10/02/2026 (the Daily To: picker caps at today -- 10/03 is not offered while the week is in progress), and sum the daily buckets from 09/27 to 10/02. Before the fix the weekly bucket is ~1 day of data (measured 47.98 against siblings of 617.37 and 683.99, shortfall 131.42) and the two figures disagree; after the fix they are equal. NOTE: the two ranges must cover the same days for this to be a valid comparison -- if the week has fully elapsed, compare the weekly bucket against Daily 09/27-10/03.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-2",
-        "check": "The final weekly bucket's intervalEndDate is the same value as the query's end bound: min(getWeekEnd(bucketStart, firstDayOfWeekIdx), currentDay()). It is NOT a fixed date. For To: 09/27/2026 that evaluates to 2026-10-02 while today is 2026-10-02, and to 2026-10-03 once the week has fully elapsed (today >= 2026-10-03). Both this criterion and AC-3 read this one clamped value, so they cannot disagree.",
-        "how_to_verify": "Same configuration as AC-1 in Time mode with the Data Table graph; the final column's drilldown range (ReportTableRow.tsx passes this value to showActivity) must equal the clamped value above. On the unfixed build it ends 09/27/2026 -- the reporter's third screenshot. Because the expected value is a rule, verify it against the app's own current day, not a hardcoded date: if QA runs on or after 2026-10-03 the expected value is 2026-10-03, and before that it is whatever today is, capped at 2026-10-03.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-3",
-        "check": "A weekly report whose final week is still in progress stops at today and does not project into future days. This is the same min() as AC-2, read from its other side: no bucket's intervalEndDate and no query bound may exceed currentDay().",
-        "how_to_verify": "Interval Weekly, Date filters Static, To: a date in the current week. Confirm no intervalEndDate is later than today and the report's total does not exceed the sum of transactions dated up to today. This is covered directly by the in-progress case in tests[]; the browser check confirms the same clamp survives the real picker path.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-4",
-        "check": "The Monthly, Yearly and Daily intervals keep their existing behaviour, and the Spending report is unaffected: only Weekly changes.",
-        "how_to_verify": "Run `yarn workspace @actual-app/web run test`. The Monthly/Daily regression case in tests[0] and both grouped-spreadsheet cases must pass, and the existing spending-spreadsheet.test.ts must still pass. Then in the browser, load Reports -> Spending for a monthly range and confirm its total is unchanged -- spending-spreadsheet builds its own queries and never reaches fetchSpreadsheetQueryData, so it is a guard rather than a target.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-5",
-        "check": "An already-saved weekly report -- one whose endDate was stored as a week-start before this change and which is never re-picked -- renders the full final week after the fix.",
-        "how_to_verify": "Before the fix: create a Weekly + Static report with To: 09/27/2026, save it, reload it from the Reports menu, and confirm its final bucket is a one-day stub -- that is the load path bypassing validateEnd, which is why files[1] widens at the spreadsheet rather than in reportRanges.ts. After the fix, reopen the same saved report WITHOUT touching the From/To pickers and confirm its final bucket now matches the Daily sum over the same week. If instead the implementer widened only in validateEnd, this criterion fails and the fix is incomplete.",
-        "verify": "browser"
-      }
-    ],
-    "qa_script": [
-      "yarn start (or use the already-running $PREVIEW_URL at http://localhost:3001). Open the app and choose 'Try the demo' for a budget with transactions. Reports -> 'Add new widget' -> 'Custom report'.",
-      "Set Interval to Weekly (a Select; its options are Daily/Weekly/Monthly/Yearly). Set Date filters to Static (a plain toggle button, not a menu). The From:/To: pickers then appear.",
-      "CONFIRM THE PRECONDITION: open the To: picker and read its options. They must all be week-START dates (Sundays, in the default firstDayOfWeekIdx). That is why the last week is truncated.",
-      "Set From: 08/30/2026 and To: 09/27/2026. Set Mode to Time. Confirm five weekly buckets render at 08/30, 09/06, 09/13, 09/20, 09/27.",
-      "AC-1: hover each bucket and record its Total. Then switch Interval to Daily, From 09/27/2026, To 10/02/2026 (the Daily To: picker caps at today, so 10/03 is not offered until the week elapses), and sum the daily buckets. On the unfixed build the weekly 09/27 bucket reads ~48 against siblings of ~617 and ~684, and the daily sum exceeds it by ~131. After the fix they are equal.",
-      "AC-2: in Time mode with the Data Table graph, open the final column (09/27/2026) and read its drilldown range. It must equal min(getWeekEnd(2026-09-27, firstDayOfWeekIdx), today) -- 2026-10-02 when QA runs before 2026-10-03, 2026-10-03 once it has. On the unfixed build it reads 09/27/2026. Do not assert a hardcoded date: read the app's current day and apply the rule.",
-      "AC-3: set To: to a date in the current week. Confirm no intervalEndDate is later than today, and that the total does not grow when the range is shortened to end today.",
-      "AC-5: save this weekly report, reload it from the Reports menu, and reopen it WITHOUT touching the From/To pickers. Its final bucket must show the same corrected total. (On a validateEnd-only fix this still reads as a one-day stub.)",
-      "AC-4: repeat the report under Monthly, Yearly and Daily with the same static bounds and confirm the numbers are unchanged from a pre-change run. Then load Reports -> Spending for a monthly range and confirm its total is unchanged.",
-      "Also confirm with a non-default first day of week (Settings -> Preferences): with weeks starting Monday, a bucket labelled 09/28/2026 must end 10/04/2026, not 10/03/2026."
-    ],
-    "risks": [
-      "Widening the effective end bound changes the report's headline total for every weekly custom report whose range ends mid-week: totals go UP, by up to six days of previously-omitted transactions. That is the intended correction, but users who saved weekly reports will see different numbers, and any dashboard widget embedding one changes with it. This warrants a release note.",
-      "The fix duplicates the min(getWeekEnd, currentDay) computation across custom-spreadsheet.ts, grouped-spreadsheet.ts and recalculate.ts. Three copies that must agree is a real maintenance cost; they are kept separate deliberately because the two spreadsheet factories and recalculate each hold their own copy of this logic today. If the implementer extracts a helper, it must be imported by all three and used by both grouped-spreadsheet call sites.",
-      "These factories do not currently route through `boundedRange`, so the clamp is not inherited -- it must be applied explicitly as min(..., currentDay()). Omitting the currentDay() half is the most likely way this fix ships a future-data regression.",
-      "firstDayOfWeekIdx is a user preference and getWeekEnd honours it. recalculate does not currently receive it, so threading it through changes that function's signature; missing a call site would silently produce Sunday weeks for users whose week starts on another day.",
-      "The To: picker clamps Weekly to today (observed directly: an end of 10/31/2026 becomes 10/02/2026). QA must not read that clamp as a symptom of this bug -- it is pre-existing correct behaviour and is the same clamp the fix relies on."
-    ],
-    "out_of_scope": [
-      "The Start:/From: side is already correct -- a week-start is the right floor for a week bucket -- so validateStart is deliberately not touched.",
-      "reportRanges.ts validateEnd is deliberately NOT changed. It is called only from the To: picker (ReportSidebar.tsx:658), so changing it would fix only the picker path while leaving saved reports and dashboard widgets truncated, and returning a widened date would drop the Select out of its matched-option state into defaultLabel (Select.tsx:74-76) and break the picker's own selection display. This is the correction to plan v1, which named validateEnd as the fix site.",
-      "Reports other than Custom Report (Spending, Net Worth, Cash Flow, Balance Forecast) do not reach fetchSpreadsheetQueryData and were not observed to exhibit this. Their behaviour is a regression guard, not a target.",
-      "The +1 / +7 offset buttons and the Live date-range presets are a separate code path (getSpecificRange, which already calls getWeekEnd for weeks) and are not part of this defect.",
-      "Migrating existing saved weekly reports' stored endDate forward on load. AC-5 is met by widening at consumption, which covers them without a data migration; rewriting stored values is a larger change than the defect requires."
-    ],
-    "evidence": [
-      "App under test: $PREVIEW_URL=http://localhost:3001 (Actual v26.9.0, local demo budget via 'Try the demo'), reproduced 2026-10-02 by driving Chromium over that URL.",
-      "REPRODUCTION, reporter's exact configuration: Reports -> Custom Report -> Interval Weekly -> Date filters Static -> From 08/30/2026 -> To 09/27/2026 -> Mode Time. Five weekly buckets render; measuring the recharts geometry gave bucket x-positions 580/780/990/1200/1400, and hovering each captured its tooltip total: 09/13/2026 = 617.37, 09/20/2026 = 683.99, 09/27/2026 = 47.98. The final bucket is a one-day stub roughly 1/15th of its siblings.",
-      "CONTROL, same demo budget, Interval Daily, From 09/27/2026, To 10/02/2026: 10/02/2026 alone reports 179.40, giving a shortfall of 131.42 against the 47.98 the weekly bucket reports for the whole week. Spending demonstrably exists in that week and none of it reaches the weekly bucket.",
-      "The shape reproduced across independent runs, so it is not a one-off of a particular demo dataset: run A gave 09/13=640.66, 09/20=601.60, 09/27=63.19; run B gave 09/13=722.03, 09/20=601.05, 09/27=74.66; run C gave 09/13=617.37, 09/20=683.99, 09/27=47.98. In every run the final bucket is far below its siblings.",
-      "PRECONDITION CONFIRMED IN THE APP: opening the To: picker with Interval=Weekly listed 53 options, every one a Sunday -- 09/27/2026, 09/20/2026, 09/13/2026, 09/06/2026, 08/30/2026, 08/23/2026, 08/16/2026, 08/09/2026 ... 09/28/2025. The pickers cannot express a week-end, which is the precondition for the bug.",
-      "CLAMP OBSERVED IN THE APP: with Interval Weekly and Date filters Static, a To: value of 10/31/2026 became 10/02/2026 (today) in the picker button. That is `boundedRange`'s Weekly branch (reportRanges.ts:155-159, `latest = monthUtils.currentDay()`), and it is the same clamp the fix must preserve.",
-      "UNIT-LEVEL INDEPENDENT VERIFICATION (test written, run, and watched fail on current code): with startDate 2026-08-30 and endDate 2026-09-27, `weekRangeInclusive` returns ['2026-08-30','2026-09-06','2026-09-13','2026-09-20','2026-09-27'] -- five buckets -- while `getWeekEnd('2026-09-27','0')` = '2026-10-03' and `differenceInCalendarDays('2026-10-03','2026-09-27')` = 6. Six days of the week the report renders a bucket for are excluded by makeQuery's day-granular `$lte` (makeQuery.ts:19-22,31-35, `intervalFilter='$day'` for Weekly).",
-      "validateEnd CONFIRMED UN-WIDENED: calling it directly with interval 'Weekly', start 2026-08-30, end 2026-09-27 returned end='2026-09-27' unchanged, while the same call with 'Monthly' returned '2017-01-31' (a widened month end). Weekly is the only interval falling through to `default: dateEnd = end` (reportRanges.ts:70-73).",
-      "THE CORRECTED RULE, SIMULATED AND RUN rather than asserted from reading: with currentDay='2026-10-02' and end='2026-09-27', min(getWeekEnd, currentDay) = '2026-10-02'; with currentDay='2026-10-05' the same input yields '2026-10-03'; and `getWeekEnd('2026-09-28','1')` = '2026-10-04', confirming the Monday-start case. This is the single value both AC-2 and AC-3 read, which is what makes them compatible.",
-      "THE REPORTER'S OWN CASE CHECKS OUT: getWeekEnd('2024-10-28','1') = '2024-11-03', exactly the 'Sun 03/11/2024' week end the reporter expected their To: Mon 28/10/2024 to cover.",
-      "TEST-CLOCK CONSTRAINT, ESTABLISHED BY RUNNING IT: monthUtils.currentDay() returns the hardcoded '2017-01-01' under this package's vitest setup (months.ts:173-179 short-circuits on global.IS_TESTING, which setupTests.ts:8 sets unconditionally), so a suite cannot pin the clock with fake timers -- currentDay() never reads the clock. `vi.spyOn(monthUtils, 'currentDay').mockReturnValue(...)` DOES work: verified in a test that pinned it to '2026-10-02' and '2026-12-31' and read both values back. The tests[] below use that mechanism, and any test asserting a bound strictly between the clamp and the untruncated week end needs it.",
-      "CALLER SWEEP (run on this checkout, correcting v1's fix site): validateEnd has exactly ONE caller -- ReportSidebar.tsx:658, the To: picker. But CustomReport.tsx assigns a saved report's dates straight into state in two places without calling validateEnd: `useState(loadReport.startDate/endDate)` at lines 268-269 and `setReportData` at lines 751-753. `onSetStartAndEndDates` only recomputes dates when `isDateStatic` is false (i.e. the Live path), so a static saved report never re-enters validateEnd. createCustomSpreadsheet is called from CustomReport.tsx:551 and GetCardData.tsx:146; createGroupedSpreadsheet from CustomReport.tsx:515 and GetCardData.tsx:127; fetchSpreadsheetQueryData only from those two factories -- spending-spreadsheet does not use it. This is why a validateEnd-only fix would leave saved reports and dashboard widgets truncated, and why files[] widens at the consumption sites instead.",
-      "CONSUMER SWEEP for the second symptom: intervalEndDate is read by StackedBarGraph.tsx:319, LineGraph.tsx:203 and ReportTableRow.tsx:172, where it becomes the drilldown's showActivity endDate. All three read what custom-spreadsheet.ts and recalculate.ts produce, so correcting it there fixes the tooltip and the drilldown with no change to the consumers.",
-      "No console errors were emitted during the reproduction beyond a pre-existing nested-button hydration warning from a dashboard widget -- this is a silent data-truncation defect, not a crash, which is why it survived in a released build.",
-      "Scratch Playwright script and scratch vitest file used for the reproduction were deleted; the working tree is clean apart from the untracked plan/ directory."
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Add `case 'Weekly'` to validateEnd in reportRanges.ts setting dateEnd = getWeekEnd(end, firstDayOfWeekIdx) -- the fix site named by plan v1.",
-        "rejected_because": "Correct only for reports whose range the user re-picks. validateEnd has a single caller (the To: picker), and a saved static report is loaded straight into state in CustomReport.tsx without passing through it, so every already-saved weekly report and every dashboard widget rendering one keeps the truncated bound. It also returns a date that is not in the picker's own week-start option list, which drops the Select into defaultLabel and breaks its selection display."
-      },
-      {
-        "approach": "Widen the end bound inside makeQuery.",
-        "rejected_because": "makeQuery is shared, and widening there would apply to every caller including paths this reproduction never exercised. The two factories that own the custom report's Weekly bucketing are the narrow site, and they are the only ones that reach this bug."
-      },
-      {
-        "approach": "Drop the trailing bucket when its week is not fully covered by the range.",
-        "rejected_because": "Makes the truncation consistent rather than correct. The reporter's expectation -- that the last bucket covers the whole week it is labelled with -- is the reasonable one, and dropping the bucket discards a week of data outright while making the bucket count depend on where the range ends."
-      },
-      {
-        "approach": "Change the To: picker to offer week-END dates instead of week-starts.",
-        "rejected_because": "Moves the problem rather than fixing it. weekRangeInclusive snaps whatever it is given to a week-start, so buckets stay correct, but the stored endDate would still be a raw bound the query applies verbatim, and saved reports would keep the old shape. The bound is wrong at the query, not at the picker."
-      },
-      {
-        "approach": "Post-process the query results in custom-spreadsheet to redistribute the excluded days into the final bucket.",
-        "rejected_because": "The excluded transactions are never fetched -- the $lte filter runs in SQL against the database. There is nothing downstream to redistribute."
-      }
-    ],
-    "assumptions": [
-      "The intended semantics are that a Weekly bucket covers the whole week it is labelled with, matching the reporter's expectation and how Monthly/Yearly buckets already behave.",
-      "The first day of the week is governed by the user's firstDayOfWeekIdx preference; the fix reads it rather than assuming Sunday. The reproduction ran with the default (Sunday), giving 2026-08-30/09-06/... as week-starts and a 09/27 week ending 10/03."
-    ],
-    "unknowns": [
-      "Whether the maintainers would rather this landed as a breaking-change release note, given every existing weekly report's total will rise."
-    ],
-    "residual_risks": [
-      "The saved-report reload path was traced in code (setReportData assigns endDate without validateEnd) but NOT reproduced end-to-end in a browser before the fix -- it cannot be, since today it is the same picker path. AC-5 exists to verify it after the change; if widening only landed in validateEnd, AC-5 is where that shows up.",
-      "Three copies of the clamp must stay in agreement across custom-spreadsheet.ts, grouped-spreadsheet.ts and recalculate.ts. Nothing enforces that at compile time; the grouped-spreadsheet test cases in tests[1] are the only guard."
-    ]
-  },
-  "approved_too_high": false
+  "approved_too_high": false,
+  "work_order_version": 1,
+  "work_order_posted_at": "2026-10-02T06:28:34.990Z",
+  "work_order_from": "debug",
+  "work_order_comment": "5946731346"
 }
