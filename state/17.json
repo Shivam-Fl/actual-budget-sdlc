@@ -212,7 +212,13 @@
     ],
     "confidence_rationale": "Higher than the rejected plan because the blocking objection was mechanical and the mechanical claim is now reproduced and fixed in this repository rather than in a clone. The previous plan branched the scratch branch from `origin/main`, which at QA time is unpatched — confirmed here that `main`, `origin/main` and `HEAD` are all 4ebaf1e and that `origin/main` carries no `findNonPersonAuthors`. Every recipe now branches from the current HEAD with no start point, BASE_REF stays the branch name `main`, and each of the five runs was executed in this repository on a scratch branch off HEAD with the real script: `authors: [claude]` gives `::error::… not bots or agents: claude.` and exit 1; `authors: [Shivam-Fl]` gives `Validated 1 release note(s). 🎉` and exit 0; bad category, two-line body and missing authors each still fail with their original messages; and reverting the two source files to origin/main with the identical note in place restores `Validated 1 release note(s). 🎉` and exit 0, which is the before/after the criterion claims. Also confirmed `git diff --name-only --diff-filter=A origin/main...HEAD -- upcoming-release-notes/` returns only the temporary note, so the recipes cannot accidentally validate this PR's two note corrections. The eight helper cases match their expected values. The probe ran with a hand-written stand-in for `gray-matter` and `listify`, because this checkout has no `node_modules`; that shim parses the same front matter shape the real one does, and the installed run under `yarn workspace @actual-app/ci-actions test` is what AC-1..AC-5 pin. All probe artifacts were deleted and main is clean at 4ebaf1e. The residual uncertainty is not about correctness: there is no browser surface, so every criterion is verified with `verify: \"test\"` and a named command, and the composite action is not wired into any workflow here, so this repository's CI will not exercise the new branch."
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/ci-actions/src/release-notes/util.mjs",
+    "packages/ci-actions/bin/release-notes-check.mjs",
+    "upcoming-release-notes/fix-invalid-regex-rule-crash.md",
+    "upcoming-release-notes/fix-weekly-report-final-bucket.md",
+    "packages/ci-actions/src/release-notes/util.test.js"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
