@@ -12,7 +12,6 @@
     "qa": 0
   },
   "attempt_run": null,
-  "halted": null,
   "pending": {
     "stage": "implement",
     "rework": null,
@@ -332,7 +331,7 @@
       "action": "-> qa"
     }
   ],
-  "resume_at": "qa",
+  "resume_at": null,
   "flow_plan": {
     "kind": "bug",
     "confidence": 90,
@@ -341,7 +340,7 @@
     "councils": {},
     "decided_at": "2026-10-02T05:36:05.589Z"
   },
-  "stopped_at": "qa",
+  "stopped_at": null,
   "dispatched_stage": "qa",
   "validated_from": "debug",
   "validated_at": "2026-10-02T07:08:01.788Z",
