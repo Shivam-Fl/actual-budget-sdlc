@@ -637,6 +637,54 @@ describe('Transaction rules', () => {
     // todo: isapprox
   });
 
+  test('an unparseable `matches` pattern matches nothing rather than throwing', async () => {
+    await loadRules();
+    const account = await db.insertAccount({ name: 'bank' });
+    const payeeId = await db.insertPayee({ name: 'payee' });
+
+    // Five transactions rather than one: SQLite calls the REGEXP function
+    // once per scanned row, so a single row cannot tell per-row logging apart
+    // from per-pattern logging. This file resolves to index.electron.ts, which
+    // is the only coverage that file has.
+    for (const id of ['1', '2', '3', '4', '5']) {
+      await db.insertTransaction({
+        id,
+        date: '2020-10-01',
+        account,
+        payee: payeeId,
+        notes: 'Follow up #mortgage',
+        amount: 123,
+      });
+    }
+
+    // Partially typed patterns are the normal state of the value input while
+    // a rule is being edited, and each keystroke re-runs the preview query.
+    // They must resolve to no transactions, not reject.
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => null);
+    const patterns = ['\\', '#\\', '#[', '(', 'asdfasdf\\'];
+    for (const value of patterns) {
+      const transactions = await getMatchingTransactions([
+        { field: 'notes', op: 'matches', value },
+      ]);
+      expect(transactions).toEqual([]);
+    }
+
+    // One log line per distinct pattern, not one per row scanned: five
+    // patterns over five rows is five lines, not twenty-five.
+    const invalidRegexLogs = consoleSpy.mock.calls.filter(
+      call => call[0] === 'invalid regexp in sqlite REGEXP',
+    ).length;
+    expect(invalidRegexLogs).toBeLessThanOrEqual(patterns.length);
+
+    // A valid pattern still matches every seeded row, so the guard is not a
+    // blanket no-op
+    const transactions = await getMatchingTransactions([
+      { field: 'notes', op: 'matches', value: '#mortgage' },
+    ]);
+    expect(transactions.map(t => t.id)).toEqual(['1', '2', '3', '4', '5']);
+    consoleSpy.mockRestore();
+  });
+
   test('transactions can be queried by hasTags', async () => {
     await loadRules();
     const account = await db.insertAccount({ name: 'bank' });
