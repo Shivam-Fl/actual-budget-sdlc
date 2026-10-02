@@ -231,7 +231,7 @@
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-02T18:22:32.145Z",
-  "updated_at": "2026-10-02T21:30:51.859Z",
+  "updated_at": "2026-10-02T21:31:00.294Z",
   "history": [
     {
       "at": "2026-10-02T18:23:02.507Z",
@@ -327,6 +327,11 @@
       "at": "2026-10-02T21:30:51.859Z",
       "agent": "release",
       "action": "-> merged"
+    },
+    {
+      "at": "2026-10-02T21:31:00.294Z",
+      "agent": "system",
+      "action": "lock released"
     }
   ],
   "resume_at": null,
