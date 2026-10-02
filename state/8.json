@@ -575,25 +575,22 @@
     }
   ],
   "qa": {
-    "verdict": "fail",
-    "introduced_bugs": 1,
+    "verdict": "pass",
+    "introduced_bugs": 0,
     "ac_ids": [
       "AC-1",
       "AC-2",
       "AC-3",
       "AC-4",
       "AC-5",
-      "AC-6"
+      "AC-6",
+      "AC-7",
+      "AC-8"
     ],
-    "sha": "196e961b76cd48aed24be12806d2daa7ee7030e8",
-    "run_id": "36992261450",
-    "work_order_version": 1,
-    "at": "2026-10-02T11:50:14.402Z"
+    "sha": "862995951f3f4c02ddc74fe9b29023a021a05120",
+    "run_id": "37021528250",
+    "work_order_version": 2,
+    "at": "2026-10-02T16:59:40.586Z"
   },
-  "qa_open_bugs": [
-    {
-      "id": "BUG-1",
-      "title": "The invalid-regexp guard logs from inside the SQLite user function, so it prints once per scanned transaction on every keystroke"
-    }
-  ]
+  "qa_open_bugs": []
 }
