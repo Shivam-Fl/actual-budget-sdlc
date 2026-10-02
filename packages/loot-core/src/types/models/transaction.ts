@@ -26,6 +26,8 @@ export type TransactionEntity = {
   tombstone?: boolean;
   forceUpcoming?: boolean;
   schedule?: ScheduleEntity['id'];
+  /** The schedule occurrence (`next_date`) this transaction was posted for. */
+  schedule_occurrence?: string | null;
   subtransactions?: TransactionEntity[];
   _unmatched?: boolean;
   _deleted?: boolean;
