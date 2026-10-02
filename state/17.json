@@ -431,5 +431,33 @@
       }
     ],
     "pr": "19"
-  }
+  },
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 2,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6",
+      "AC-7",
+      "AC-8"
+    ],
+    "sha": "622c500c1c7333d600fa3ced5b14db7319bf7775",
+    "run_id": "37061004349",
+    "work_order_version": 1,
+    "at": "2026-10-02T21:10:36.666Z"
+  },
+  "qa_open_bugs": [
+    {
+      "id": "BUG-1",
+      "title": "A non-string release-note author crashes the gate with an uncaught TypeError instead of an actionable error"
+    },
+    {
+      "id": "BUG-2",
+      "title": "New test comment claims the check script enforces a non-empty authors list; it does not"
+    }
+  ]
 }
