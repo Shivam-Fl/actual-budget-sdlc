@@ -357,5 +357,27 @@
   "work_order_posted_at": "2026-10-02T12:42:04.411Z",
   "work_order_from": "debug",
   "work_order_comment": "5952564883",
-  "implemented_version": 1
+  "implemented_version": 1,
+  "failure_packet": {
+    "issue": 6,
+    "pr": 15,
+    "head": "89f37985d48787926d0141ab995aa6315a3b8772",
+    "stage": "ci",
+    "attempt": 2,
+    "occurrences": 1,
+    "error_type": "unknown",
+    "error_signature": "c1aaf6b6fa40e37b",
+    "raw_excerpt": "verify\tFail if any check failed\t﻿2026-10-02T14:48:17.5124428Z ##[group]Run exit 1\nverify\tFail if any check failed\t2026-10-02T14:48:17.5124743Z ^[[36;1mexit 1^[[0m\nverify\tFail if any check failed\t2026-10-02T14:48:17.5194688Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}\nverify\tFail if any check failed\t2026-10-02T14:48:17.5195072Z ##[endgroup]\nverify\tFail if any check failed\t2026-10-02T14:48:17.5282930Z ##[error]Process completed with exit code 1.",
+    "digest": "The ci stage failed and no known error pattern matched. The raw output is below.",
+    "decision": "triage",
+    "decision_reason": "an agent reads the failed run's full log and decides what happens next — this script cannot see that log from inside the run that produced it",
+    "context": {
+      "work_order_version": 1,
+      "failed_checks": [
+        "ci-verify"
+      ],
+      "run_url": "https://github.com/Shivam-Fl/actual-budget-sdlc/actions/runs/37021492966",
+      "prior_signatures": []
+    }
+  }
 }
