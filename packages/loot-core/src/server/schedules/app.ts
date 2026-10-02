@@ -547,11 +547,48 @@ function onApplySync(oldValues, newValues) {
 // This is the service that move schedules forward automatically and
 // posts transactions
 
+// Move a schedule's next date onto `date`, the occurrence that was just
+// posted, without moving past it.
+//
+// Landing exactly on the posted occurrence is what makes the register stop
+// rendering its preview row: `getHasTransactionsQuery` matches a
+// `posts_transaction` schedule from `next_date` onward, so the new transaction
+// makes the status 'paid', and computeSchedulePreviewTransactions drops the
+// leading previewed date for it.
+async function advanceScheduleToDate(schedule: ScheduleEntity, date: string) {
+  let nextDate = schedule.next_date;
+
+  // `date` came from a preview row, so it is on the schedule's recurrence and
+  // the loop converges. The bound and the no-change exit are only there so a
+  // date that somehow isn't on the recurrence can't spin.
+  for (let attempts = 0; nextDate < date && attempts < 100; attempts++) {
+    await setNextDate({
+      id: schedule.id,
+      conditions: schedule._conditions,
+      advance: true,
+    });
+
+    const { data } = await aqlQuery(
+      q('schedules').filter({ id: schedule.id }).select('next_date'),
+    );
+    const updated = data[0]?.next_date;
+
+    if (updated == null || updated === nextDate) {
+      // The recurrence didn't move us forward — stop rather than loop.
+      break;
+    }
+
+    nextDate = updated;
+  }
+}
+
 async function postTransactionForSchedule({
   id,
+  date,
   today,
 }: {
   id: string;
+  date?: string;
   today?: boolean;
 }) {
   const { data } = await aqlQuery(q('schedules').filter({ id }).select('*'));
@@ -564,13 +601,28 @@ async function postTransactionForSchedule({
     payee: schedule._payee,
     account: schedule._account,
     amount: getScheduledAmount(schedule._amount),
-    date: today ? currentDay() : schedule.next_date,
+    date: today ? currentDay() : (date ?? schedule.next_date),
     schedule: schedule.id,
     cleared: false,
   };
 
   if (transaction.account) {
     await addTransactions(transaction.account, [transaction]);
+  }
+
+  // Consume the occurrence that was posted, so its preview row goes away too.
+  //
+  // Gated on an explicit `date`: auto-posting calls this with a bare id and
+  // advances the schedule itself, so advancing here too would skip an
+  // occurrence on every sync. `today` pays an occurrence early and
+  // deliberately leaves it pending, so it never advances either.
+  if (
+    !today &&
+    date != null &&
+    schedule.next_date != null &&
+    date > schedule.next_date
+  ) {
+    await advanceScheduleToDate(schedule, date);
   }
 }
 

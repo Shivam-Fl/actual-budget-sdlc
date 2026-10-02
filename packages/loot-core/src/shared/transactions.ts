@@ -13,6 +13,30 @@ export function isPreviewId(id: string) {
   return id.indexOf('preview/') !== -1;
 }
 
+/**
+ * Splits a scheduled-transaction row id into the schedule it belongs to and
+ * the occurrence date it represents.
+ *
+ * Preview rows are id'd `preview/<scheduleId>/<YYYY-MM-DD>` (see
+ * computeSchedulePreviewTransactions), so the occurrence the user clicked is
+ * only recoverable from the id — callers that truncate it to the schedule id
+ * lose which occurrence was chosen. A bare id is already a schedule id and has
+ * no occurrence date.
+ */
+export function parsePreviewId(id: string): {
+  scheduleId: string;
+  date?: string;
+} {
+  if (!isPreviewId(id)) {
+    return { scheduleId: id };
+  }
+
+  const parts = id.split('/');
+  return parts[2] == null
+    ? { scheduleId: parts[1] }
+    : { scheduleId: parts[1], date: parts[2] };
+}
+
 // The amount might be null when adding a new transaction
 function num(n: number | null | undefined) {
   return typeof n === 'number' ? n : 0;
