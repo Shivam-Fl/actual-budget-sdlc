@@ -76,5 +76,160 @@
     "decided_at": "2026-10-02T09:47:50.361Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "debug"
+  "dispatched_stage": "debug",
+  "validated_work_order": {
+    "issue": 6,
+    "version": 1,
+    "kind": "bug",
+    "reproduced": true,
+    "confidence": 90,
+    "confidence_rationale": "Reproduced end to end in the live app against $PREVIEW_URL: posting the 10/09 preview produced a second 10/02 transaction, exactly the reported symptom. The mechanism is confirmed in code by reading every caller of `schedule/post-transaction`, not inferred. The remaining 10% is the fix design (where the occurrence date should be threaded), which is the implementer's call.",
+    "understanding": "An upcoming schedule occurrence is rendered in the account register as a synthetic row whose id is `preview/<scheduleId>/<YYYY-MM-DD>` (packages/loot-core/src/shared/schedules.ts:500, `computeSchedulePreviewTransactions`). The occurrence date is carried ONLY in that third id segment. Every 'Post transaction' path then throws that segment away: `SelectedTransactionsButton` and `useTransactionRowContextActions` pass the full preview ids up to `Account.onScheduleAction`, which maps `ids.map(id => id.split('/')[1])` (packages/desktop-client/src/components/accounts/Account.tsx:1559) — keeping the schedule id and discarding the date — and sends `schedule/post-transaction` with `{ id }`. The server handler `postTransactionForSchedule` (packages/loot-core/src/server/schedules/app.ts:550) accepts only `{ id, today }` and dates the transaction `today ? currentDay() : schedule.next_date`. `schedule.next_date` is the schedule's FIRST un-posted occurrence, so the user can only ever post the first upcoming one, whichever row they clicked.",
+    "root_cause": "The occurrence date a user clicks lives only in the third segment of the synthetic `preview/<scheduleId>/<date>` row id; `Account.onScheduleAction` splits on '/' and keeps index 1 (the schedule id) before calling `schedule/post-transaction`, and the server handler `postTransactionForSchedule` has no date parameter at all — it always falls back to `schedule.next_date`, the first un-posted occurrence. So the clicked occurrence is unrecoverable by the time the write happens and every upcoming row posts as the first one.",
+    "approach": "Thread the occurrence date through the existing call chain rather than re-deriving it. Parse the date out of the preview id where the ids are already being split, and pass it as a `date` parameter to `schedule/post-transaction`. In `postTransactionForSchedule`, use the supplied `date` when present and fall back to the current `schedule.next_date` behaviour when absent (which is the correct behaviour for the Schedules-page and auto-post paths, whose ids are bare schedule ids). Prefer deriving the date at the id-splitting sites so one shared helper owns the preview-id shape rather than repeating `split('/')[2]` across eight call sites. The same truncation affects the mobile `onPost` handlers in AccountTransactions/OnBudget/OffBudget/AllAccountTransactions and the desktop `ScheduleItemAction` path, so all of them must be covered. Note `post-transaction-today` intentionally overrides the date with `currentDay()` and must keep doing so.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/server/schedules/app.ts",
+        "action": "edit",
+        "change": "Add an optional `date` parameter to `postTransactionForSchedule` and use it for the transaction date when supplied, falling back to the existing `today ? currentDay() : schedule.next_date` when it is not. Keep `today: true` taking precedence so 'Post transaction today' is unchanged. This is the single place the date is decided, so fixing it here covers every caller."
+      },
+      {
+        "path": "packages/loot-core/src/shared/transactions.ts",
+        "action": "edit",
+        "change": "Add a small exported helper that parses a `preview/<scheduleId>/<date>` id into its scheduleId and date parts, next to the existing `isPreviewId`, so the id shape is owned in one place rather than re-derived with raw `split('/')` at eight call sites."
+      },
+      {
+        "path": "packages/desktop-client/src/components/accounts/Account.tsx",
+        "action": "edit",
+        "change": "In `onScheduleAction`, stop discarding the occurrence date: parse each selected id into scheduleId and date instead of `id.split('/')[1]`, and pass the date to `schedule/post-transaction` so the transaction lands on the row the user clicked. Keep the current behaviour for bare (non-preview) schedule ids."
+      },
+      {
+        "path": "packages/desktop-client/src/components/mobile/accounts/AccountTransactions.tsx",
+        "action": "edit",
+        "change": "In the `onPost` handler for the scheduled-transaction-menu, pass the occurrence date parsed from the preview id through to `schedule/post-transaction` instead of only `parts[1]`. Preserve the existing `today` override for the post-today action."
+      },
+      {
+        "path": "packages/desktop-client/src/components/mobile/accounts/OnBudgetAccountTransactions.tsx",
+        "action": "edit",
+        "change": "Same fix as AccountTransactions: pass the preview id's occurrence date to `schedule/post-transaction` so posting an upcoming row does not fall back to the schedule's first next_date."
+      },
+      {
+        "path": "packages/desktop-client/src/components/mobile/accounts/OffBudgetAccountTransactions.tsx",
+        "action": "edit",
+        "change": "Same fix as AccountTransactions: pass the preview id's occurrence date to `schedule/post-transaction` so posting an upcoming row does not fall back to the schedule's first next_date."
+      },
+      {
+        "path": "packages/desktop-client/src/components/mobile/accounts/AllAccountTransactions.tsx",
+        "action": "edit",
+        "change": "Same fix as AccountTransactions: pass the preview id's occurrence date to `schedule/post-transaction` so posting an upcoming row does not fall back to the schedule's first next_date."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/server/schedules/app.test.ts",
+        "action": "edit",
+        "cases": [
+          "posting a recurring schedule with an explicit future occurrence date creates the transaction on THAT date, not on the schedule's first next_date — this is the exact failure reproduced in the browser and it fails on current code",
+          "posting without a date argument still creates the transaction on schedule.next_date, so the Schedules-page and auto-post paths are unchanged",
+          "posting with `today: true` still creates the transaction on the current day even when an occurrence date is supplied",
+          "posting a second, later occurrence of a schedule whose first occurrence is already posted creates a second transaction on the later date rather than duplicating the first date"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/shared/transactions.test.ts",
+        "action": "edit",
+        "cases": [
+          "the preview id helper returns the schedule id and the occurrence date for `preview/<scheduleId>/2026-10-09`",
+          "the helper returns no date for a bare (non-preview) id so callers keep their existing fallback behaviour",
+          "the helper agrees with the existing isPreviewId predicate for both preview and non-preview ids"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "In the account register, selecting an Upcoming preview row dated 10/09/2026 and choosing 'Post transaction' creates a transaction dated 10/09/2026 — not 10/02/2026, and not a second 10/02 row.",
+        "source": "TR-1",
+        "verify": "browser",
+        "how_to_verify": "Create a weekly +100 schedule starting today with upcoming length set to 1 month, so the register shows 10/02 Due and 10/09/10/16/10/23/10/30 Upcoming. Post 10/02, then post 10/09. The register must show a 10/09 transaction and the 10/09 Upcoming preview must be gone."
+      },
+      {
+        "id": "AC-2",
+        "check": "Posting an upcoming occurrence leaves the remaining later occurrences (10/16, 10/23, 10/30) still listed as Upcoming and undamaged.",
+        "source": "TR-1",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "'Post transaction today' on a future upcoming row still creates the transaction dated today, unchanged by this fix.",
+        "source": "TR-1",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-4",
+        "check": "Posting a schedule from the Schedules page (a bare schedule id, not a preview row) still dates the transaction on the schedule's next_date.",
+        "source": "TR-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "The mobile scheduled-transaction menu posts the clicked occurrence date, matching the desktop behaviour.",
+        "source": "TR-1",
+        "verify": "browser",
+        "how_to_verify": "Open the same account on a mobile viewport, open an Upcoming row's menu, and post it; the transaction must land on that row's date."
+      },
+      {
+        "id": "AC-6",
+        "check": "No transaction is ever created dated before the occurrence the user selected, for any of the four upcoming rows.",
+        "source": "TR-1",
+        "verify": "test"
+      }
+    ],
+    "evidence": [
+      "Reproduced live against $PREVIEW_URL (http://localhost:3001, compose mode, local-only) with Playwright + chromium, on a fresh budget: created account 'Checking', set upcoming length to '1 month', created schedule 'Paycheck' (payee Employer, +100.00, weekly on Friday from today 2026-10-02, Automatically add transaction on) — exactly the reporter's setup. The account register then showed five rows: 10/02/2026 Due, and 10/09, 10/16, 10/23, 10/30 all Upcoming.\n\nStep 1 — selected the 10/02 Due row, opened 'transactions-select-button' -> 'Post transaction'. Result: the 10/02 row became a real transaction ('Categorize', 100.00). Correct.\n\nStep 2 — selected the 10/09 Upcoming row, same menu. Result: a SECOND 10/02/2026 transaction appeared, the 10/09 row was still 'Upcoming', and the account balance read 200.00 instead of 100.00.\n\nObserved rows after both steps (verbatim from the run):\n   10/30/2026 | Upcoming\n   10/23/2026 | Upcoming\n   10/16/2026 | Upcoming\n   10/09/2026 | Upcoming\n   10/02/2026 | Categorize\n   10/02/2026 | Categorize\n\nA screenshot of the register at that point showed '2 uncategorized transactions', balance 200.00, and both 10/02 rows present — the reporter's exact screenshot ('two entries for 11/25/2025 and the upcoming transaction is still there').\n\nNo console errors and no failed network requests accompanied the failure — the write succeeded and produced the wrong date, which is why this is invisible to error-based detection.\n\nInstrumentation note: the runs were driven by a scratch Playwright script (written to the repo root, run with `node`, and deleted afterwards — it is not part of the diff). A stale react-aria tooltip overlay container left over from the 'Change upcoming length' modal intercepted pointer events on the transaction rows and had to be removed from the DOM before the select cells could be clicked; that is a test-harness artefact, unrelated to this bug.\n\nCode confirmation of the mechanism, after observing the failure: computeSchedulePreviewTransactions builds ids as 'preview/' + schedule.id + '/' + date (packages/loot-core/src/shared/schedules.ts:500) — the date is the third segment. Account.onScheduleAction maps `ids.map(id => id.split('/')[1])` (packages/desktop-client/src/components/accounts/Account.tsx:1559), keeping only the schedule id, then sends `schedule/post-transaction` with `{ id }`. postTransactionForSchedule accepts only `{ id, today }` and dates the transaction `today ? currentDay() : schedule.next_date` (packages/loot-core/src/server/schedules/app.ts:550-575). The same file's onViewSchedule correctly reads `parts[1]` for the schedule id — the date-parsing asymmetry is visible in one place. All four mobile onPost handlers do the same `parts[1]`-only truncation."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Re-derive the occurrence date on the server from schedule.next_date plus the recurrence when a bare schedule id is posted.",
+        "rejected_because": "It cannot work: the server is never told WHICH occurrence the user clicked, so there is nothing to derive from. It would also have to re-implement the recurrence and the 'upcoming length' window logic that computeSchedulePreviewTransactions already owns, and could disagree with it."
+      },
+      {
+        "approach": "Change the preview row id to carry the date somewhere else (a query param, a separate field on the synthetic transaction).",
+        "rejected_because": "The date is already in the id and every consumer can reach it. Re-encoding it would churn the id format that Balance.tsx, ScheduledTransactionMenuModal and the context-menu code all parse with split('/'), with no behavioural gain."
+      },
+      {
+        "approach": "Post the transaction at the clicked date but leave the schedule's next_date alone.",
+        "rejected_because": "Incomplete — the schedule would keep pointing at an already-posted occurrence and the register would show a duplicate preview for it. The implementer should advance next_date past the posted occurrence as part of the fix, and the tests should pin that."
+      },
+      {
+        "approach": "Disable 'Post transaction' on rows that are not the first upcoming occurrence.",
+        "rejected_because": "Hides the feature rather than fixing it. The user can legitimately want to post a future occurrence early, and the report is that doing so picks the wrong date."
+      }
+    ],
+    "risks": [
+      "The Schedules page, the auto-post service (advanceSchedulesService) and the mobile Schedules list all pass a BARE schedule id, not a preview id. Any fix must keep those on the existing next_date behaviour — a change that assumes a date is always present would break auto-posting. This is why the date parameter must be optional.",
+      "'Post transaction today' deliberately overrides the date with currentDay(); the `today: true` path must keep precedence over any passed occurrence date.",
+      "skip-next-date and 'Mark as completed' share the same id-truncation shape in the same handlers. They are NOT part of this fix's symptom (skip advances next_date, which is arguably correct for a bare schedule id), but a reviewer should confirm they were considered rather than assume they are unaffected.",
+      "Threading a new parameter through four mobile files and the desktop Account handler touches five call sites; missing one leaves the bug live on that surface only. The e2e coverage below is deliberately per-surface for that reason."
+    ],
+    "out_of_scope": [
+      "The `getHasTransactionsQuery` / `isScheduleOccurrencePosted` matching-window logic in packages/loot-core/src/shared/schedules.ts — adjacent to this bug (it governs whether an occurrence counts as already posted) but not the cause of the wrong date, and changing it would alter forecast and status behaviour well beyond this ticket.",
+      "The stale `transactions-select-button` / `transactions-select-tooltip` test ids in packages/desktop-client/e2e/page-models/account-page.ts, which no longer exist in the component source and made the existing e2e page-model unable to drive a post at all. Worth a separate issue; not required for this fix."
+    ],
+    "qa_script": [
+      "1. Fresh budget, no server ('Start budgeting'). Create account 'Checking'.\n2. Schedules page -> 'Change upcoming length' -> '1 month' -> Save. Dismiss the tour toast.\n3. Schedules page -> 'Add new schedule'. Name 'Paycheck', payee 'Employer', account 'Checking', amount +100.00 (use 'Make positive'), Date -> 'Every week on' Friday starting today, Apply. Tick 'Automatically add transaction'. Add.\n4. Open the Checking account. Confirm five rows: today 'Due' plus four 'Upcoming' at +7/+14/+21/+28 days.\n5. REGRESSION BASELINE — this is the check that failed on current code: select the row dated today+7 (not the Due row), open the select button -> 'Post transaction'. Assert a transaction is created dated today+7 and that the today+7 Upcoming preview is GONE. On current code a second transaction dated TODAY appears instead and the today+7 preview remains.\n6. Repeat step 5 for today+14, today+21 and today+28. Assert each creates its own transaction on its own date and no two transactions share a date.\n7. Assert the account balance equals 400.00 after all four posts (100 each) and there are no uncategorized duplicates.\n8. Assert 'Post transaction today' on a remaining Upcoming row still dates it today.\n9. Post a schedule from the Schedules PAGE (bare schedule id) and assert it lands on that schedule's next_date, unchanged.\n10. Repeat steps 5-6 at a mobile viewport via the scheduled-transaction menu to cover the four mobile handlers.\n11. Reload the page and confirm the posted transactions and the remaining Upcoming previews persist — the fix must survive a reload (a store-only fix would not)."
+    ],
+    "unknowns": [
+      "Whether the intended product behaviour for posting a FUTURE occurrence is to also advance the schedule's next_date past it, or to leave next_date alone and rely on occurrence-level matching. The work order assumes the former (advance), which is what makes the preview disappear as the reporter expects, but this is a product judgement the maintainer may want to confirm.",
+      "Whether posting a future occurrence should be allowed at all, or whether the UI should prompt. The report treats it as a supported action, so this plan preserves it."
+    ],
+    "route_request": {
+      "type": "insert_stage",
+      "stage": "project",
+      "reason": "Not requested as part of the fix — flagged only because the fix touches four mobile components plus the shared post-transaction handler, and the repo has no record yet of the preview-id <-> schedule-id contract that all eight call sites depend on. A one-time entry in .sdlc/memory/project.md noting that preview row ids are 'preview/<scheduleId>/<date>' and that the date is the third segment would stop the next agent re-deriving it. The existing debug -> implement -> review -> qa route is otherwise correct and sufficient for this change."
+    }
+  },
+  "validated_from": "debug",
+  "validated_at": "2026-10-02T11:14:28.715Z",
+  "validated_ac_changes": []
 }
