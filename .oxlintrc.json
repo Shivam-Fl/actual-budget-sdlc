@@ -2,7 +2,7 @@
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["react", "typescript", "import", "jsx-a11y"],
   // Vendored third-party agent skill scripts; not maintained in this repo
-  "ignorePatterns": ["**/skills/impeccable/**"],
+  "ignorePatterns": ["**/skills/impeccable/**", ".sdlc/**", "bin/sdlc"],
   "jsPlugins": [
     "./packages/eslint-plugin-actual/lib/index.js",
     "eslint-plugin-typescript-paths",

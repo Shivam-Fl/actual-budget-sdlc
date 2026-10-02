@@ -20,5 +20,12 @@
       }
     ],
     "newlinesBetween": true
-  }
+  },
+  "ignorePatterns": [
+    ".sdlc/**",
+    "bin/sdlc",
+    ".github/workflows/sdlc-*.yml",
+    ".github/workflows/ci-verify.yml",
+    ".github/ISSUE_TEMPLATE/**"
+  ]
 }
