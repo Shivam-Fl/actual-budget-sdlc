@@ -275,5 +275,196 @@
       "Only CalendarCard exercises the nesting today, so the shared fix is protected by a test rather than by 17 real reproductions — a second card gaining a control would not have been caught before this change, and would not be caught now if someone reintroduces a button wrapper."
     ],
     "mode": "committed"
-  }
+  },
+  "approved_work_order": {
+    "issue": 22,
+    "version": 1,
+    "understanding": "ReportCard, the shared wrapper all 17 dashboard cards render inside, wraps its content in a <Button variant=\"bare\"> whenever the card has a `to` route and is not in edit mode (ReportCard.tsx:108-127). The component library's Button renders react-aria-components' Button and forwards only className, so it always emits a literal <button>. Any widget body containing its own button nests <button> inside <button>. CalendarCard's per-month Button (CalendarCard.tsx:443) is the only body that does so today — I re-grepped all 17 callers — so it is the card React names, but the fault is the wrapper, not CalendarCard. /reports/custom and /reports/spending never mount ReportCard, which is why they are clean. Fix at the shared layer so every widget is corrected at once (IAC-4). I reproduced the nesting and validated the proposed replacement and its tests by running them, not by reading them.",
+    "root_cause": "ReportCard renders its children inside a literal <Button> as the card's click target. The component library's Button wraps react-aria-components' Button and offers no element override, so it always emits a <button>. Any dashboard widget body containing a button produces invalid <button>-inside-<button> DOM. The wrapper is the fault: the same nesting would appear in any widget rendering a control, and ReportCard is the single shared layer all 17 cards pass through.",
+    "approach": "Replace the <Button variant=\"bare\"> wrapping `content` in ReportCard's clickable branch with a <View role=\"button\" tabIndex={0}> carrying onClick and an Enter/Space onKeyDown — the idiom already used by CleanupListRow, TypePicker and EmptyState in this repo. This removes the <button> element from the card's own markup so descendants may legally contain buttons, correcting every card through one shared change. Deliberately do NOT add aria-label: a role=\"button\" element still derives its accessible name from its contents, which keeps the e2e page model's name-based selectors matching — verified by test. Carry over height/width 100%, textAlign left and overflow visible, and add cursor: pointer (the old Button got it from its &[data-hovered] rule). Keep the Button import — Layout's edit-mode menu still uses it. Add a unit test rendering ReportCard with a button child, asserting the DOM contains no `button button` and that React logs no nesting warning. Keep AC-5 as a browser capture-and-compare gate, NOT a test gate: the previous plan was rejected for claiming VRT baselines proved the layout when the command it named cannot compare a pixel, so the layout check is stated as what it is.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/reports/ReportCard.tsx",
+        "action": "edit",
+        "change": "In the `if (to && !isEditing && !disableClick)` branch (lines 108-127), hoist `const goToReport = () => navigate(to, { state: { goBack: true } });` above the return, then replace the <Button variant=\"bare\" onPress={...}>{content}</Button> with a <View role=\"button\" tabIndex={0} onClick={goToReport} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goToReport(); } }} style={{ height: '100%', width: '100%', textAlign: 'left', overflow: 'visible', cursor: 'pointer' }}>{content}</View>. Add a comment stating why this is deliberately not a Button. Do not add aria-label. Leave the non-clickable branch, Layout, and the edit-mode menu Button untouched; keep the Button import, which Layout still needs.",
+        "why": "ReportCard is the shared wrapper for every dashboard card, so removing the <button> from its click surface un-nests every widget at once instead of card by card (IAC-4). The role=\"button\" + tabIndex idiom is already this repo's own pattern (BudgetAutomationsModal/CleanupListRow.tsx:31, TypePicker.tsx:45, EmptyState.tsx:80)."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/ReportCard.test.tsx",
+        "action": "create",
+        "change": "New vitest file. Mock '#hooks/useNavigate' with a vi.fn() so navigation is asserted directly, and mock '@actual-app/core/platform/client/connection' with '#mocks/connection' + initServer in beforeEach, both copied from packages/desktop-client/src/components/sidebar/Account.test.tsx. Wrap renders in TestProviders (store from configureTestAppStore, imported from '#mocks' which resolves to src/mocks.tsx) + MemoryRouter. Define a local AlwaysIntersectingObserver stub whose observe() immediately calls back with isIntersecting: true — jsdom has no IntersectionObserver, setupTests.ts stubs only ResizeObserver, and ReportCard renders no children until useIsInViewport reports the card visible, so a no-op stub silently renders an empty card and every assertion would pass vacuously. Seven cases: nesting absent in DOM and console; role button with tabindex 0 and content-derived name; click navigates; Enter and Space navigate (it.each); inner control click does not navigate; inner control keydown does not navigate. The last is new and matters: the card's onKeyDown is on an ancestor of the inner button, so if the inner control's own handling does not stop propagation the card would fire on Enter and BOTH handlers would run.",
+        "why": "IAC-1 is a console-cleanliness property a browser check can miss on a later regression; this pins it in CI. The navigation assertions cover IAC-3's keyboard half. Falsifiability was checked in both directions: the same file fails 3 of 7 cases against today's ReportCard and passes against a scratch copy carrying the fix."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/components/reports/ReportCard.test.tsx",
+        "action": "create",
+        "cases": [
+          "renders a card whose body contains a button without producing a button-inside-button element or logging React's validateDOMNesting warning",
+          "exposes the card as an element with role button, focusable via tabindex 0 and findable by a name derived from its contents",
+          "navigates to the card's route when the card body is clicked",
+          "navigates to the card's route when Enter is pressed on the focused card",
+          "navigates to the card's route when Space is pressed on the focused card",
+          "does not navigate when a control inside the widget body is clicked",
+          "does not navigate when Enter or Space is pressed on a control inside the widget body, so the card's ancestor keydown handler does not also fire"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "Loading /reports with a budget loaded produces no React validateDOMNesting warning about <button> inside <button>, with no interaction required — the console stays clean on first paint.",
+        "how_to_verify": "Open http://localhost:3001 with a demo budget loaded, navigate to /reports, watch the console without clicking. Repeat after a hard reload so the dashboard mounts from scratch.",
+        "source": "IAC-1",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "/reports/custom and /reports/spending still load with a clean console and behave exactly as today; neither route mounts ReportCard, so this change cannot affect them and QA confirms it did not.",
+        "how_to_verify": "Navigate to /reports/custom and then /reports/spending in turn; watch for console warnings and confirm each page renders its report as it does today.",
+        "source": "IAC-2",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "Every dashboard widget stays reachable by mouse and keyboard: clicking a card body opens the report, clicking a calendar card's month name navigates to that month rather than to the card, a custom-report card opens its report, and in edit mode each card's menu button opens the context menu.",
+        "how_to_verify": "On /reports: click a card body; click a calendar card's month name and confirm the URL carries that month; Tab to a card and press Enter; focus a month name, press Enter and confirm only that navigation happens; click 'Edit dashboard' and open a card's menu.",
+        "source": "IAC-3",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-4",
+        "check": "The nesting is removed once at the shared card layer: ReportCard no longer renders a <button> around its children, so every dashboard widget is fixed by that one change and no widget is un-nested individually.",
+        "how_to_verify": "Run `yarn workspace @actual-app/web test` and confirm ReportCard.test.tsx passes; review the diff to confirm ReportCard.tsx is the only production file changed. The test asserts `button button` is empty in the rendered DOM, which makes the shared-layer claim testable rather than asserted.",
+        "source": "IAC-4",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "The dashboard's visual layout does not shift: card heights, widths, spacing, hover shadow and inner chart rendering are unchanged. The old Button was a flex row with alignItems/justifyContent center, flexShrink 0, borderRadius 4, a hover background-color, and styles.smallText's fontSize 13; the replacement View is a flex column with alignItems stretch and inherits font-size and colour from FinancesApp rather than setting them. This is the one change most likely to move pixels, and it is verified by capture-and-compare in a browser, not by any automated gate.",
+        "how_to_verify": "Set the viewport to exactly 1280x720, load /reports with the demo budget, wait for the grid to settle, and capture a full-page screenshot. Do the same on the base commit at the same viewport and same budget, and compare. Any single shifted card is a regression to fix, not to re-baseline. State plainly in the QA report that CI does NOT run this check: .sdlc/config.yml sets verify.e2e to an empty string.",
+        "source": "IAC-4",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-6",
+        "check": "The card's inherited text colour and font-size are unchanged by dropping the Button. The old Button supplied color: theme.buttonBareText (--color-pageText) and fontSize 13 on the element wrapping the card body; the replacement View supplies neither, so the card body inherits both from FinancesApp's root View and the 13px html/body default. If either resolves differently under a non-default theme (midnight, palette), text in widget bodies that sets no colour of its own shifts.",
+        "how_to_verify": "Load /reports under each theme the app offers (light, dark, midnight, and any palette variant reachable from Settings) and compare a widget body that renders text without an explicit colour against the base commit at the same viewport. Report any colour or size difference as a regression to fix, not to accept.",
+        "source": "IAC-4",
+        "verify": "browser"
+      }
+    ],
+    "qa_script": [
+      "Start the app with a budget loaded (use 'View demo' on the setup screen after choosing 'Don't use a server') and open http://localhost:3001/reports.",
+      "With no interaction at all, confirm the console logs no React validateDOMNesting warning about <button> inside <button>.",
+      "Hard-reload /reports and repeat the console check, so the dashboard is confirmed clean on a fresh mount rather than only after client-side navigation.",
+      "Navigate to /reports/custom and then /reports/spending; confirm both still render their report and both consoles stay clean.",
+      "Click the body of a dashboard card and confirm it still navigates to that report.",
+      "Click a calendar card's month name and confirm the URL carries that month (not the bare calendar route) — the inner control must win, not the card.",
+      "Keyboard: Tab until a card is focused and press Enter; confirm it navigates. Then Tab to a month name, press Enter, and confirm the URL changes exactly once, to that month, and does not also trigger the card's own navigation. Repeat with Space.",
+      "Right-click a card and confirm the context menu still opens with Rename / Remove / Copy to dashboard (the listener sits on the Layout View wrapping the click surface, so the event must still bubble to it).",
+      "Click 'Edit dashboard'; open one card's menu button and confirm the context menu appears. Confirm each card is still draggable.",
+      "Check the card still reads as clickable (pointer cursor on hover, hover shadow) and that hovering a card body no longer tints the whole card with the old bare Button's rgba(100,100,100,0.15) hover background — the replacement View has no such tint, so a card that looks identical means the tint was never visible beneath the card's own background, and a card that looks flatter is a real difference to report.",
+      "Set the viewport to exactly 1280x720, load /reports with the demo budget, wait for the grid to settle, and capture a full-page screenshot. Do the same on the base commit at the same viewport and the same budget. Compare the two captures: card boxes, gutters, chart renders, text colour and text size must match. This is the layout gate — CI does not run it.",
+      "Switch through every theme the app offers (light, dark, midnight, and any palette variants in Settings) at the same viewport and repeat the comparison for a widget body whose text sets no explicit colour.",
+      "Optional, environment-sensitive: `yarn vrt` sets VRT=true and DOES compare pixels, which the plain `playwright` script does not — e2e/fixtures.ts:53-62 returns a synthetic pass whenever VRT is unset, so `yarn workspace @actual-app/web run playwright test reports.test.ts` can never detect a visual regression and must NOT be reported as evidence that the baselines pass. The reports dashboard baselines are reports.test.ts-snapshots/Reports-loads-net-worth-and-cash-flow-reports-{1,2,3}-chromium-linux.png (asserted at reports.test.ts:47). They were generated through bin/run-vrt, which serves the app over HTTPS at https://localhost:3001, so running VRT against a plain-HTTP local server will produce diffs that prove nothing — treat any diff as unproven until reproduced on the unmodified base commit under the same conditions. Never regenerate a baseline to make a shift pass."
+    ],
+    "risks": [
+      "Dropping properties, not just the element: the old Button applied color: theme.buttonBareText, fontSize 13 (styles.smallText), a hover background-color of rgba(100,100,100,0.15) in light and rgba(200,200,200,0.3) in dark/midnight, an active background-color, border-radius 4, and WebkitAppRegion 'no-drag'. The replacement View supplies none of these. Most are inert (the sole child carries explicit width/height 100%; 'no-drag' only bites beneath a 'drag' ancestor, of which FinancesApp has one, the Titlebar), but colour and font-size are inherited properties and neither is set on the replacement. AC-5 and AC-6 are how this gets confirmed.",
+      "Inherited text colour under non-default themes: theme.buttonBareText resolves to var(--color-pageText) in light.css and dark.css, but midnight.css and palette.css were not checked line by line. If any theme defines buttonBareText as something other than pageText, every widget body that sets no explicit colour changes colour in that theme.",
+      "Losing interactivity: the card's click surface stops being a real <button>, so activation is driven by explicit onClick and Enter/Space onKeyDown. A missed key shows only under keyboard QA.",
+      "Double activation by keyboard: the card's onKeyDown now sits on an ancestor of the inner button rather than being intercepted by a nested native button. If the inner control's own key handling does not stop propagation, Enter on a month name fires both handlers and the card navigates after the month.",
+      "Accessible-name regression: adding an aria-label would silently break the e2e page model's name-based selectors. Verified by test that a role=\"button\" element still derives its name from its contents.",
+      "Screen-reader semantics differ between a real <button> and a div with role=\"button\". The trade is deliberate but it changes how the card is announced.",
+      "Nested-interactive is still an ARIA concern: role=\"button\" containing a button is flagged by axe even though the HTML nesting is now valid. No axe tooling is wired into this repo's tests today."
+    ],
+    "out_of_scope": [
+      "Changing the dashboard's layout, widget set or ordering (ruled out by the ticket).",
+      "Redesigning the dashboard cards' appearance beyond what the nesting fix requires (ruled out by the ticket).",
+      "The command palette's DialogTitle warning, which is its own issue.",
+      "Converting ReportCard's edit-mode menu Button or any card's internals — the change is confined to the card's own click surface.",
+      "Adding aria-labels or restructuring card contents to improve accessibility beyond keeping today's behaviour.",
+      "Fixing the app's general pattern of nested interactive controls outside the dashboard's card wrapper.",
+      "Making CI run the VRT or e2e suites. .sdlc/config.yml is a forbidden path for this ticket and CI's e2e step is empty by configuration, so the layout gate stays a QA-run browser comparison.",
+      "Auditing or re-baselining the 48 existing files in reports.test.ts-snapshots/."
+    ],
+    "kind": "bug",
+    "confidence": 80,
+    "confidence_rationale": "I did not take the proposal on trust. I read ReportCard.tsx, the component library's Button.tsx and View.tsx, the 17 ReportCard callers, the e2e page model, fixtures.ts and playwright.config.ts myself, then wrote a scratch test and ran it twice: against today's ReportCard it reports `button button` count 1, two React validateDOMNesting console messages, card tagName BUTTON, and zero navigate calls for Enter and Space (so react-aria really does swallow those keydowns today — the tests are falsifiable, not vacuous). Against a scratch copy carrying the proposed fix it reports count 0, zero console messages, tagName DIV, navigate called once with ('/reports/net-worth', {state: {goBack: true}}) for click, Enter and Space, and zero calls when the inner control is clicked. I restored the file and the working tree is clean. What holds the score at 80 rather than higher is entirely the visual half: jsdom has no layout engine, CI runs no e2e (verify.e2e is empty in .sdlc/config.yml), and the VRT baselines were generated over HTTPS by bin/run-vrt so they cannot settle the question in this environment either. The functional half — the diagnosis, the layer, the mechanism, the test's falsifiability — is verified rather than reasoned, and I am confident about it. What would move the number up: the AC-5 capture-and-compare and the AC-6 theme sweep both coming back clean. Down: a single shifted card box, or a theme in which inherited text colour differs from what the old Button supplied.",
+    "reproduced": true,
+    "evidence": [
+      "Reproduced today by running a scratch test against unmodified ReportCard: container.querySelectorAll('button button').length === 1, and two captured console.error messages — 'In HTML, %s cannot be a descendant of <%s>.' and '<%s> cannot contain a nested %s>.' — React's validateDOMNesting pair. The card element's tagName is BUTTON.",
+      "Falsifiability confirmed in both directions: the same scratch assertions fail 3 of 6 against today's ReportCard (nesting present, and both Enter and Space record zero navigate calls because react-aria's Button does not surface them to fireEvent.keyDown) and pass 6 of 6 against a scratch copy carrying the proposed fix. The file was restored afterwards; git status shows only the untracked plan/ directory.",
+      "Verified the proposed replacement by running it: `button button` count 0, zero nesting console messages, card tagName DIV with role=button and tabindex 0, and navigate called exactly once with ('/reports/net-worth', {state: {goBack: true}}) for each of click, Enter and Space. Clicking the inner control leaves navigate at zero calls.",
+      "Verified e2e selector compatibility by test rather than by assertion: getByRole('button', { name: /^Balance Forecast/i }) resolves to the wrapper and its tagName is DIV, confirming the accessible name still derives from contents with no aria-label. This is the selector shape reports-page.ts:19, 65 and 130 uses.",
+      "New finding, not in the proposal: the card's onKeyDown is now on an ancestor of the inner button. I probed Enter and Space dispatched at the inner control and navigate stayed at zero calls, so propagation is stopped in this configuration — but that is a property of react-aria's inner Button, not of ReportCard, and it would regress silently if the inner control ever changes. Now a test case and a QA step.",
+      "New finding, not in the proposal: the old Button supplied more than layout. component-library/src/Button.tsx applies color: theme.buttonBareText, fontSize: 13 via styles.smallText, a hover background-color (rgba(100,100,100,0.15) in light.css:170, rgba(200,200,200,0.3) in dark.css:170 and midnight.css:171), an active background-color, and WebkitAppRegion: 'no-drag'. The replacement View supplies none of them. Most are inert, but colour and font-size are inherited properties and neither is set on the replacement. That is why AC-6 exists alongside AC-5.",
+      "Callers re-counted independently: 17 files render <ReportCard> (FormulaResult, SummaryNumber, and 15 cards under reports/). Grepping each card body from its <ReportCard onward for <Button, <a, <input, <select, MenuButton, Toggletip and role=\"button\", CalendarCard.tsx:443 is the only file with a hit.",
+      "Confirmed the nesting can only arise in the clickable branch: the non-clickable return (ReportCard.tsx:129) renders Layout>content with no button, and Layout's edit-mode menu Button (line 221) is a sibling of children inside Layout, not an ancestor.",
+      "Component library read: packages/component-library/src/Button.tsx renders ReactAriaButton and forwards only className, with no element override, so it always emits a literal <button>; View.tsx renders a plain <div> with viewStyles (display flex, flexDirection column, alignItems stretch).",
+      "The last rejection's objection was correct and is answered at the source. The previous qa_script's final step told QA to run `yarn workspace @actual-app/web run playwright test reports.test.ts`, which cannot compare a pixel: e2e/fixtures.ts:53-62 returns { pass: true, message: () => 'passed' } whenever process.env.VRT is unset, and desktop-client package.json defines \"playwright\": \"playwright\" against \"vrt\": \"cross-env VRT=true npx playwright test\". .sdlc/config.yml:172 sets verify.e2e to an empty string, so ci-verify's e2e step skips entirely. AC-5 is therefore verify: \"browser\" with a concrete before/after capture at a fixed 1280x720 viewport.",
+      "The proposal's claim that VRT needs the pinned container is verified: bin/run-vrt sets E2E_START_URL to https://localhost:3001 and playwright.config.ts:20 takes baseURL from that variable, so the 48 baselines were generated over HTTPS and will diff against a plain-HTTP local server for reasons unrelated to this change.",
+      "Repo precedent for the idiom confirmed at BudgetAutomationsModal/CleanupListRow.tsx:31, TypePicker.tsx:45 and EmptyState.tsx:80.",
+      "Test scaffolding paths verified to exist: '#mocks' resolves to packages/desktop-client/src/mocks.tsx (package.json:34) exporting TestProviders/configureTestAppStore/createTestQueryClient; '#mocks/connection' resolves to src/mocks/connection.ts; '#hooks/useNavigate' resolves to src/hooks/useNavigate.ts; and packages/desktop-client/src/components/sidebar/Account.test.tsx is a working template.",
+      "Environment note: node_modules was already present in this checkout and vitest ran against it, so the verification reflects the committed dependency set."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Change CalendarCard's month-name Button to a clickable View, leaving ReportCard's wrapping Button in place.",
+        "rejected_because": "Exactly the card-by-card un-nesting the ticket forbids (IAC-4): it fixes the one card that fails today and leaves every other card one control away from the same invalid DOM."
+      },
+      {
+        "approach": "Keep the wrapper a real <button> and stop every card body from rendering interactive elements.",
+        "rejected_because": "Same objection, and it constrains the design of every widget body permanently to work around a wrapper's markup."
+      },
+      {
+        "approach": "Keep the <Button> and use an element override / render prop to make it render a non-button element.",
+        "rejected_because": "Read the source: react-aria-components' Button offers no element override, and the component library's Button hard-codes it, forwarding only className. Working around it would mean changing shared component-library code used app-wide, far beyond this bug."
+      },
+      {
+        "approach": "Keep the card's <button> but move it to a sibling absolutely-positioned overlay of the card, rather than an ancestor of the content.",
+        "rejected_because": "Raises a second tab stop for the same destination, duplicates the card's accessible name, and makes the overlay intercept clicks on the inner controls — strictly worse for a low-risk DOM-validity fix."
+      },
+      {
+        "approach": "Give the card wrapper react-aria's usePress on a div instead of hand-written onClick/onKeyDown.",
+        "rejected_because": "A heavier dependency surface for behaviour this repo already writes by hand in three places. Reuse the established idiom rather than introduce a second one; if a reviewer prefers usePress it is a local swap in the same file."
+      },
+      {
+        "approach": "Keep AC-5 at verify: \"test\" and name the VRT baselines as the gate, as the previous plan did.",
+        "rejected_because": "This is precisely why the last plan was rejected, and re-filing it would earn the same verdict again. Two independent reasons: the command the qa_script named cannot compare a pixel (VRT unset short-circuits to a synthetic pass), and no CI job runs either command because verify.e2e is empty. Reclassified as a browser capture-and-compare, with VRT demoted to an explicitly-optional step."
+      },
+      {
+        "approach": "Keep the Button element but strip its button-ness by overriding the rendered tag with CSS (display: block on a button element).",
+        "rejected_because": "Does not change the DOM: validateDOMNesting reads the element's tag, not its computed display, so the nesting warning and the invalid HTML both remain. Rejected on the mechanism, not on taste."
+      }
+    ],
+    "assumptions": [
+      "CalendarCard is the only widget body currently rendering a button, so it is the one React names. Re-grepped all 17 card files and confirmed it; a widget added later with its own control is protected by the shared fix regardless.",
+      "Playwright and testing-library compute a role=\"button\" element's accessible name from its contents, so the e2e page model's name-based selectors keep matching. Verified under testing-library; the Playwright suite was not run, but both implement the same accname-from-content rule for role=button.",
+      "Right-click still opens the card context menu after the change, because useContextMenu binds its 'contextmenu' listener to the Layout View (ReportCard.tsx:156, 151), an ancestor of the click surface, so the event still bubbles to it. Read from code, not run in a browser.",
+      "The dashboard layout does not shift. Argued property by property in evidence — but that argument covers the properties the old Button set, and the inherited colour and font-size it also set are a separate matter now covered by AC-6. Only a real browser settles either.",
+      "Enter and Space on the focused card are handled correctly in a real browser, not just under fireEvent. The unit tests prove the handler fires; the browser pass proves react-aria's removal does not leave the card unreachable by keyboard in practice.",
+      "vitest in this checkout runs against the committed dependency set (node_modules was already present)."
+    ],
+    "unknowns": [
+      "Whether the dashboard shows any visual shift in a real browser. jsdom cannot measure layout and CI runs no e2e, so the answer requires the AC-5 capture-and-compare.",
+      "Whether inherited text colour or font-size differs from what the old Button supplied under midnight or a palette theme. I confirmed light.css and dark.css resolve buttonBareText to --color-pageText; I did not read every theme file line by line, which is why AC-6 sweeps them in a browser rather than asserting they match.",
+      "Whether React emits further validateDOMNesting warnings on /reports beyond the nested button once this one is gone. Only this warning was reproduced; other routes' warnings were out of scope.",
+      "Whether screen-reader announcement of the card changes in a way reviewers care about. The DOM role is unchanged, but the element is no longer a native button, and role=\"button\" wrapping another button is still an ARIA nested-interactive finding.",
+      "Whether any e2e assertion depends on the card being a native <button> element rather than merely having role=button — the selectors in reports-page.ts read as role-based, but the suite was not run."
+    ],
+    "debate_summary": "There was no critique to judge: plan/critique.json is an empty object, so the council produced one position and no rebuttal. That is a gap in the council, not a reason to rubber-stamp the proposal — so I treated the proposal as unverified and re-derived it from the code myself.\n\nEverything load-bearing in it survives. I reproduced the nesting by running a test rather than reading one: `button button` count 1, React's validateDOMNesting pair captured, card tagName BUTTON. I applied the proposed fix to a scratch copy and re-ran: count 0, zero console messages, tagName DIV, and navigate called exactly once with the right arguments for click, Enter and Space. I independently re-grepped the 17 ReportCard callers and confirmed CalendarCard is the only body rendering a button, confirmed the three repo precedents for the role=\"button\" idiom, and confirmed the component library's Button has no element override. I also confirmed the last rejection's technical claim in full: fixtures.ts:53-62 short-circuits to a synthetic pass whenever VRT is unset, the plain `playwright` script does not set it, and .sdlc/config.yml:172 has verify.e2e empty. The proposal's answer to that rejection — reclassify AC-5 from verify:\"test\" to verify:\"browser\" with a concrete capture-and-compare, and demote VRT to an explicitly-optional step that says what it cannot prove — is the right one, and it is the main reason this plan should not be rejected a second time for the same reason.\n\nWhere I depart from the proposal is by adding to it, in three places, all found by reading code the proposal did not read.\n\nFirst, and most concretely: the proposal enumerated which of the old Button's layout properties are dropped (flex row/center, borderRadius, WebkitAppRegion) and argued each is inert. That argument is right. But the old Button also set color: theme.buttonBareText, fontSize 13 via styles.smallText, a hover background-color and an active background-color — and the proposal's style carry-over list mentions none of them. Most are genuinely inert: the sole child carries explicit width/height 100%, the card body paints its own opaque background over the button's, and 'no-drag' only bites beneath a 'drag' ancestor, of which FinancesApp has exactly one. But colour and font-size are inherited properties, and the replacement View sets neither, so the card body now inherits both from FinancesApp's root View and the html/body default instead of from the Button. In light and dark those resolve to the same values. I did not read midnight.css or palette.css line by line, so I cannot promise that. That is a new acceptance criterion (AC-6) and an added theme sweep in the QA script, not a change to the approach.\n\nSecond: the card's onKeyDown now sits on an ancestor of the inner button, where before a native button intercepted it. The proposal tested that clicking the inner control does not activate the card but did not test Enter on it. I probed it — navigate stayed at zero, because react-aria's inner Button stops propagation — but that is a property of the inner control, not of ReportCard, and it would regress silently if the inner control changed. It is now a seventh test case and a QA step.\n\nThird: I checked the proposal's claim that the VRT baselines need the pinned container over HTTPS, and it holds — bin/run-vrt sets E2E_START_URL to https://localhost:3001 and playwright.config.ts:20 reads baseURL from it. So the optional VRT step is honest about why it may diff for unrelated reasons.\n\nThe honest disagreement is about confidence, not about the plan. I set 80, two below the proposal's 82, and the reason is specific: the proposal's residual risk list is organised around layout, which is right, but it treats the dropped Button properties as a closed question once the layout ones are argued away. They are not closed, because two of the dropped properties are inherited rather than geometric, and one of them has a theme-dependent answer I did not verify. Two more acceptance criteria and two more QA steps is what that costs, and it is cheaper than discovering a midnight-theme text-colour shift after merge.\n\nI did not seek any change to the route. debug → implement → review → qa is right: debug was needed to pin down that the fault is the shared wrapper rather than CalendarCard, implement changes one production file, review is where the div-with-button-role trade and the dropped-style carry-over deserve a second opinion, and qa is the only stage that can actually see the console warning and the pixel delta. Nothing I found needs a stage the route lacks.",
+    "residual_risks": [
+      "Layout shift from the flex-row Button to the flex-column View is the most likely way this change is wrong. QA must do the AC-5 capture-and-compare; do not regenerate a VRT baseline to make a real shift pass.",
+      "A visual difference in hover affordance: the old Button tinted the entire card body on hover (rgba(100,100,100,0.15)); the replacement has no tint. If the card body was not fully opaque in some theme, hovering a card will look different. AC-6's theme sweep is where this would surface.",
+      "No CI gate catches a layout shift on this repo. verify.e2e is empty by configuration and .sdlc/config.yml is a forbidden path for this ticket, so the browser capture is the whole of the gate.",
+      "The Playwright suite was not executed. Selectors were read and reasoning-checked, and testing-library confirmed name resolution, but the suite itself has not been run against the change.",
+      "Screen-reader semantics change: the card is announced as a div with a button role rather than a native button. Deliberate, but a reviewer may want an opinion.",
+      "The change is confined to the dashboard's card wrapper; any other nested-interactive-control pattern elsewhere in the app is untouched and may still warn in the console.",
+      "Only CalendarCard exercises the nesting today, so the shared fix is protected by a test rather than by 17 real reproductions — a second card gaining a control would not have been caught before this change, and would not be caught now if someone reintroduces a button wrapper."
+    ],
+    "mode": "committed"
+  },
+  "approved_too_high": false
 }
