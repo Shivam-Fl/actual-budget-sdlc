@@ -218,7 +218,17 @@
       }
     ]
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/server/schedules/app.ts",
+    "packages/loot-core/src/shared/transactions.ts",
+    "packages/desktop-client/src/components/accounts/Account.tsx",
+    "packages/desktop-client/src/components/mobile/accounts/AccountTransactions.tsx",
+    "packages/desktop-client/src/components/mobile/accounts/OnBudgetAccountTransactions.tsx",
+    "packages/desktop-client/src/components/mobile/accounts/OffBudgetAccountTransactions.tsx",
+    "packages/desktop-client/src/components/mobile/accounts/AllAccountTransactions.tsx",
+    "packages/loot-core/src/server/schedules/app.test.ts",
+    "packages/loot-core/src/shared/transactions.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
