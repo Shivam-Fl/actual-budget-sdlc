@@ -566,6 +566,10 @@ async function postTransactionForSchedule({
     amount: getScheduledAmount(schedule._amount),
     date: today ? currentDay() : schedule.next_date,
     schedule: schedule.id,
+    // Records WHICH occurrence this discharges. The date above is the user's to
+    // edit; this is not, and matching on it is what keeps a re-dated payment
+    // from un-paying the occurrence it was posted for.
+    schedule_occurrence: schedule.next_date,
     cleared: false,
   };
 
