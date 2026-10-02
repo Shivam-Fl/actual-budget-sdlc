@@ -412,8 +412,5 @@
       "diagnosis": "The QA agent ran to completion and did its job; it just never wrote the one file the workflow gates on. The action returned subtype=success, is_error=false after 323 turns / 51 minutes / $20.19, so the step is green, and the agent left 24 evidence files in qa-evidence/ (a 636-line three-file Playwright suite, 19 screenshots, a HAR, a trace, plus an out-of-band better-sqlite3 check against the Electron registration). check-evidence.mjs then said the report could not be read and the judge's valida",
       "run": "36983695548"
     }
-  ],
-  "retry_after": "2026-10-02T13:28:52.893Z",
-  "retry_stage": "qa",
-  "parked_at": "2026-10-02T09:28:52.893Z"
+  ]
 }
