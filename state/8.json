@@ -18,7 +18,154 @@
   },
   "halted": null,
   "pending": null,
-  "work_order": null,
+  "work_order": {
+    "issue": 8,
+    "version": 1,
+    "kind": "bug",
+    "reproduced": true,
+    "confidence": 90,
+    "confidence_rationale": "Reproduced independently of the previous run: in Chromium against the live app at $PREVIEW_URL following the reporter's exact steps, and again in the repo's own vitest harness driving the real sql.js REGEXP user function. The throwing line was read in both platform files and the two sibling guards were read. Both objections from the last review were checked rather than assumed, and both are upheld: `#\\d+` provably matches zero demo notes (returns rows=0 against a table that contains a `#mortgage` note), and the `#mortgage` row count is produced by a date-gated loop plus an RNG, so it is not a safe constant. The fix itself is unverified, which is the implementer's job. I could not run Firefox (only Chromium is installed here), but the throwing code is platform-independent JavaScript on the shared web/sql.js path, and it reproduces in vitest, so no Firefox-specific behaviour is plausible.",
+    "understanding": "Typing a backslash into the value of a `notes matches` rule condition crashes the app with the red 'Something internally went wrong' banner. The trigger is not the final value but the intermediate keystrokes on the way to it. RuleEditor re-runs its live preview on every keystroke (packages/desktop-client/src/components/rules/RuleEditor.tsx:1086-1105): `send('make-filters-from-conditions')` turns the condition into `{ notes: { $regexp: value } }`, the AQL compiler inlines the user-supplied pattern as the SQL literal `REGEXP('<value>', <field>)`, and the SQLite user function `regexp` does an unguarded `new RegExp(regex)`. After typing `#` then a backslash, the intermediate value `#\\` is an incomplete regex and `new RegExp` throws a SyntaxError from inside the SQL engine, so it escapes every application-level caller: it rejects the `aqlQuery` promise in RuleEditor's `run()` (called as `void run()` with no `.catch()`), and the backend separately emits `server-error`, which `handleGlobalEvents` turns into the banner. I reproduced the full matrix live on the demo budget, one keystroke at a time: `#mortgage` typed through all 9 characters produced no banner and no page errors at any step, while a single `\\` and the sequence `#`,`\\` both produced the banner plus 2 errors, the console showing `[Exception] Error at c.handleError ... at runQuery$1 ... at runQuery`. The `#\\d+` case is the sharpest evidence, because its final value is a perfectly valid regex and yet it still crashes: the banner appears at the second keystroke (`#\\`), proving the throw happens per-keystroke rather than on the final value.",
+    "root_cause": "The SQLite `REGEXP` user function calls `new RegExp(regex)` with no try/catch, so any syntactically incomplete pattern the user happens to have typed mid-edit throws a SyntaxError from inside the SQL engine rather than returning a value. Because the throw bypasses application error handling it both rejects the caller's promise (unhandled in RuleEditor's `void run()`) and triggers the global `server-error` banner. A partial regex is a normal transient state while typing, not an exceptional one, so the data layer must treat an unparseable pattern as 'matches nothing' -- which is exactly what the two sibling regex consumers already do (`Condition.eval` at packages/loot-core/src/server/rules/condition.ts:421-427 and `evaluateClause` at packages/loot-core/src/server/forecast/forecast-filters.ts:254-259). The sqlite `regexp` function is the one consumer that was missed.",
+    "approach": "Wrap the `new RegExp` call in the sqlite `REGEXP` user function in a try/catch that returns 0 (no match), matching the existing precedent in `Condition.eval` and `evaluateClause`. This is the correct fix location rather than a guard in RuleEditor: `regexp` is the single chokepoint every `$regexp` query reaches, so one guard there fixes the rule-editor preview and every sibling caller at once. Two independent `$regexp` producers feed it -- `conditionsToAQL`'s `matches` case (packages/loot-core/src/server/transactions/transaction-rules.ts:652-653), which backs both the rule editor and the `FilterButton` used by custom reports and the accounts header (packages/desktop-client/src/components/filters/FiltersMenu.tsx emits `RuleConditionEntity`), and the `hasTags`/`hasAnyTag` cases at lines 685 and 701 -- whereas patching RuleEditor would leave all of them still crashing. Apply the identical change to both platform registrations (`platform/server/sqlite/index.ts` for the browser/sql.js build and `index.electron.ts` for better-sqlite3), since they define the function separately. Do not change AQL compilation or the rule editor: an invalid pattern should still compile and simply match nothing, so a saved rule with an in-progress regex stays inert rather than breaking.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.ts",
+        "action": "edit",
+        "change": "Wrap `new RegExp(regex)` in the `regexp` function (line 211) in a try/catch that returns 0 on an unparseable pattern, so a half-typed rule condition returns no rows instead of throwing a SyntaxError out of the SQL engine. Registration at line 259 (`db.create_function('REGEXP', regexp)`) is unchanged.",
+        "why": "The throwing line, and the single chokepoint all `$regexp` AQL queries pass through in the browser/sql.js build -- the build the reporter and this reproduction both exercised."
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.ts",
+        "action": "edit",
+        "change": "Apply the same try/catch guard to the separate `regexp` definition (line 124) registered at line 139 with `db.function('REGEXP', { deterministic: true }, regexp)`, so the Electron/desktop build behaves identically to the browser build.",
+        "why": "The two platform files define `regexp` independently; fixing only one leaves the desktop build crashing on the same input."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "cases": [
+          "a raw `SELECT ... WHERE REGEXP('\\\\', string)` returns no rows instead of throwing, with rows seeded in the table -- verified failing on the current code, where it throws a SyntaxError",
+          "the same query against a table with no rows does not throw, pinning the harness behaviour that SQLite only invokes a per-row user function when a row is scanned, so a test without seeded data cannot detect this bug",
+          "a valid pattern `REGEXP('n.', string)` still matches, so the guard did not turn every pattern into a no-op",
+          "a valid pattern that matches nothing (`normal`, and `#\\\\d+`) returns an empty result rather than throwing -- `#\\\\d+` is a well-formed regex that legitimately matches no note, and it must not be treated as an error"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/server/transactions/transaction-rules.test.ts",
+        "action": "edit",
+        "cases": [
+          "a `notes matches` condition whose value is an incomplete regex (a lone backslash) resolves the query instead of rejecting it, with a transaction present so REGEXP is invoked per row",
+          "a `notes matches` condition with the exact mid-typing sequence that crashed the editor (`#` followed by a backslash) resolves instead of rejecting",
+          "a `notes matches` condition with other unterminated constructs (`#[` and `(`) resolves instead of rejecting",
+          "a valid `notes matches` pattern still returns only the transactions it should, so the guard did not turn every pattern into a no-op"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "In the rule editor, typing a value containing a backslash into a `notes matches` condition produces no error banner and the editor stays usable; the preview table shows no matching transactions while the pattern is incomplete, and the intermediate keystrokes -- not just the final value -- are what previously crashed.",
+        "how_to_verify": "First establish the control (see AC-2), then clear the input and type `#`, then a single backslash, then `d`, then `+`, one keystroke at a time with a pause between each. Assert that no 'Something internally went wrong' notification appears at ANY point, that the condition editor remains rendered and interactive, and that the browser console records no unhandled rejection. On the current code the banner appears at the second keystroke (`#\\`). Note that the completed value `#\\d+` is only the end of the input sequence, not evidence of anything by itself -- it is a valid regex that matches no demo note, so seeing an empty preview for it is correct behaviour and is asserted separately in AC-3.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "POSITIVE CONTROL: a valid regex that does match demo data still matches after the fix. Type `#mortgage` into the `notes matches` value and assert the 'This rule applies to these transactions' table is NON-EMPTY -- it lists at least one Housy House row in the Mortgage category. Do not assert an exact row count; the count is produced by a date-gated generator loop and is not a stable constant.",
+        "how_to_verify": "On the demo budget, type `#mortgage` and wait ~2s for the preview to settle. Assert the table is not empty and that it contains at least one row whose payee is 'Housy House' with category 'Mortgage'. This is the only assertion that can distinguish 'valid regex still matches' from 'the guard swallowed every pattern and returned no rows for everything' -- a guard that returned no-match unconditionally would pass every 'no banner' check in AC-1 while breaking all regex matching. Any specific row total is deliberately not asserted here: the demo's `#mortgage` rows come partly from a loop gated on `isBefore(date, currentDay)` (packages/loot-core/src/mocks/budget.ts:317-353) and partly from an unseeded `pickRandom` over the payee list, so the number changes with the day of month the demo is generated.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "A valid-but-non-matching regex is inert, not an error: typing `normal` (matches nothing) and typing the valid regex `#\\d+` (matches nothing, because no demo note contains a digit after the `#`) each produce NO error banner and an empty preview table, which is distinct from the crash.",
+        "how_to_verify": "Type `normal` into the value input and confirm no banner and an empty table. Then type `#\\d+` and confirm the same. The correct outcome for both is 0 rows and no banner. This is stated separately from AC-1 precisely because AC-1's crash sequence is about the intermediate `#\\` keystroke, not about `#\\d+` as a final value.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-4",
+        "check": "An unparseable pattern is inert rather than an error: a saved rule whose `matches` value is an invalid regex applies to no transactions instead of breaking rule application or the transaction list.",
+        "how_to_verify": "Save the rule with an invalid pattern, then open an account (Bank of America) and confirm the transaction list renders with no error notification.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-5",
+        "check": "A regression test asserts that a `notes matches` condition with an incomplete regex resolves the AQL query rather than rejecting it, with a transaction present in the database so the REGEXP function is actually invoked per row.",
+        "how_to_verify": "Run the new cases. The sqlite-level cases are verified failing on the current code -- in the repo's own vitest harness against the real sql.js user function, seeded with a row whose note is '#mortgage note', the patterns `\\`, `asdfasdf\\`, `#\\`, `#[` and `(` all threw, while `n.` and `#mortgage` returned 1 row, `normal` returned 0 rows, and `#\\d+` returned 0 rows. The empty-table case is included deliberately because SQLite only invokes a per-row user function when at least one row is scanned -- a test without seeded data passes against the broken code and proves nothing.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "The existing `should match regex on text fields` test in packages/loot-core/src/platform/server/sqlite/index.test.ts and the existing `matches handles invalid regex` test in packages/loot-core/src/server/rules/index.test.ts both continue to pass, and the full loot-core suite stays green.",
+        "how_to_verify": "Run `yarn test`. The rules test covers the `Condition.eval` path, which already had its guard and must not regress; the sqlite test pins that valid-pattern behaviour is unchanged by the new guard.",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "Open the app, choose 'Try the demo' from the initial setup screen (Don't use a server), and let the demo budget finish loading. It is fully seeded -- 8 accounts and a populated transaction list -- so no fixture creation is needed.",
+      "If the welcome tour modal appears, click 'Take the tour' then 'Skip tour' to dismiss it; it overlays the Rules page and will otherwise intercept clicks.",
+      "Navigate to Rules (More > Rules).",
+      "Click 'Create new rule'.",
+      "In the first condition row set the field to `notes` and the operator to `matches`.",
+      "POSITIVE CONTROL: type `#mortgage` into the value input and wait ~2s. Assert the 'This rule applies to these transactions' table is NOT empty and contains at least one Housy House / Mortgage row. Do NOT assert an exact row count -- the count varies with the day of month the demo is generated. This control is mandatory: without it, every 'no banner' assertion below would also pass against a guard that returns no-match for every pattern.",
+      "Clear the input. Type `#`, then a single backslash, then `d`, then `+` -- one keystroke at a time, pausing ~1s between characters so each intermediate value is previewed.",
+      "Assert no red 'Something internally went wrong' notification appears at ANY point, that the condition editor is still rendered and interactive, and that the console shows no unhandled rejection. On the current code the banner appears at the `#\\` keystroke.",
+      "Clear the input and type just a single backslash; assert again that no error banner appears and the preview table is simply empty.",
+      "Clear the input and type `asdfasdf\\`; assert again that no error banner appears.",
+      "Clear the input and type `normal` -- a valid regex matching nothing -- and confirm there is no banner and the preview is empty.",
+      "Clear the input and type `#\\d+` -- also a VALID regex, which matches nothing because no demo note contains a digit after the '#'. Confirm there is no banner and the preview is empty. (The crash on this input happens at the intermediate `#\\` keystroke in step 8, not at the completed value.)",
+      "Save the rule, then open the Bank of America account and confirm the transaction list renders with no error notification."
+    ],
+    "evidence": [
+      "Browser, $PREVIEW_URL (chromium, demo budget), following the reporter's exact steps (Rules > Create new rule, field `notes`, op `matches`), typing one keystroke at a time with ~1.1s between characters. Result matrix: `#mortgage` typed through all 9 characters -> no banner and 0 page errors at every step, preview populated (Housy House / Mortgage rows and Deposit rows visible); `\\` -> banner shown, 2 errors; `#`,`\\`,`d`,`+` -> banner appears at the second keystroke (`#\\`), 2 errors. This reproduces the report and shows the trigger is the backslash, not the field/operator selection. After the crash the input value itself resets to a single character, confirming the component was torn down and remounted by the error.",
+      "The console stack for the failing cases confirms the throw escapes the SQL engine into the query path: `[Exception] Error at c.handleError ... at a.step ... at runQuery$1 ... at runQuery ... at execQuery$1 ... at execTransactionsBasic ... at runCompiledAqlQuery ... at compileAndRunAqlQuery`.",
+      "Reproduced a third time in the repo's own vitest harness against the real sql.js REGEXP user function, seeded with a row whose note is `#mortgage note`. Exact output: `n.` => OK rows=1; `#mortgage` => OK rows=1; `normal` => OK rows=0; `#\\d+` => OK rows=0; `\\` => THREW; `asdfasdf\\` => THREW; `#\\` => THREW; `#[` => THREW; `(` => THREW. This isolates the failure to the sqlite function itself, independent of the UI. Command: `yarn workspace @actual-app/core exec vitest run src/platform/server/sqlite/regexp-repro.test.ts` (scratch file, since removed).",
+      "OBJECTION 1 UPHELD, and it invalidates the previous plan's AC-2 as written. The same vitest matrix shows `#\\d+` is a well-formed regex that returns 0 rows against a table that DOES contain a `#mortgage` note -- it does not throw and it does not match. Statically confirmed too: every `#[0-9]` occurrence in packages/loot-core/src/mocks/budget.ts is a hex colour in the tag-definition table (lines 28, 36, 41, 46, 54, 60, 63, 65, 66, 69), never note text, and the full tag vocabulary built by getTagNotes (lines 80-121) contains no digit. So no demo note matches `#\\d+`. The previous AC-2 asserted that `#\\d+` 'shows the transactions whose notes match' while its own how_to_verify pivoted to a different pattern (`#mortgage`) with the opposite expected outcome -- a rule and a worked example that contradict each other, and as a control it could not distinguish 'valid regex still matches' from 'the guard returns no-match for everything'. AC-2 has been rewritten around `#mortgage` with a non-empty assertion, and the `#\\d+` behaviour is now stated correctly on its own in AC-3.",
+      "OBJECTION 2 UPHELD as a safety claim, though the number happens to have been reproducible today. I measured the `#mortgage` preview at exactly 10 rendered rows with 2 Housy House rows across three fresh playwright-UA sessions and one fresh non-playwright (Firefox) UA session -- so 10 is not simply wrong. But it is not a safe constant to assert: the demo's `#mortgage` rows come partly from a bills loop gated on `isBefore(date, currentDay)` (packages/loot-core/src/mocks/budget.ts:317-353), so the count depends on the day of month the budget is generated, and partly from `pickRandom` over the expense payee list for the account-transaction fill, which is unseeded `Math.random` outside playwright (packages/loot-core/src/mocks/random.ts exports `Platform.isPlaywright ? pseudoRandom : Math.random`). Today is the 2nd of the month, which is close to the worst case for the gate. Every exact count has therefore been removed from the plan in favour of a non-empty assertion plus a named Housy House / Mortgage row.",
+      "Confirmed the throwing line in both platform files, which define `regexp` independently: packages/loot-core/src/platform/server/sqlite/index.ts:211-213 (registered at line 259 via `db.create_function('REGEXP', regexp)`) and packages/loot-core/src/platform/server/sqlite/index.electron.ts:124-126 (registered at line 139 via `db.function('REGEXP', { deterministic: true }, regexp)`). Both are a bare `new RegExp(regex).test(text || '')` with no guard.",
+      "Confirmed the two sibling regex consumers already guard and return no-match: `Condition.eval` wraps `new RegExp` in try/catch at packages/loot-core/src/server/rules/condition.ts:421-427 (`logger.log('invalid regexp in matches condition', e); return false;`) and `evaluateClause` does the same for `$regexp` at packages/loot-core/src/server/forecast/forecast-filters.ts:254-259. The sqlite `regexp` function is the one consumer that was missed.",
+      "Confirmed the fix location is the shared chokepoint rather than the UI: `conditionsToAQL`'s `matches` case at packages/loot-core/src/server/transactions/transaction-rules.ts:652-653 emits `$regexp`, and the `hasTags`/`hasAnyTag` cases at lines 685 and 701 emit `$regexp` too; the AQL compiler turns every `$regexp` into `REGEXP(...)` at packages/loot-core/src/server/aql/compiler.ts:737-740. `FilterButton` in packages/desktop-client/src/components/filters/FiltersMenu.tsx offers `matches` and emits `RuleConditionEntity` to custom reports and the accounts header, so those callers reach the same unguarded function -- a RuleEditor-only guard would leave them crashing.",
+      "Confirmed the crash surface, not just the crash: the rejected `aqlQuery` promise in RuleEditor is called as `void run()` with no `.catch()` (packages/desktop-client/src/components/rules/RuleEditor.tsx:1104), so it becomes an unhandled page rejection; independently the backend emits `server-error` and `handleGlobalEvents` (packages/desktop-client/src/global-events.ts:23-25) dispatches `addGenericErrorNotification`, producing the banner.",
+      "Scope note on coverage: the reproduction exercised the web/sql.js build in Chromium. Only Chromium is installed on this runner, so the reporter's Firefox was not tested directly. The crashing code is platform-independent JavaScript evaluated inside SQLite, and it reproduces identically in the vitest harness, so no Firefox-specific behaviour is plausible -- but the fix must be applied to the better-sqlite3 (Electron) registration as well, which is asserted by the test and by the two-file change list rather than by a browser run.",
+      "Confirmed the demo budget is NOT an empty template (a premise the earlier review wrongly challenged). `default-db.sqlite` really does contain 0 accounts and 0 transactions, but `createDemoBudget` calls `createTestBudget` at packages/loot-core/src/server/budgetfiles/app.ts:463 after copying that file, and `createTestBudget` (packages/loot-core/src/mocks/budget.ts:746) creates 8 accounts and a full transaction set whose notes carry tags like `#mortgage`, `#utilities` and `#groceries`. Confirmed live: the Rules sidebar lists 8 accounts and the `#mortgage` preview returns rows. No `#123` fixture is needed and none exists."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Add a try/catch around the `aqlQuery` call in RuleEditor's preview effect, so a bad pattern just yields an empty preview list.",
+        "rejected_because": "Fixes the symptom at one call site and leaves the crash live for every other `$regexp` consumer -- the `matches` filter in custom reports and the accounts header goes through the same `conditionsToAQL` -> `$regexp` -> `REGEXP()` path. One guard in the shared sqlite function is both the smaller diff and the correct fix."
+      },
+      {
+        "approach": "Validate the regex in `Condition`'s parse step (or in `conditionsToAQL`) and reject the condition with an 'Invalid regex' field error, mirroring the existing `assert` error types.",
+        "rejected_because": "Plausible as a UX improvement, but it changes user-visible behaviour well beyond the reported bug (a previously accepted rule with an invalid pattern would start erroring) and it does not protect the other `$regexp` callers. Worth a follow-up ticket, not this fix."
+      },
+      {
+        "approach": "Escape or otherwise normalise the pattern in the AQL compiler's `$regexp` case before inlining it as a SQL string literal.",
+        "rejected_because": "Addresses a real adjacent weakness (the compiler only escapes single quotes) but it is not the cause here. The value reaching SQLite is correct -- `#\\d+` is the user's intended regex, and the vitest matrix shows it is well-formed and simply matches nothing -- and the throw happens in the JS engine after the SQL string is well-formed. Escaping would change matching semantics for every valid regex."
+      },
+      {
+        "approach": "Escape the backslash before compiling so `#\\` is treated as a literal backslash rather than an incomplete escape.",
+        "rejected_because": "Wrong semantics. `matches` is a documented regex operator; users type `\\d`, `\\s`, `\\\\` deliberately. Escaping would break every working regex to fix the crash."
+      },
+      {
+        "approach": "Debounce the live preview so intermediate keystrokes are never queried.",
+        "rejected_because": "Would reduce how often the crash fires but not remove it -- paste, autofill, and any single invalid keystroke still throws. It hides the throw rather than fixing the cause."
+      }
+    ],
+    "risks": [
+      "Returning 0 for an invalid pattern means such a query silently matches nothing. That matches the behaviour already established for `Condition.eval` and `forecast-filters`, so a rule saved with a broken pattern is inert rather than destructive -- but a typo in a regex is quiet. A follow-up UX ticket for a visible 'invalid regex' field error would address that.",
+      "The fix touches a shared SQLite function used by every `$regexp` query. The guard is additive and only changes behaviour on the previously-throwing path, so valid patterns are unaffected -- but `yarn test` should be run in full to confirm nothing depended on the throw.",
+      "`regexp` is registered separately in the sql.js and better-sqlite3 platform files. Missing the Electron one would leave the desktop build crashing on the same input, so both files must change in the same commit.",
+      "This addresses the crash only. The unhandled `void run()` rejection in RuleEditor's preview effect remains a latent way for any future query error to surface as a full-app error banner; that is a separate robustness concern, not part of this fix."
+    ],
+    "out_of_scope": [
+      "Showing a visible 'Invalid regex' error on the rule condition field instead of a silently empty preview -- a UX follow-up, deliberately not bundled with the crash fix.",
+      "Adding a `.catch()` to RuleEditor's `void run()` preview effect to stop any query failure from becoming a global error banner. Related but a distinct robustness change with its own trade-offs.",
+      "Making the demo budget's transaction generation deterministic, which is what would be needed to assert an exact `#mortgage` row count. Out of scope here; the acceptance criteria avoid depending on a count instead.",
+      "The upstream issue at actualbudget/actual#6317 remains open; this fixes the crash in this copy only."
+    ],
+    "mode": "committed"
+  },
   "touch_paths": [],
   "acceptance": [],
   "planned_route": [
@@ -110,299 +257,9 @@
   "validated_from": "debug",
   "validated_at": "2026-10-02T07:08:01.788Z",
   "validated_ac_changes": [],
-  "validated_work_order": {
-    "issue": 8,
-    "version": 3,
-    "kind": "bug",
-    "reproduced": true,
-    "confidence": 90,
-    "confidence_rationale": "Reproduced independently of the previous run: in Chromium against the live app at $PREVIEW_URL following the reporter's exact steps, and again in the repo's own vitest harness driving the real sql.js REGEXP user function. The throwing line was read in both platform files and the two sibling guards were read. Both objections from the last review were checked rather than assumed, and both are upheld: `#\\d+` provably matches zero demo notes (returns rows=0 against a table that contains a `#mortgage` note), and the `#mortgage` row count is produced by a date-gated loop plus an RNG, so it is not a safe constant. The fix itself is unverified, which is the implementer's job. I could not run Firefox (only Chromium is installed here), but the throwing code is platform-independent JavaScript on the shared web/sql.js path, and it reproduces in vitest, so no Firefox-specific behaviour is plausible.",
-    "understanding": "Typing a backslash into the value of a `notes matches` rule condition crashes the app with the red 'Something internally went wrong' banner. The trigger is not the final value but the intermediate keystrokes on the way to it. RuleEditor re-runs its live preview on every keystroke (packages/desktop-client/src/components/rules/RuleEditor.tsx:1086-1105): `send('make-filters-from-conditions')` turns the condition into `{ notes: { $regexp: value } }`, the AQL compiler inlines the user-supplied pattern as the SQL literal `REGEXP('<value>', <field>)`, and the SQLite user function `regexp` does an unguarded `new RegExp(regex)`. After typing `#` then a backslash, the intermediate value `#\\` is an incomplete regex and `new RegExp` throws a SyntaxError from inside the SQL engine, so it escapes every application-level caller: it rejects the `aqlQuery` promise in RuleEditor's `run()` (called as `void run()` with no `.catch()`), and the backend separately emits `server-error`, which `handleGlobalEvents` turns into the banner. I reproduced the full matrix live on the demo budget, one keystroke at a time: `#mortgage` typed through all 9 characters produced no banner and no page errors at any step, while a single `\\` and the sequence `#`,`\\` both produced the banner plus 2 errors, the console showing `[Exception] Error at c.handleError ... at runQuery$1 ... at runQuery`. The `#\\d+` case is the sharpest evidence, because its final value is a perfectly valid regex and yet it still crashes: the banner appears at the second keystroke (`#\\`), proving the throw happens per-keystroke rather than on the final value.",
-    "root_cause": "The SQLite `REGEXP` user function calls `new RegExp(regex)` with no try/catch, so any syntactically incomplete pattern the user happens to have typed mid-edit throws a SyntaxError from inside the SQL engine rather than returning a value. Because the throw bypasses application error handling it both rejects the caller's promise (unhandled in RuleEditor's `void run()`) and triggers the global `server-error` banner. A partial regex is a normal transient state while typing, not an exceptional one, so the data layer must treat an unparseable pattern as 'matches nothing' -- which is exactly what the two sibling regex consumers already do (`Condition.eval` at packages/loot-core/src/server/rules/condition.ts:421-427 and `evaluateClause` at packages/loot-core/src/server/forecast/forecast-filters.ts:254-259). The sqlite `regexp` function is the one consumer that was missed.",
-    "approach": "Wrap the `new RegExp` call in the sqlite `REGEXP` user function in a try/catch that returns 0 (no match), matching the existing precedent in `Condition.eval` and `evaluateClause`. This is the correct fix location rather than a guard in RuleEditor: `regexp` is the single chokepoint every `$regexp` query reaches, so one guard there fixes the rule-editor preview and every sibling caller at once. Two independent `$regexp` producers feed it -- `conditionsToAQL`'s `matches` case (packages/loot-core/src/server/transactions/transaction-rules.ts:652-653), which backs both the rule editor and the `FilterButton` used by custom reports and the accounts header (packages/desktop-client/src/components/filters/FiltersMenu.tsx emits `RuleConditionEntity`), and the `hasTags`/`hasAnyTag` cases at lines 685 and 701 -- whereas patching RuleEditor would leave all of them still crashing. Apply the identical change to both platform registrations (`platform/server/sqlite/index.ts` for the browser/sql.js build and `index.electron.ts` for better-sqlite3), since they define the function separately. Do not change AQL compilation or the rule editor: an invalid pattern should still compile and simply match nothing, so a saved rule with an in-progress regex stays inert rather than breaking.",
-    "files": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.ts",
-        "action": "edit",
-        "change": "Wrap `new RegExp(regex)` in the `regexp` function (line 211) in a try/catch that returns 0 on an unparseable pattern, so a half-typed rule condition returns no rows instead of throwing a SyntaxError out of the SQL engine. Registration at line 259 (`db.create_function('REGEXP', regexp)`) is unchanged.",
-        "why": "The throwing line, and the single chokepoint all `$regexp` AQL queries pass through in the browser/sql.js build -- the build the reporter and this reproduction both exercised."
-      },
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.ts",
-        "action": "edit",
-        "change": "Apply the same try/catch guard to the separate `regexp` definition (line 124) registered at line 139 with `db.function('REGEXP', { deterministic: true }, regexp)`, so the Electron/desktop build behaves identically to the browser build.",
-        "why": "The two platform files define `regexp` independently; fixing only one leaves the desktop build crashing on the same input."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
-        "action": "edit",
-        "cases": [
-          "a raw `SELECT ... WHERE REGEXP('\\\\', string)` returns no rows instead of throwing, with rows seeded in the table -- verified failing on the current code, where it throws a SyntaxError",
-          "the same query against a table with no rows does not throw, pinning the harness behaviour that SQLite only invokes a per-row user function when a row is scanned, so a test without seeded data cannot detect this bug",
-          "a valid pattern `REGEXP('n.', string)` still matches, so the guard did not turn every pattern into a no-op",
-          "a valid pattern that matches nothing (`normal`, and `#\\\\d+`) returns an empty result rather than throwing -- `#\\\\d+` is a well-formed regex that legitimately matches no note, and it must not be treated as an error"
-        ]
-      },
-      {
-        "path": "packages/loot-core/src/server/transactions/transaction-rules.test.ts",
-        "action": "edit",
-        "cases": [
-          "a `notes matches` condition whose value is an incomplete regex (a lone backslash) resolves the query instead of rejecting it, with a transaction present so REGEXP is invoked per row",
-          "a `notes matches` condition with the exact mid-typing sequence that crashed the editor (`#` followed by a backslash) resolves instead of rejecting",
-          "a `notes matches` condition with other unterminated constructs (`#[` and `(`) resolves instead of rejecting",
-          "a valid `notes matches` pattern still returns only the transactions it should, so the guard did not turn every pattern into a no-op"
-        ]
-      }
-    ],
-    "acceptance": [
-      {
-        "id": "AC-1",
-        "check": "In the rule editor, typing a value containing a backslash into a `notes matches` condition produces no error banner and the editor stays usable; the preview table shows no matching transactions while the pattern is incomplete, and the intermediate keystrokes -- not just the final value -- are what previously crashed.",
-        "how_to_verify": "First establish the control (see AC-2), then clear the input and type `#`, then a single backslash, then `d`, then `+`, one keystroke at a time with a pause between each. Assert that no 'Something internally went wrong' notification appears at ANY point, that the condition editor remains rendered and interactive, and that the browser console records no unhandled rejection. On the current code the banner appears at the second keystroke (`#\\`). Note that the completed value `#\\d+` is only the end of the input sequence, not evidence of anything by itself -- it is a valid regex that matches no demo note, so seeing an empty preview for it is correct behaviour and is asserted separately in AC-3.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-2",
-        "check": "POSITIVE CONTROL: a valid regex that does match demo data still matches after the fix. Type `#mortgage` into the `notes matches` value and assert the 'This rule applies to these transactions' table is NON-EMPTY -- it lists at least one Housy House row in the Mortgage category. Do not assert an exact row count; the count is produced by a date-gated generator loop and is not a stable constant.",
-        "how_to_verify": "On the demo budget, type `#mortgage` and wait ~2s for the preview to settle. Assert the table is not empty and that it contains at least one row whose payee is 'Housy House' with category 'Mortgage'. This is the only assertion that can distinguish 'valid regex still matches' from 'the guard swallowed every pattern and returned no rows for everything' -- a guard that returned no-match unconditionally would pass every 'no banner' check in AC-1 while breaking all regex matching. Any specific row total is deliberately not asserted here: the demo's `#mortgage` rows come partly from a loop gated on `isBefore(date, currentDay)` (packages/loot-core/src/mocks/budget.ts:317-353) and partly from an unseeded `pickRandom` over the payee list, so the number changes with the day of month the demo is generated.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-3",
-        "check": "A valid-but-non-matching regex is inert, not an error: typing `normal` (matches nothing) and typing the valid regex `#\\d+` (matches nothing, because no demo note contains a digit after the `#`) each produce NO error banner and an empty preview table, which is distinct from the crash.",
-        "how_to_verify": "Type `normal` into the value input and confirm no banner and an empty table. Then type `#\\d+` and confirm the same. The correct outcome for both is 0 rows and no banner. This is stated separately from AC-1 precisely because AC-1's crash sequence is about the intermediate `#\\` keystroke, not about `#\\d+` as a final value.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-4",
-        "check": "An unparseable pattern is inert rather than an error: a saved rule whose `matches` value is an invalid regex applies to no transactions instead of breaking rule application or the transaction list.",
-        "how_to_verify": "Save the rule with an invalid pattern, then open an account (Bank of America) and confirm the transaction list renders with no error notification.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-5",
-        "check": "A regression test asserts that a `notes matches` condition with an incomplete regex resolves the AQL query rather than rejecting it, with a transaction present in the database so the REGEXP function is actually invoked per row.",
-        "how_to_verify": "Run the new cases. The sqlite-level cases are verified failing on the current code -- in the repo's own vitest harness against the real sql.js user function, seeded with a row whose note is '#mortgage note', the patterns `\\`, `asdfasdf\\`, `#\\`, `#[` and `(` all threw, while `n.` and `#mortgage` returned 1 row, `normal` returned 0 rows, and `#\\d+` returned 0 rows. The empty-table case is included deliberately because SQLite only invokes a per-row user function when at least one row is scanned -- a test without seeded data passes against the broken code and proves nothing.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-6",
-        "check": "The existing `should match regex on text fields` test in packages/loot-core/src/platform/server/sqlite/index.test.ts and the existing `matches handles invalid regex` test in packages/loot-core/src/server/rules/index.test.ts both continue to pass, and the full loot-core suite stays green.",
-        "how_to_verify": "Run `yarn test`. The rules test covers the `Condition.eval` path, which already had its guard and must not regress; the sqlite test pins that valid-pattern behaviour is unchanged by the new guard.",
-        "verify": "test"
-      }
-    ],
-    "qa_script": [
-      "Open the app, choose 'Try the demo' from the initial setup screen (Don't use a server), and let the demo budget finish loading. It is fully seeded -- 8 accounts and a populated transaction list -- so no fixture creation is needed.",
-      "If the welcome tour modal appears, click 'Take the tour' then 'Skip tour' to dismiss it; it overlays the Rules page and will otherwise intercept clicks.",
-      "Navigate to Rules (More > Rules).",
-      "Click 'Create new rule'.",
-      "In the first condition row set the field to `notes` and the operator to `matches`.",
-      "POSITIVE CONTROL: type `#mortgage` into the value input and wait ~2s. Assert the 'This rule applies to these transactions' table is NOT empty and contains at least one Housy House / Mortgage row. Do NOT assert an exact row count -- the count varies with the day of month the demo is generated. This control is mandatory: without it, every 'no banner' assertion below would also pass against a guard that returns no-match for every pattern.",
-      "Clear the input. Type `#`, then a single backslash, then `d`, then `+` -- one keystroke at a time, pausing ~1s between characters so each intermediate value is previewed.",
-      "Assert no red 'Something internally went wrong' notification appears at ANY point, that the condition editor is still rendered and interactive, and that the console shows no unhandled rejection. On the current code the banner appears at the `#\\` keystroke.",
-      "Clear the input and type just a single backslash; assert again that no error banner appears and the preview table is simply empty.",
-      "Clear the input and type `asdfasdf\\`; assert again that no error banner appears.",
-      "Clear the input and type `normal` -- a valid regex matching nothing -- and confirm there is no banner and the preview is empty.",
-      "Clear the input and type `#\\d+` -- also a VALID regex, which matches nothing because no demo note contains a digit after the '#'. Confirm there is no banner and the preview is empty. (The crash on this input happens at the intermediate `#\\` keystroke in step 8, not at the completed value.)",
-      "Save the rule, then open the Bank of America account and confirm the transaction list renders with no error notification."
-    ],
-    "evidence": [
-      "Browser, $PREVIEW_URL (chromium, demo budget), following the reporter's exact steps (Rules > Create new rule, field `notes`, op `matches`), typing one keystroke at a time with ~1.1s between characters. Result matrix: `#mortgage` typed through all 9 characters -> no banner and 0 page errors at every step, preview populated (Housy House / Mortgage rows and Deposit rows visible); `\\` -> banner shown, 2 errors; `#`,`\\`,`d`,`+` -> banner appears at the second keystroke (`#\\`), 2 errors. This reproduces the report and shows the trigger is the backslash, not the field/operator selection. After the crash the input value itself resets to a single character, confirming the component was torn down and remounted by the error.",
-      "The console stack for the failing cases confirms the throw escapes the SQL engine into the query path: `[Exception] Error at c.handleError ... at a.step ... at runQuery$1 ... at runQuery ... at execQuery$1 ... at execTransactionsBasic ... at runCompiledAqlQuery ... at compileAndRunAqlQuery`.",
-      "Reproduced a third time in the repo's own vitest harness against the real sql.js REGEXP user function, seeded with a row whose note is `#mortgage note`. Exact output: `n.` => OK rows=1; `#mortgage` => OK rows=1; `normal` => OK rows=0; `#\\d+` => OK rows=0; `\\` => THREW; `asdfasdf\\` => THREW; `#\\` => THREW; `#[` => THREW; `(` => THREW. This isolates the failure to the sqlite function itself, independent of the UI. Command: `yarn workspace @actual-app/core exec vitest run src/platform/server/sqlite/regexp-repro.test.ts` (scratch file, since removed).",
-      "OBJECTION 1 UPHELD, and it invalidates the previous plan's AC-2 as written. The same vitest matrix shows `#\\d+` is a well-formed regex that returns 0 rows against a table that DOES contain a `#mortgage` note -- it does not throw and it does not match. Statically confirmed too: every `#[0-9]` occurrence in packages/loot-core/src/mocks/budget.ts is a hex colour in the tag-definition table (lines 28, 36, 41, 46, 54, 60, 63, 65, 66, 69), never note text, and the full tag vocabulary built by getTagNotes (lines 80-121) contains no digit. So no demo note matches `#\\d+`. The previous AC-2 asserted that `#\\d+` 'shows the transactions whose notes match' while its own how_to_verify pivoted to a different pattern (`#mortgage`) with the opposite expected outcome -- a rule and a worked example that contradict each other, and as a control it could not distinguish 'valid regex still matches' from 'the guard returns no-match for everything'. AC-2 has been rewritten around `#mortgage` with a non-empty assertion, and the `#\\d+` behaviour is now stated correctly on its own in AC-3.",
-      "OBJECTION 2 UPHELD as a safety claim, though the number happens to have been reproducible today. I measured the `#mortgage` preview at exactly 10 rendered rows with 2 Housy House rows across three fresh playwright-UA sessions and one fresh non-playwright (Firefox) UA session -- so 10 is not simply wrong. But it is not a safe constant to assert: the demo's `#mortgage` rows come partly from a bills loop gated on `isBefore(date, currentDay)` (packages/loot-core/src/mocks/budget.ts:317-353), so the count depends on the day of month the budget is generated, and partly from `pickRandom` over the expense payee list for the account-transaction fill, which is unseeded `Math.random` outside playwright (packages/loot-core/src/mocks/random.ts exports `Platform.isPlaywright ? pseudoRandom : Math.random`). Today is the 2nd of the month, which is close to the worst case for the gate. Every exact count has therefore been removed from the plan in favour of a non-empty assertion plus a named Housy House / Mortgage row.",
-      "Confirmed the throwing line in both platform files, which define `regexp` independently: packages/loot-core/src/platform/server/sqlite/index.ts:211-213 (registered at line 259 via `db.create_function('REGEXP', regexp)`) and packages/loot-core/src/platform/server/sqlite/index.electron.ts:124-126 (registered at line 139 via `db.function('REGEXP', { deterministic: true }, regexp)`). Both are a bare `new RegExp(regex).test(text || '')` with no guard.",
-      "Confirmed the two sibling regex consumers already guard and return no-match: `Condition.eval` wraps `new RegExp` in try/catch at packages/loot-core/src/server/rules/condition.ts:421-427 (`logger.log('invalid regexp in matches condition', e); return false;`) and `evaluateClause` does the same for `$regexp` at packages/loot-core/src/server/forecast/forecast-filters.ts:254-259. The sqlite `regexp` function is the one consumer that was missed.",
-      "Confirmed the fix location is the shared chokepoint rather than the UI: `conditionsToAQL`'s `matches` case at packages/loot-core/src/server/transactions/transaction-rules.ts:652-653 emits `$regexp`, and the `hasTags`/`hasAnyTag` cases at lines 685 and 701 emit `$regexp` too; the AQL compiler turns every `$regexp` into `REGEXP(...)` at packages/loot-core/src/server/aql/compiler.ts:737-740. `FilterButton` in packages/desktop-client/src/components/filters/FiltersMenu.tsx offers `matches` and emits `RuleConditionEntity` to custom reports and the accounts header, so those callers reach the same unguarded function -- a RuleEditor-only guard would leave them crashing.",
-      "Confirmed the crash surface, not just the crash: the rejected `aqlQuery` promise in RuleEditor is called as `void run()` with no `.catch()` (packages/desktop-client/src/components/rules/RuleEditor.tsx:1104), so it becomes an unhandled page rejection; independently the backend emits `server-error` and `handleGlobalEvents` (packages/desktop-client/src/global-events.ts:23-25) dispatches `addGenericErrorNotification`, producing the banner.",
-      "Scope note on coverage: the reproduction exercised the web/sql.js build in Chromium. Only Chromium is installed on this runner, so the reporter's Firefox was not tested directly. The crashing code is platform-independent JavaScript evaluated inside SQLite, and it reproduces identically in the vitest harness, so no Firefox-specific behaviour is plausible -- but the fix must be applied to the better-sqlite3 (Electron) registration as well, which is asserted by the test and by the two-file change list rather than by a browser run.",
-      "Confirmed the demo budget is NOT an empty template (a premise the earlier review wrongly challenged). `default-db.sqlite` really does contain 0 accounts and 0 transactions, but `createDemoBudget` calls `createTestBudget` at packages/loot-core/src/server/budgetfiles/app.ts:463 after copying that file, and `createTestBudget` (packages/loot-core/src/mocks/budget.ts:746) creates 8 accounts and a full transaction set whose notes carry tags like `#mortgage`, `#utilities` and `#groceries`. Confirmed live: the Rules sidebar lists 8 accounts and the `#mortgage` preview returns rows. No `#123` fixture is needed and none exists."
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Add a try/catch around the `aqlQuery` call in RuleEditor's preview effect, so a bad pattern just yields an empty preview list.",
-        "rejected_because": "Fixes the symptom at one call site and leaves the crash live for every other `$regexp` consumer -- the `matches` filter in custom reports and the accounts header goes through the same `conditionsToAQL` -> `$regexp` -> `REGEXP()` path. One guard in the shared sqlite function is both the smaller diff and the correct fix."
-      },
-      {
-        "approach": "Validate the regex in `Condition`'s parse step (or in `conditionsToAQL`) and reject the condition with an 'Invalid regex' field error, mirroring the existing `assert` error types.",
-        "rejected_because": "Plausible as a UX improvement, but it changes user-visible behaviour well beyond the reported bug (a previously accepted rule with an invalid pattern would start erroring) and it does not protect the other `$regexp` callers. Worth a follow-up ticket, not this fix."
-      },
-      {
-        "approach": "Escape or otherwise normalise the pattern in the AQL compiler's `$regexp` case before inlining it as a SQL string literal.",
-        "rejected_because": "Addresses a real adjacent weakness (the compiler only escapes single quotes) but it is not the cause here. The value reaching SQLite is correct -- `#\\d+` is the user's intended regex, and the vitest matrix shows it is well-formed and simply matches nothing -- and the throw happens in the JS engine after the SQL string is well-formed. Escaping would change matching semantics for every valid regex."
-      },
-      {
-        "approach": "Escape the backslash before compiling so `#\\` is treated as a literal backslash rather than an incomplete escape.",
-        "rejected_because": "Wrong semantics. `matches` is a documented regex operator; users type `\\d`, `\\s`, `\\\\` deliberately. Escaping would break every working regex to fix the crash."
-      },
-      {
-        "approach": "Debounce the live preview so intermediate keystrokes are never queried.",
-        "rejected_because": "Would reduce how often the crash fires but not remove it -- paste, autofill, and any single invalid keystroke still throws. It hides the throw rather than fixing the cause."
-      }
-    ],
-    "risks": [
-      "Returning 0 for an invalid pattern means such a query silently matches nothing. That matches the behaviour already established for `Condition.eval` and `forecast-filters`, so a rule saved with a broken pattern is inert rather than destructive -- but a typo in a regex is quiet. A follow-up UX ticket for a visible 'invalid regex' field error would address that.",
-      "The fix touches a shared SQLite function used by every `$regexp` query. The guard is additive and only changes behaviour on the previously-throwing path, so valid patterns are unaffected -- but `yarn test` should be run in full to confirm nothing depended on the throw.",
-      "`regexp` is registered separately in the sql.js and better-sqlite3 platform files. Missing the Electron one would leave the desktop build crashing on the same input, so both files must change in the same commit.",
-      "This addresses the crash only. The unhandled `void run()` rejection in RuleEditor's preview effect remains a latent way for any future query error to surface as a full-app error banner; that is a separate robustness concern, not part of this fix."
-    ],
-    "out_of_scope": [
-      "Showing a visible 'Invalid regex' error on the rule condition field instead of a silently empty preview -- a UX follow-up, deliberately not bundled with the crash fix.",
-      "Adding a `.catch()` to RuleEditor's `void run()` preview effect to stop any query failure from becoming a global error banner. Related but a distinct robustness change with its own trade-offs.",
-      "Making the demo budget's transaction generation deterministic, which is what would be needed to assert an exact `#mortgage` row count. Out of scope here; the acceptance criteria avoid depending on a count instead.",
-      "The upstream issue at actualbudget/actual#6317 remains open; this fixes the crash in this copy only."
-    ]
-  },
-  "approved_work_order": {
-    "issue": 8,
-    "version": 3,
-    "kind": "bug",
-    "reproduced": true,
-    "confidence": 90,
-    "confidence_rationale": "Reproduced independently of the previous run: in Chromium against the live app at $PREVIEW_URL following the reporter's exact steps, and again in the repo's own vitest harness driving the real sql.js REGEXP user function. The throwing line was read in both platform files and the two sibling guards were read. Both objections from the last review were checked rather than assumed, and both are upheld: `#\\d+` provably matches zero demo notes (returns rows=0 against a table that contains a `#mortgage` note), and the `#mortgage` row count is produced by a date-gated loop plus an RNG, so it is not a safe constant. The fix itself is unverified, which is the implementer's job. I could not run Firefox (only Chromium is installed here), but the throwing code is platform-independent JavaScript on the shared web/sql.js path, and it reproduces in vitest, so no Firefox-specific behaviour is plausible.",
-    "understanding": "Typing a backslash into the value of a `notes matches` rule condition crashes the app with the red 'Something internally went wrong' banner. The trigger is not the final value but the intermediate keystrokes on the way to it. RuleEditor re-runs its live preview on every keystroke (packages/desktop-client/src/components/rules/RuleEditor.tsx:1086-1105): `send('make-filters-from-conditions')` turns the condition into `{ notes: { $regexp: value } }`, the AQL compiler inlines the user-supplied pattern as the SQL literal `REGEXP('<value>', <field>)`, and the SQLite user function `regexp` does an unguarded `new RegExp(regex)`. After typing `#` then a backslash, the intermediate value `#\\` is an incomplete regex and `new RegExp` throws a SyntaxError from inside the SQL engine, so it escapes every application-level caller: it rejects the `aqlQuery` promise in RuleEditor's `run()` (called as `void run()` with no `.catch()`), and the backend separately emits `server-error`, which `handleGlobalEvents` turns into the banner. I reproduced the full matrix live on the demo budget, one keystroke at a time: `#mortgage` typed through all 9 characters produced no banner and no page errors at any step, while a single `\\` and the sequence `#`,`\\` both produced the banner plus 2 errors, the console showing `[Exception] Error at c.handleError ... at runQuery$1 ... at runQuery`. The `#\\d+` case is the sharpest evidence, because its final value is a perfectly valid regex and yet it still crashes: the banner appears at the second keystroke (`#\\`), proving the throw happens per-keystroke rather than on the final value.",
-    "root_cause": "The SQLite `REGEXP` user function calls `new RegExp(regex)` with no try/catch, so any syntactically incomplete pattern the user happens to have typed mid-edit throws a SyntaxError from inside the SQL engine rather than returning a value. Because the throw bypasses application error handling it both rejects the caller's promise (unhandled in RuleEditor's `void run()`) and triggers the global `server-error` banner. A partial regex is a normal transient state while typing, not an exceptional one, so the data layer must treat an unparseable pattern as 'matches nothing' -- which is exactly what the two sibling regex consumers already do (`Condition.eval` at packages/loot-core/src/server/rules/condition.ts:421-427 and `evaluateClause` at packages/loot-core/src/server/forecast/forecast-filters.ts:254-259). The sqlite `regexp` function is the one consumer that was missed.",
-    "approach": "Wrap the `new RegExp` call in the sqlite `REGEXP` user function in a try/catch that returns 0 (no match), matching the existing precedent in `Condition.eval` and `evaluateClause`. This is the correct fix location rather than a guard in RuleEditor: `regexp` is the single chokepoint every `$regexp` query reaches, so one guard there fixes the rule-editor preview and every sibling caller at once. Two independent `$regexp` producers feed it -- `conditionsToAQL`'s `matches` case (packages/loot-core/src/server/transactions/transaction-rules.ts:652-653), which backs both the rule editor and the `FilterButton` used by custom reports and the accounts header (packages/desktop-client/src/components/filters/FiltersMenu.tsx emits `RuleConditionEntity`), and the `hasTags`/`hasAnyTag` cases at lines 685 and 701 -- whereas patching RuleEditor would leave all of them still crashing. Apply the identical change to both platform registrations (`platform/server/sqlite/index.ts` for the browser/sql.js build and `index.electron.ts` for better-sqlite3), since they define the function separately. Do not change AQL compilation or the rule editor: an invalid pattern should still compile and simply match nothing, so a saved rule with an in-progress regex stays inert rather than breaking.",
-    "files": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.ts",
-        "action": "edit",
-        "change": "Wrap `new RegExp(regex)` in the `regexp` function (line 211) in a try/catch that returns 0 on an unparseable pattern, so a half-typed rule condition returns no rows instead of throwing a SyntaxError out of the SQL engine. Registration at line 259 (`db.create_function('REGEXP', regexp)`) is unchanged.",
-        "why": "The throwing line, and the single chokepoint all `$regexp` AQL queries pass through in the browser/sql.js build -- the build the reporter and this reproduction both exercised."
-      },
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.ts",
-        "action": "edit",
-        "change": "Apply the same try/catch guard to the separate `regexp` definition (line 124) registered at line 139 with `db.function('REGEXP', { deterministic: true }, regexp)`, so the Electron/desktop build behaves identically to the browser build.",
-        "why": "The two platform files define `regexp` independently; fixing only one leaves the desktop build crashing on the same input."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
-        "action": "edit",
-        "cases": [
-          "a raw `SELECT ... WHERE REGEXP('\\\\', string)` returns no rows instead of throwing, with rows seeded in the table -- verified failing on the current code, where it throws a SyntaxError",
-          "the same query against a table with no rows does not throw, pinning the harness behaviour that SQLite only invokes a per-row user function when a row is scanned, so a test without seeded data cannot detect this bug",
-          "a valid pattern `REGEXP('n.', string)` still matches, so the guard did not turn every pattern into a no-op",
-          "a valid pattern that matches nothing (`normal`, and `#\\\\d+`) returns an empty result rather than throwing -- `#\\\\d+` is a well-formed regex that legitimately matches no note, and it must not be treated as an error"
-        ]
-      },
-      {
-        "path": "packages/loot-core/src/server/transactions/transaction-rules.test.ts",
-        "action": "edit",
-        "cases": [
-          "a `notes matches` condition whose value is an incomplete regex (a lone backslash) resolves the query instead of rejecting it, with a transaction present so REGEXP is invoked per row",
-          "a `notes matches` condition with the exact mid-typing sequence that crashed the editor (`#` followed by a backslash) resolves instead of rejecting",
-          "a `notes matches` condition with other unterminated constructs (`#[` and `(`) resolves instead of rejecting",
-          "a valid `notes matches` pattern still returns only the transactions it should, so the guard did not turn every pattern into a no-op"
-        ]
-      }
-    ],
-    "acceptance": [
-      {
-        "id": "AC-1",
-        "check": "In the rule editor, typing a value containing a backslash into a `notes matches` condition produces no error banner and the editor stays usable; the preview table shows no matching transactions while the pattern is incomplete, and the intermediate keystrokes -- not just the final value -- are what previously crashed.",
-        "how_to_verify": "First establish the control (see AC-2), then clear the input and type `#`, then a single backslash, then `d`, then `+`, one keystroke at a time with a pause between each. Assert that no 'Something internally went wrong' notification appears at ANY point, that the condition editor remains rendered and interactive, and that the browser console records no unhandled rejection. On the current code the banner appears at the second keystroke (`#\\`). Note that the completed value `#\\d+` is only the end of the input sequence, not evidence of anything by itself -- it is a valid regex that matches no demo note, so seeing an empty preview for it is correct behaviour and is asserted separately in AC-3.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-2",
-        "check": "POSITIVE CONTROL: a valid regex that does match demo data still matches after the fix. Type `#mortgage` into the `notes matches` value and assert the 'This rule applies to these transactions' table is NON-EMPTY -- it lists at least one Housy House row in the Mortgage category. Do not assert an exact row count; the count is produced by a date-gated generator loop and is not a stable constant.",
-        "how_to_verify": "On the demo budget, type `#mortgage` and wait ~2s for the preview to settle. Assert the table is not empty and that it contains at least one row whose payee is 'Housy House' with category 'Mortgage'. This is the only assertion that can distinguish 'valid regex still matches' from 'the guard swallowed every pattern and returned no rows for everything' -- a guard that returned no-match unconditionally would pass every 'no banner' check in AC-1 while breaking all regex matching. Any specific row total is deliberately not asserted here: the demo's `#mortgage` rows come partly from a loop gated on `isBefore(date, currentDay)` (packages/loot-core/src/mocks/budget.ts:317-353) and partly from an unseeded `pickRandom` over the payee list, so the number changes with the day of month the demo is generated.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-3",
-        "check": "A valid-but-non-matching regex is inert, not an error: typing `normal` (matches nothing) and typing the valid regex `#\\d+` (matches nothing, because no demo note contains a digit after the `#`) each produce NO error banner and an empty preview table, which is distinct from the crash.",
-        "how_to_verify": "Type `normal` into the value input and confirm no banner and an empty table. Then type `#\\d+` and confirm the same. The correct outcome for both is 0 rows and no banner. This is stated separately from AC-1 precisely because AC-1's crash sequence is about the intermediate `#\\` keystroke, not about `#\\d+` as a final value.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-4",
-        "check": "An unparseable pattern is inert rather than an error: a saved rule whose `matches` value is an invalid regex applies to no transactions instead of breaking rule application or the transaction list.",
-        "how_to_verify": "Save the rule with an invalid pattern, then open an account (Bank of America) and confirm the transaction list renders with no error notification.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-5",
-        "check": "A regression test asserts that a `notes matches` condition with an incomplete regex resolves the AQL query rather than rejecting it, with a transaction present in the database so the REGEXP function is actually invoked per row.",
-        "how_to_verify": "Run the new cases. The sqlite-level cases are verified failing on the current code -- in the repo's own vitest harness against the real sql.js user function, seeded with a row whose note is '#mortgage note', the patterns `\\`, `asdfasdf\\`, `#\\`, `#[` and `(` all threw, while `n.` and `#mortgage` returned 1 row, `normal` returned 0 rows, and `#\\d+` returned 0 rows. The empty-table case is included deliberately because SQLite only invokes a per-row user function when at least one row is scanned -- a test without seeded data passes against the broken code and proves nothing.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-6",
-        "check": "The existing `should match regex on text fields` test in packages/loot-core/src/platform/server/sqlite/index.test.ts and the existing `matches handles invalid regex` test in packages/loot-core/src/server/rules/index.test.ts both continue to pass, and the full loot-core suite stays green.",
-        "how_to_verify": "Run `yarn test`. The rules test covers the `Condition.eval` path, which already had its guard and must not regress; the sqlite test pins that valid-pattern behaviour is unchanged by the new guard.",
-        "verify": "test"
-      }
-    ],
-    "qa_script": [
-      "Open the app, choose 'Try the demo' from the initial setup screen (Don't use a server), and let the demo budget finish loading. It is fully seeded -- 8 accounts and a populated transaction list -- so no fixture creation is needed.",
-      "If the welcome tour modal appears, click 'Take the tour' then 'Skip tour' to dismiss it; it overlays the Rules page and will otherwise intercept clicks.",
-      "Navigate to Rules (More > Rules).",
-      "Click 'Create new rule'.",
-      "In the first condition row set the field to `notes` and the operator to `matches`.",
-      "POSITIVE CONTROL: type `#mortgage` into the value input and wait ~2s. Assert the 'This rule applies to these transactions' table is NOT empty and contains at least one Housy House / Mortgage row. Do NOT assert an exact row count -- the count varies with the day of month the demo is generated. This control is mandatory: without it, every 'no banner' assertion below would also pass against a guard that returns no-match for every pattern.",
-      "Clear the input. Type `#`, then a single backslash, then `d`, then `+` -- one keystroke at a time, pausing ~1s between characters so each intermediate value is previewed.",
-      "Assert no red 'Something internally went wrong' notification appears at ANY point, that the condition editor is still rendered and interactive, and that the console shows no unhandled rejection. On the current code the banner appears at the `#\\` keystroke.",
-      "Clear the input and type just a single backslash; assert again that no error banner appears and the preview table is simply empty.",
-      "Clear the input and type `asdfasdf\\`; assert again that no error banner appears.",
-      "Clear the input and type `normal` -- a valid regex matching nothing -- and confirm there is no banner and the preview is empty.",
-      "Clear the input and type `#\\d+` -- also a VALID regex, which matches nothing because no demo note contains a digit after the '#'. Confirm there is no banner and the preview is empty. (The crash on this input happens at the intermediate `#\\` keystroke in step 8, not at the completed value.)",
-      "Save the rule, then open the Bank of America account and confirm the transaction list renders with no error notification."
-    ],
-    "evidence": [
-      "Browser, $PREVIEW_URL (chromium, demo budget), following the reporter's exact steps (Rules > Create new rule, field `notes`, op `matches`), typing one keystroke at a time with ~1.1s between characters. Result matrix: `#mortgage` typed through all 9 characters -> no banner and 0 page errors at every step, preview populated (Housy House / Mortgage rows and Deposit rows visible); `\\` -> banner shown, 2 errors; `#`,`\\`,`d`,`+` -> banner appears at the second keystroke (`#\\`), 2 errors. This reproduces the report and shows the trigger is the backslash, not the field/operator selection. After the crash the input value itself resets to a single character, confirming the component was torn down and remounted by the error.",
-      "The console stack for the failing cases confirms the throw escapes the SQL engine into the query path: `[Exception] Error at c.handleError ... at a.step ... at runQuery$1 ... at runQuery ... at execQuery$1 ... at execTransactionsBasic ... at runCompiledAqlQuery ... at compileAndRunAqlQuery`.",
-      "Reproduced a third time in the repo's own vitest harness against the real sql.js REGEXP user function, seeded with a row whose note is `#mortgage note`. Exact output: `n.` => OK rows=1; `#mortgage` => OK rows=1; `normal` => OK rows=0; `#\\d+` => OK rows=0; `\\` => THREW; `asdfasdf\\` => THREW; `#\\` => THREW; `#[` => THREW; `(` => THREW. This isolates the failure to the sqlite function itself, independent of the UI. Command: `yarn workspace @actual-app/core exec vitest run src/platform/server/sqlite/regexp-repro.test.ts` (scratch file, since removed).",
-      "OBJECTION 1 UPHELD, and it invalidates the previous plan's AC-2 as written. The same vitest matrix shows `#\\d+` is a well-formed regex that returns 0 rows against a table that DOES contain a `#mortgage` note -- it does not throw and it does not match. Statically confirmed too: every `#[0-9]` occurrence in packages/loot-core/src/mocks/budget.ts is a hex colour in the tag-definition table (lines 28, 36, 41, 46, 54, 60, 63, 65, 66, 69), never note text, and the full tag vocabulary built by getTagNotes (lines 80-121) contains no digit. So no demo note matches `#\\d+`. The previous AC-2 asserted that `#\\d+` 'shows the transactions whose notes match' while its own how_to_verify pivoted to a different pattern (`#mortgage`) with the opposite expected outcome -- a rule and a worked example that contradict each other, and as a control it could not distinguish 'valid regex still matches' from 'the guard returns no-match for everything'. AC-2 has been rewritten around `#mortgage` with a non-empty assertion, and the `#\\d+` behaviour is now stated correctly on its own in AC-3.",
-      "OBJECTION 2 UPHELD as a safety claim, though the number happens to have been reproducible today. I measured the `#mortgage` preview at exactly 10 rendered rows with 2 Housy House rows across three fresh playwright-UA sessions and one fresh non-playwright (Firefox) UA session -- so 10 is not simply wrong. But it is not a safe constant to assert: the demo's `#mortgage` rows come partly from a bills loop gated on `isBefore(date, currentDay)` (packages/loot-core/src/mocks/budget.ts:317-353), so the count depends on the day of month the budget is generated, and partly from `pickRandom` over the expense payee list for the account-transaction fill, which is unseeded `Math.random` outside playwright (packages/loot-core/src/mocks/random.ts exports `Platform.isPlaywright ? pseudoRandom : Math.random`). Today is the 2nd of the month, which is close to the worst case for the gate. Every exact count has therefore been removed from the plan in favour of a non-empty assertion plus a named Housy House / Mortgage row.",
-      "Confirmed the throwing line in both platform files, which define `regexp` independently: packages/loot-core/src/platform/server/sqlite/index.ts:211-213 (registered at line 259 via `db.create_function('REGEXP', regexp)`) and packages/loot-core/src/platform/server/sqlite/index.electron.ts:124-126 (registered at line 139 via `db.function('REGEXP', { deterministic: true }, regexp)`). Both are a bare `new RegExp(regex).test(text || '')` with no guard.",
-      "Confirmed the two sibling regex consumers already guard and return no-match: `Condition.eval` wraps `new RegExp` in try/catch at packages/loot-core/src/server/rules/condition.ts:421-427 (`logger.log('invalid regexp in matches condition', e); return false;`) and `evaluateClause` does the same for `$regexp` at packages/loot-core/src/server/forecast/forecast-filters.ts:254-259. The sqlite `regexp` function is the one consumer that was missed.",
-      "Confirmed the fix location is the shared chokepoint rather than the UI: `conditionsToAQL`'s `matches` case at packages/loot-core/src/server/transactions/transaction-rules.ts:652-653 emits `$regexp`, and the `hasTags`/`hasAnyTag` cases at lines 685 and 701 emit `$regexp` too; the AQL compiler turns every `$regexp` into `REGEXP(...)` at packages/loot-core/src/server/aql/compiler.ts:737-740. `FilterButton` in packages/desktop-client/src/components/filters/FiltersMenu.tsx offers `matches` and emits `RuleConditionEntity` to custom reports and the accounts header, so those callers reach the same unguarded function -- a RuleEditor-only guard would leave them crashing.",
-      "Confirmed the crash surface, not just the crash: the rejected `aqlQuery` promise in RuleEditor is called as `void run()` with no `.catch()` (packages/desktop-client/src/components/rules/RuleEditor.tsx:1104), so it becomes an unhandled page rejection; independently the backend emits `server-error` and `handleGlobalEvents` (packages/desktop-client/src/global-events.ts:23-25) dispatches `addGenericErrorNotification`, producing the banner.",
-      "Scope note on coverage: the reproduction exercised the web/sql.js build in Chromium. Only Chromium is installed on this runner, so the reporter's Firefox was not tested directly. The crashing code is platform-independent JavaScript evaluated inside SQLite, and it reproduces identically in the vitest harness, so no Firefox-specific behaviour is plausible -- but the fix must be applied to the better-sqlite3 (Electron) registration as well, which is asserted by the test and by the two-file change list rather than by a browser run.",
-      "Confirmed the demo budget is NOT an empty template (a premise the earlier review wrongly challenged). `default-db.sqlite` really does contain 0 accounts and 0 transactions, but `createDemoBudget` calls `createTestBudget` at packages/loot-core/src/server/budgetfiles/app.ts:463 after copying that file, and `createTestBudget` (packages/loot-core/src/mocks/budget.ts:746) creates 8 accounts and a full transaction set whose notes carry tags like `#mortgage`, `#utilities` and `#groceries`. Confirmed live: the Rules sidebar lists 8 accounts and the `#mortgage` preview returns rows. No `#123` fixture is needed and none exists."
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Add a try/catch around the `aqlQuery` call in RuleEditor's preview effect, so a bad pattern just yields an empty preview list.",
-        "rejected_because": "Fixes the symptom at one call site and leaves the crash live for every other `$regexp` consumer -- the `matches` filter in custom reports and the accounts header goes through the same `conditionsToAQL` -> `$regexp` -> `REGEXP()` path. One guard in the shared sqlite function is both the smaller diff and the correct fix."
-      },
-      {
-        "approach": "Validate the regex in `Condition`'s parse step (or in `conditionsToAQL`) and reject the condition with an 'Invalid regex' field error, mirroring the existing `assert` error types.",
-        "rejected_because": "Plausible as a UX improvement, but it changes user-visible behaviour well beyond the reported bug (a previously accepted rule with an invalid pattern would start erroring) and it does not protect the other `$regexp` callers. Worth a follow-up ticket, not this fix."
-      },
-      {
-        "approach": "Escape or otherwise normalise the pattern in the AQL compiler's `$regexp` case before inlining it as a SQL string literal.",
-        "rejected_because": "Addresses a real adjacent weakness (the compiler only escapes single quotes) but it is not the cause here. The value reaching SQLite is correct -- `#\\d+` is the user's intended regex, and the vitest matrix shows it is well-formed and simply matches nothing -- and the throw happens in the JS engine after the SQL string is well-formed. Escaping would change matching semantics for every valid regex."
-      },
-      {
-        "approach": "Escape the backslash before compiling so `#\\` is treated as a literal backslash rather than an incomplete escape.",
-        "rejected_because": "Wrong semantics. `matches` is a documented regex operator; users type `\\d`, `\\s`, `\\\\` deliberately. Escaping would break every working regex to fix the crash."
-      },
-      {
-        "approach": "Debounce the live preview so intermediate keystrokes are never queried.",
-        "rejected_because": "Would reduce how often the crash fires but not remove it -- paste, autofill, and any single invalid keystroke still throws. It hides the throw rather than fixing the cause."
-      }
-    ],
-    "risks": [
-      "Returning 0 for an invalid pattern means such a query silently matches nothing. That matches the behaviour already established for `Condition.eval` and `forecast-filters`, so a rule saved with a broken pattern is inert rather than destructive -- but a typo in a regex is quiet. A follow-up UX ticket for a visible 'invalid regex' field error would address that.",
-      "The fix touches a shared SQLite function used by every `$regexp` query. The guard is additive and only changes behaviour on the previously-throwing path, so valid patterns are unaffected -- but `yarn test` should be run in full to confirm nothing depended on the throw.",
-      "`regexp` is registered separately in the sql.js and better-sqlite3 platform files. Missing the Electron one would leave the desktop build crashing on the same input, so both files must change in the same commit.",
-      "This addresses the crash only. The unhandled `void run()` rejection in RuleEditor's preview effect remains a latent way for any future query error to surface as a full-app error banner; that is a separate robustness concern, not part of this fix."
-    ],
-    "out_of_scope": [
-      "Showing a visible 'Invalid regex' error on the rule condition field instead of a silently empty preview -- a UX follow-up, deliberately not bundled with the crash fix.",
-      "Adding a `.catch()` to RuleEditor's `void run()` preview effect to stop any query failure from becoming a global error banner. Related but a distinct robustness change with its own trade-offs.",
-      "Making the demo budget's transaction generation deterministic, which is what would be needed to assert an exact `#mortgage` row count. Out of scope here; the acceptance criteria avoid depending on a count instead.",
-      "The upstream issue at actualbudget/actual#6317 remains open; this fixes the crash in this copy only."
-    ]
-  },
-  "approved_too_high": false
+  "approved_too_high": false,
+  "work_order_version": 1,
+  "work_order_posted_at": "2026-10-02T07:16:41.819Z",
+  "work_order_from": "debug",
+  "work_order_comment": "5947237304"
 }
