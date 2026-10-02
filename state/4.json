@@ -6,15 +6,15 @@
   "lock_expires": null,
   "lock_run": null,
   "attempts": {
-    "plan": 8,
+    "plan": 9,
     "ci": 3,
     "review": 2,
     "qa": 3
   },
   "attempt_run": {
     "counter": "plan",
-    "n": 8,
-    "run": "37050729529"
+    "n": 9,
+    "run": "37051950496"
   },
   "pending": {
     "stage": "root-cause",
@@ -270,7 +270,7 @@
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-02T04:33:26.308Z",
-  "updated_at": "2026-10-02T19:06:58.110Z",
+  "updated_at": "2026-10-02T19:07:16.844Z",
   "history": [
     {
       "at": "2026-10-02T04:33:30.362Z",
@@ -556,6 +556,11 @@
       "at": "2026-10-02T19:06:58.110Z",
       "agent": "root-cause",
       "action": "lock released"
+    },
+    {
+      "at": "2026-10-02T19:07:16.844Z",
+      "agent": "plan",
+      "action": "plan attempt 9"
     }
   ],
   "resume_at": null,
