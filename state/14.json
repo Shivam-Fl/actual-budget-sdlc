@@ -285,10 +285,7 @@
   "touch_paths": [],
   "acceptance": [],
   "planned_route": [
-    "plan",
-    "implement",
-    "review",
-    "qa"
+    "maintainer"
   ],
   "on_complete": "merge",
   "artifacts": {},
@@ -377,6 +374,11 @@
       "at": "2026-10-02T19:37:51.401Z",
       "agent": "planner",
       "action": "lock acquired"
+    },
+    {
+      "at": "2026-10-02T20:11:59.107Z",
+      "agent": "plan",
+      "action": "re-routed to maintainer (scope_changed maintainer)"
     }
   ],
   "resume_at": null,
