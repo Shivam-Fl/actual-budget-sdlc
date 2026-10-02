@@ -210,7 +210,7 @@ describe('Web sqlite', () => {
     expect(
       runQuery(
         db,
-        "SELECT id FROM textstrings where REGEXP('\\\\', string)",
+        "SELECT id FROM textstrings where REGEXP('\\', string)",
         null,
         true,
       ),
@@ -235,20 +235,6 @@ describe('Web sqlite', () => {
     ).toEqual([]);
   });
 
-  it('should not throw on an unparseable regex when no rows are scanned', async () => {
-    const db = await openDatabase();
-    execQuery(db, initSQL);
-
-    expect(
-      runQuery(
-        db,
-        "SELECT id FROM textstrings where REGEXP('\\\\', string)",
-        null,
-        true,
-      ),
-    ).toEqual([]);
-  });
-
   it('should report an unparseable regex once per pattern, not once per scanned row', async () => {
     const db = await openDatabase();
     execQuery(db, initSQL);
@@ -266,8 +252,9 @@ describe('Web sqlite', () => {
       );
     }
 
-    // Patterns used by no other case in this file, so the count below starts
-    // from an unreported pattern rather than one an earlier test logged.
+    // Patterns used by no other case in this file, and the dedupe set below is
+    // scoped to this database handle, so the count starts from an unreported
+    // pattern regardless of which tests ran before this one.
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => null);
     const invalidRegexLogs = () =>
       consoleSpy.mock.calls.filter(
@@ -282,7 +269,7 @@ describe('Web sqlite', () => {
         true,
       ),
     ).toEqual([]);
-    expect(invalidRegexLogs()).toBeLessThanOrEqual(1);
+    expect(invalidRegexLogs()).toBe(1);
 
     // Deduplicated per pattern, not globally: a second broken pattern is still
     // reported, so a genuinely bad saved rule does not go unnoticed.
@@ -294,7 +281,7 @@ describe('Web sqlite', () => {
         true,
       ),
     ).toEqual([]);
-    expect(invalidRegexLogs()).toBeLessThanOrEqual(2);
+    expect(invalidRegexLogs()).toBe(2);
 
     // And the dedupe is not a blanket suppression: a valid pattern still
     // matches every row, silently.
@@ -306,7 +293,7 @@ describe('Web sqlite', () => {
         true,
       ).length,
     ).toBe(300);
-    expect(invalidRegexLogs()).toBeLessThanOrEqual(2);
+    expect(invalidRegexLogs()).toBe(2);
 
     consoleSpy.mockRestore();
   });
@@ -342,7 +329,7 @@ describe('Web sqlite', () => {
     expect(
       runQuery(
         db,
-        "SELECT id FROM textstrings where REGEXP('#\\\\d+', string)",
+        "SELECT id FROM textstrings where REGEXP('#\\d+', string)",
         null,
         true,
       ),
