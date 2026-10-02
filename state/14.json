@@ -471,13 +471,14 @@
           "The command palette's DialogTitle warning, which is its own issue."
         ],
         "kind": "bug",
-        "issue": null
+        "issue": 22
       }
     ],
     "deferred": []
   },
   "children": [
     20,
-    21
+    21,
+    22
   ]
 }
