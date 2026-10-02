@@ -214,11 +214,13 @@ export async function setNextDate({
   conditions,
   reset,
   advance,
+  nextDate,
 }: {
   id: string;
   conditions?;
   reset?: boolean;
   advance?: boolean;
+  nextDate?: string;
 }) {
   if (conditions == null) {
     const rule = await getRuleForSchedule(id);
@@ -230,41 +232,45 @@ export async function setNextDate({
 
   const { date: dateCond } = extractScheduleConds(conditions);
 
-  const { data: nextDate } = await aqlQuery(
+  const { data: currentNextDate } = await aqlQuery(
     q('schedules').filter({ id }).calculate('next_date'),
   );
 
-  // Only do this if a date condition exists
-  if (dateCond) {
-    const newNextDate = advance
-      ? getNextDateAfter(dateCond, nextDate)
-      : getNextDate(dateCond, new Date());
+  // An explicit `nextDate` comes from a caller that has already resolved which
+  // occurrence to land on, so it is written directly rather than stepped to.
+  const newNextDate =
+    nextDate ??
+    // Only derive one if a date condition exists
+    (dateCond
+      ? advance
+        ? getNextDateAfter(dateCond, currentNextDate)
+        : getNextDate(dateCond, new Date())
+      : null);
 
-    if (newNextDate != null && newNextDate !== nextDate) {
-      // Our `update` functon requires the id of the item and we don't
-      // have it, so we need to query it
-      const nd = await db.first<
-        Pick<db.DbScheduleNextDate, 'id' | 'base_next_date_ts'>
-      >(
-        'SELECT id, base_next_date_ts FROM schedules_next_date WHERE schedule_id = ?',
-        [id],
-      );
+  if (newNextDate != null && newNextDate !== currentNextDate) {
+    // Our `update` functon requires the id of the item and we don't
+    // have it, so we need to query it
+    const nd = await db.first<
+      Pick<db.DbScheduleNextDate, 'id' | 'base_next_date_ts'>
+    >(
+      'SELECT id, base_next_date_ts FROM schedules_next_date WHERE schedule_id = ?',
+      [id],
+    );
 
-      await db.update(
-        'schedules_next_date',
-        reset
-          ? {
-              id: nd.id,
-              base_next_date: toDateRepr(newNextDate),
-              base_next_date_ts: Date.now(),
-            }
-          : {
-              id: nd.id,
-              local_next_date: toDateRepr(newNextDate),
-              local_next_date_ts: nd.base_next_date_ts,
-            },
-      );
-    }
+    await db.update(
+      'schedules_next_date',
+      reset
+        ? {
+            id: nd.id,
+            base_next_date: toDateRepr(newNextDate),
+            base_next_date_ts: Date.now(),
+          }
+        : {
+            id: nd.id,
+            local_next_date: toDateRepr(newNextDate),
+            local_next_date_ts: nd.base_next_date_ts,
+          },
+    );
   }
 }
 
@@ -556,30 +562,41 @@ function onApplySync(oldValues, newValues) {
 // makes the status 'paid', and computeSchedulePreviewTransactions drops the
 // leading previewed date for it.
 async function advanceScheduleToDate(schedule: ScheduleEntity, date: string) {
-  let nextDate = schedule.next_date;
+  const { date: dateCond } = extractScheduleConds(schedule._conditions);
 
-  // `date` came from a preview row, so it is on the schedule's recurrence and
-  // the loop converges. The bound and the no-change exit are only there so a
-  // date that somehow isn't on the recurrence can't spin.
-  for (let attempts = 0; nextDate < date && attempts < 100; attempts++) {
-    await setNextDate({
-      id: schedule.id,
-      conditions: schedule._conditions,
-      advance: true,
-    });
-
-    const { data } = await aqlQuery(
-      q('schedules').filter({ id: schedule.id }).select('next_date'),
-    );
-    const updated = data[0]?.next_date;
-
-    if (updated == null || updated === nextDate) {
-      // The recurrence didn't move us forward — stop rather than loop.
-      break;
-    }
-
-    nextDate = updated;
+  if (dateCond == null) {
+    return;
   }
+
+  // Resolve the occurrence to land on by walking the recurrence, rather than
+  // stepping the schedule through the database one occurrence at a time. The
+  // gap between next_date and the posted date is bounded only by the user's
+  // upcoming-length setting, which has no upper bound, so any fixed number of
+  // database steps could be too few — this is pure computation over the
+  // recurrence and ends up writing next_date once.
+  let candidate = schedule.next_date;
+  while (candidate < date) {
+    const next = getNextDateAfter(dateCond, candidate);
+    if (next == null || next <= candidate) {
+      // The recurrence stopped moving forward — leave next_date alone rather
+      // than write an occurrence we can't justify.
+      return;
+    }
+    candidate = next;
+  }
+
+  if (candidate !== date) {
+    // We overshot the posted date, so it isn't an occurrence of this schedule
+    // after all. Advancing onto the next occurrence instead would leave the
+    // schedule pointing at a date nothing was posted for.
+    return;
+  }
+
+  await setNextDate({
+    id: schedule.id,
+    conditions: schedule._conditions,
+    nextDate: candidate,
+  });
 }
 
 async function postTransactionForSchedule({

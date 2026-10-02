@@ -1,3 +1,4 @@
+import * as d from 'date-fns';
 // @ts-strict-ignore
 import MockDate from 'mockdate';
 
@@ -6,6 +7,7 @@ import * as db from '#server/db';
 import { loadMappings } from '#server/db/mappings';
 import { runHandler } from '#server/mutators';
 import { loadRules, updateRule } from '#server/transactions/transaction-rules';
+import { dayFromDate, parseDate } from '#shared/months';
 import { q } from '#shared/query';
 import {
   computeSchedulePreviewTransactions,
@@ -1165,21 +1167,6 @@ describe('schedule app', () => {
       '2017-01-30',
     ];
 
-    async function forceNextDate(scheduleId: string, date: string) {
-      const row = await db.first<{ id: string }>(
-        'SELECT id FROM schedules_next_date WHERE schedule_id = ?',
-        [scheduleId],
-      );
-
-      await db.update('schedules_next_date', {
-        id: row.id,
-        local_next_date: Number(date.replace(/-/g, '')),
-        local_next_date_ts: Date.now(),
-        base_next_date: Number(date.replace(/-/g, '')),
-        base_next_date_ts: Date.now(),
-      });
-    }
-
     async function createWeeklySchedule() {
       const accountId = await db.insertAccount({
         name: 'Checking',
@@ -1204,9 +1191,9 @@ describe('schedule app', () => {
         ],
       });
 
-      // Pin next_date rather than deriving it from the wall clock.
-      await forceNextDate(id, OCCURRENCES[0]);
-
+      // createSchedule derives next_date from the `start` condition, which is
+      // OCCURRENCES[0] — `currentDay()` is pinned under test, so no pinning is
+      // needed to make this deterministic.
       return id;
     }
 
@@ -1357,6 +1344,50 @@ describe('schedule app', () => {
       await advanceSchedulesService(true);
 
       expect((await getSchedule(id)).next_date).toBe(OCCURRENCES[2]);
+    });
+
+    it('consumes an occurrence further out than any fixed step budget', async () => {
+      // A daily schedule over a long upcoming window previews hundreds of
+      // occurrences, and `CustomUpcomingLength` puts no upper bound on the
+      // window — so the gap between next_date and the clicked occurrence is
+      // not bounded by anything the user controls. Whatever step budget the
+      // advance uses, this gap must not exceed it.
+      const START = '2017-01-02';
+      const GAP = 150;
+      const TARGET = dayFromDate(d.addDays(parseDate(START), GAP));
+
+      const accountId = await db.insertAccount({
+        name: 'Checking',
+        offbudget: 0,
+        closed: 0,
+      });
+
+      const id = await createSchedule({
+        schedule: { posts_transaction: true },
+        conditions: [
+          { op: 'is', field: 'account', value: accountId },
+          { op: 'is', field: 'amount', value: -10000 },
+          {
+            op: 'is',
+            field: 'date',
+            value: { start: START, frequency: 'daily', patterns: [] },
+          },
+        ],
+      });
+
+      await post(id, { date: TARGET });
+
+      // The transaction lands on the requested date regardless.
+      expect(await getTransactionDates(id)).toEqual([TARGET]);
+
+      // next_date must land ON the posted occurrence, so the status is 'paid'
+      // and that occurrence drops out of the preview list.
+      expect((await getSchedule(id)).next_date).toBe(TARGET);
+
+      const preview = await getPreviewDates(id, '1-year');
+      expect(preview).not.toContain(TARGET);
+      // The occurrences after it are still previewed.
+      expect(preview.length).toBeGreaterThan(0);
     });
   });
 });
