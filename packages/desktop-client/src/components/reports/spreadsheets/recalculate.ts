@@ -3,6 +3,7 @@ import type {
   GroupedEntity,
   IntervalEntity,
 } from '@actual-app/core/types/models';
+import type { SyncedPrefs } from '@actual-app/core/types/prefs';
 
 import type {
   QueryDataEntity,
@@ -22,6 +23,8 @@ type recalculateProps = {
   showUncategorized?: boolean;
   startDate: string;
   endDate: string;
+  interval: string;
+  firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx'];
 };
 
 export function recalculate({
@@ -35,6 +38,8 @@ export function recalculate({
   showUncategorized,
   startDate,
   endDate,
+  interval,
+  firstDayOfWeekIdx,
 }: recalculateProps): GroupedEntity {
   let totalAssets = 0;
   let totalDebts = 0;
@@ -82,6 +87,26 @@ export function recalculate({
 
       const change = last ? intervalTotals - last.totalTotals : 0;
 
+      // The last weekly bucket covers its whole week, not just the week-start
+      // the From/To pickers can offer, and never projects past today. Same rule
+      // as the query bound in the spreadsheet factories, so the bucket and the
+      // data behind it agree.
+      let intervalEndDate: string;
+      if (index + 1 === intervals.length) {
+        if (interval === 'Weekly') {
+          const weekEnd = monthUtils.getWeekEnd(
+            intervalItem,
+            firstDayOfWeekIdx,
+          );
+          const today = monthUtils.currentDay();
+          intervalEndDate = today < weekEnd ? today : weekEnd;
+        } else {
+          intervalEndDate = endDate;
+        }
+      } else {
+        intervalEndDate = monthUtils.subDays(intervals[index + 1], 1);
+      }
+
       arr.push({
         date: intervalItem,
         totalAssets: intervalAssets,
@@ -92,10 +117,7 @@ export function recalculate({
         totalBudgeted: intervalTotals,
         change,
         intervalStartDate: index === 0 ? startDate : intervalItem,
-        intervalEndDate:
-          index + 1 === intervals.length
-            ? endDate
-            : monthUtils.subDays(intervals[index + 1], 1),
+        intervalEndDate,
       });
 
       return arr;

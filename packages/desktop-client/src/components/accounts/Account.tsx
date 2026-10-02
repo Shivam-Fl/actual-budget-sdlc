@@ -94,6 +94,7 @@ import type { AppDispatch } from '#redux/store';
 import { updateNewTransactions } from '#transactions/transactionsSlice';
 
 import { AccountEmptyMessage } from './AccountEmptyMessage';
+import { getBalanceQuery } from './balanceQuery';
 import { AccountHeader } from './Header';
 
 type ConditionEntity = Partial<RuleConditionEntity> | TransactionFilterEntity;
@@ -696,9 +697,10 @@ class AccountInternal extends PureComponent<
     if (this.state.sort === null) {
       return true;
     } else {
-      return (
-        this.state.sort.field === 'date' && this.state.sort.ascDesc === 'desc'
-      );
+      // Both directions work: the running balance is a property of each
+      // transaction, and the balance query orders its own window rather than
+      // inheriting the display sort.
+      return this.state.sort.field === 'date';
     }
   };
 
@@ -709,7 +711,7 @@ class AccountInternal extends PureComponent<
 
     const { data }: { data: { id: string; balance: number }[] } =
       await aqlQuery(
-        this.paged.query
+        getBalanceQuery(this.paged.query)
           .options({ splits: 'none' })
           .select([{ balance: { $sumOver: '$amount' } }]),
       );

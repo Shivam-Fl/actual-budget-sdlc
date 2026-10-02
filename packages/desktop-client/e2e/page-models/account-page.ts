@@ -9,6 +9,7 @@ type TransactionEntry = {
   payee?: string;
   notes?: string;
   category?: string;
+  date?: string;
 };
 
 export class AccountPage {
@@ -189,6 +190,21 @@ export class AccountPage {
   }
 
   /**
+   * Sort the table by a column, toggling the direction each time.
+   *
+   * The clickable element is the button nested inside the header cell - the
+   * cell wrapper itself has no click handler, so clicking it does nothing.
+   */
+  async sortByColumn(columnId: string) {
+    await this.page
+      .getByTestId('transaction-table-header')
+      .getByTestId(columnId)
+      .locator('button')
+      .click();
+    await this.waitFor();
+  }
+
+  /**
    * Set one column's visibility via the "Manage table columns" modal.
    */
   async setTransactionColumnVisibility(columnId: string, visible: boolean) {
@@ -234,6 +250,15 @@ export class AccountPage {
     transactionRow: Locator,
     transaction: TransactionEntry,
   ) {
+    if (transaction.date) {
+      const dateCell = transactionRow.getByTestId('date');
+      await dateCell.click();
+      const dateInput = dateCell.getByRole('textbox');
+      await this.selectInputText(dateInput);
+      await dateInput.pressSequentially(transaction.date);
+      await this.page.keyboard.press('Tab');
+    }
+
     if (transaction.debit) {
       const debitCell = transactionRow.getByTestId('debit');
       await debitCell.click();

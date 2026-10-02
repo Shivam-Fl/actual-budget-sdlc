@@ -62,13 +62,21 @@ export function createGroupedSpreadsheet({
     });
     const conditionsOpKey = conditionsOp === 'or' ? '$or' : '$and';
 
+    // Same rule as custom-spreadsheet: a weekly bucket covers its whole week,
+    // clamped to today. Without this the grouped/table view of the same weekly
+    // report would disagree with its graph view.
+    const weekEnd = monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx);
+    const today = monthUtils.currentDay();
+    const effectiveEndDate =
+      interval === 'Weekly' ? (today < weekEnd ? today : weekEnd) : endDate;
+
     let assets: QueryDataEntity[];
     let debts: QueryDataEntity[];
 
     ({ assets, debts } = await fetchSpreadsheetQueryData({
       balanceTypeOp,
       startDate,
-      endDate,
+      endDate: effectiveEndDate,
       interval,
       categories: categories.list,
       categoryGroups: categories.grouped,
@@ -114,6 +122,8 @@ export function createGroupedSpreadsheet({
           showUncategorized,
           startDate,
           endDate,
+          interval,
+          firstDayOfWeekIdx,
         });
 
         const stackedCategories =
@@ -130,6 +140,8 @@ export function createGroupedSpreadsheet({
               showUncategorized,
               startDate,
               endDate,
+              interval,
+              firstDayOfWeekIdx,
             });
             return { ...calc };
           });
