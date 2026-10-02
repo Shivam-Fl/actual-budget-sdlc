@@ -206,6 +206,7 @@
   "touch_paths": [
     "packages/loot-core/src/platform/server/sqlite/index.ts",
     "packages/loot-core/src/platform/server/sqlite/index.electron.ts",
+    "upcoming-release-notes/fix-invalid-regex-rule-crash.md",
     "packages/loot-core/src/platform/server/sqlite/index.test.ts",
     "packages/loot-core/src/server/transactions/transaction-rules.test.ts"
   ],
