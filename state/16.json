@@ -70,5 +70,179 @@
     "decided_at": "2026-10-02T18:25:05.231Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "plan"
+  "dispatched_stage": "plan",
+  "validated_work_order": {
+    "issue": 16,
+    "version": 1,
+    "kind": "chore",
+    "reproduced": true,
+    "understanding": "PR #11 (for #8) shipped the sqlite REGEXP invalid-pattern guard correctly in the source, but four of the six review findings are defects in how that guard is TESTED, not in the guard. I re-derived each one against the merged code and all six reproduce. (1) index.test.ts writes its lone-backslash SQL as REGEXP('\\\\\\\\', string) in JS source; JS unescaping leaves REGEXP('\\\\\\\\', string) in the SQL text, and SQLite does not process backslash escapes inside '...' literals, so the pattern handed to `regexp` is the two-character string \\\\ -- a valid regex matching one literal backslash. I confirmed with node:sqlite that this pattern is VALID, so the assertion at index.test.ts:213 never enters the catch block and returns [] on completely unfixed code; the same defect applies at :245 and at :345 (REGEXP('#\\\\\\\\d+') yields the 5-char pattern #\\\\\\\\d+, a valid regex, duplicating the plain valid-pattern assertion at :336). (2) The volume assertions at :285, :297 and :309 are all toBeLessThanOrEqual, so deleting logger.log outright leaves the suite green -- AC-7's 'a second distinct broken pattern is still reported' is never actually asserted, and a blanket `return 0` swallowing every error silently is indistinguishable from the shipped code. The same upper-bound-only defect is at transaction-rules.test.ts:677. (3) reportedInvalidRegexps is declared at module scope in index.ts:217 and index.electron.ts:129 and nothing ever resets it, so the dedupe test at :285 is order-dependent on module lifetime rather than on the database under test; I verified that with a module-level Set the second database over the same pattern logs 0 additional lines, so the defect is real and a per-database Set is directly observable (2 vs 1). (4) upcoming-release-notes/fix-invalid-regex-rule-crash.md carries authors: [claude], which is not a GitHub username, so the published changelog renders '-- thanks @claude'. (5) PR #11's title lacks the mandatory [AI] prefix. (6) index.test.ts:238 'should not throw on an unparseable regex when no rows are scanned' cannot fail under any implementation: SQLite only invokes a user function when it scans a row, and I verified an UNGUARDED regexp over an empty table returns [] and does not throw. Findings 1-3 and 6 are all in the same two files and all describe the same class of defect -- an assertion that passes on unfixed code -- so they ship as one slice: tightening the volume assertions to exact counts (2) is only sound once the dedupe lifetime is per-database (3), since otherwise a pattern reported by an earlier test would shift the expected count. Finding 4 is a one-word metadata fix that rides along because it is the only user-visible surface in the same diff.",
+    "root_cause": "Two distinct causes. The escaping defect (finding 1) is a JS-source-vs-SQL-literal confusion: writing four backslashes in a JS string literal so that the SQL text carries two, not one, because SQLite does not process backslash escapes inside '...' literals -- the same double-escaping a developer would apply if the pattern travelled through a language that does. The vacuous-assertion defects (findings 2, 3, 6) share a cause: the tests were written to pin a bound rather than a value, and the module-scoped dedupe Set was never given a reset boundary, so neither the diagnostic's presence nor its dedupe lifetime is actually observable.",
+    "approach": "Fix the source lifetime first, then tighten the assertions that depend on it, then fix the two SQL-escaping defects, then delete the test that cannot fail. Concretely: (a) move the `reportedInvalidRegexps` Set from module scope into `openDatabase` in both index.ts and index.electron.ts, next to the REGEXP registration, so the dedupe lifetime matches the database's and each test is independent of the ones before it. To do that, `regexp` becomes a factory (`createRegexp()`) returning a closure over the Set, since it is registered per-database rather than being a module-level function; the two files keep separate copies of the Set as they do today (they share no module state). (b) Replace the three toBeLessThanOrEqual volume assertions with exact counts: exactly 1 after the first invalid pattern over 300 seeded rows, exactly 2 after the second, still exactly 2 after the valid pattern. Replace transaction-rules.test.ts:677's toBeLessThanOrEqual(patterns.length) with toBe(patterns.length) -- 5 patterns over 5 rows is exactly 5 lines, which is what the shipped code produces and what the pre-fix code produced 25 of. (c) In index.test.ts, write the lone-backslash SQL so the pattern reaching `regexp` is a single backslash: inside a JS double-quoted string that is REGEXP('\\\\', string) -- two source backslashes, one after JS unescaping -- which I verified makes the guarded query return [] and the unguarded query throw. Apply the same correction wherever the four-source-backslash form appears, and at the completed-pattern case use REGEXP('#\\\\d+', string) so the pattern reaching `regexp` is the valid #\\\\d+ the surrounding comment describes rather than the literal-backslash #\\\\\\\\d+. (d) Delete the 'should not throw on an unparseable regex when no rows are scanned' block: SQLite only calls a user function when it scans a row, so its outcome is decided by the table being empty and not by the guard. The harness fact it meant to pin is already carried by the neighbouring test's comment, which sits on a test that does exercise the guard. (e) Set the release note's authors to the PR author's GitHub handle.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.ts",
+        "action": "edit",
+        "change": "Delete the module-scope `const reportedInvalidRegexps = new Set<string>()` at line 217 and turn `function regexp(regex, text)` (line 219) into a factory: `function createRegexp()` that declares `const reportedInvalidRegexps = new Set<string>()` inside its body and returns the existing regexp closure over it, keeping the try/catch, the `reportedInvalidRegexps.has/add` dedupe, the `logger.log('invalid regexp in sqlite REGEXP', e)` call and all comments verbatim. Change the registration at line 279 from `db.create_function('REGEXP', regexp)` to `db.create_function('REGEXP', createRegexp())`. Update the comment above the Set so it says the dedupe lifetime is per database (matching `openDatabase`) rather than per session, and note that this makes each database's diagnostic independent of every other.",
+        "why": "The Set is module-scoped and never reset, so the dedupe test's counts depend on module lifetime rather than on the database under test. Verified: with a module-level Set a second database over the same invalid pattern logs 0 additional lines; with a per-database Set it logs 1."
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.ts",
+        "action": "edit",
+        "change": "Apply the identical change to the better-sqlite3 copy: delete the module-scope `const reportedInvalidRegexps = new Set<string>()` at line 129, convert `function regexp(regex, text)` (line 131) into `function createRegexp()` holding the Set in its closure and returning the same guarded closure (its `text` parameter is `string | null`, not `string` -- keep that), and change line 156 from `db.function('REGEXP', { deterministic: true }, regexp)` to `db.function('REGEXP', { deterministic: true }, createRegexp())`. Adjust the 'See the identically named set in ./index.ts' comment above it to say both sets are now per-database.",
+        "why": "index.api.ts re-exports this file, so it is the copy transaction-rules.test.ts actually exercises. Fixing only index.ts would leave the desktop/API path with the module-scoped Set and the assertion at transaction-rules.test.ts:677 dependent on module lifetime."
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "change": "Four changes. (1) At line 213 change the query literal from `REGEXP('\\\\\\\\', string)` to `REGEXP('\\\\', string)` (two source backslashes, so one reaches SQLite and one reaches `regexp`); same correction wherever else the four-source-backslash form appears, including line 245. (2) At line 345 change `REGEXP('#\\\\\\\\d+', string)` to `REGEXP('#\\\\d+', string)`, so the pattern reaching `regexp` is the valid `#\\d+` the comment describes; update that comment if it describes the literal-backslash form. (3) Delete the whole `it('should not throw on an unparseable regex when no rows are scanned', ...)` block at lines 238-250. (4) Replace the three volume assertions with exact counts: line 285 `expect(invalidRegexLogs()).toBeLessThanOrEqual(1)` becomes `toBe(1)`; line 297 `toBeLessThanOrEqual(2)` becomes `toBe(2)`; line 309 `toBeLessThanOrEqual(2)` becomes `toBe(2)`. Also update the comment at lines 269-270, which currently explains that the count starts from an unreported pattern because of which other cases exist in the file -- with the per-database Set that is now a property of the Set's lifetime, so say that instead.",
+        "why": "Every one of these assertions currently passes on the pre-fix code: the backslash cases hand `regexp` a valid two-character pattern, the volume assertions are upper bounds only (deleting logger.log leaves them green), and the empty-table case cannot fail under any implementation. Findings 1, 2 and 6 all live in this file."
+      },
+      {
+        "path": "packages/loot-core/src/server/transactions/transaction-rules.test.ts",
+        "action": "edit",
+        "change": "At line 677 change `expect(invalidRegexLogs).toBeLessThanOrEqual(patterns.length)` to `expect(invalidRegexLogs).toBe(patterns.length)`. Update the comment above it (currently 'One log line per distinct pattern, not one per row scanned: five patterns over five rows is five lines, not twenty-five') to state the same thing as the assertion -- an exact count, not an upper bound. Leave the `patterns` array (`['\\\\', '#\\\\', '#[', '(', 'asdfasdf\\\\']`) and the valid-pattern check after it unchanged.",
+        "why": "The upper bound makes deleting logger.log entirely leave this test green, which is the failure mode AC-7 was written to prevent. The exact value is 5: five distinct patterns, one line each, over five rows."
+      },
+      {
+        "path": "upcoming-release-notes/fix-invalid-regex-rule-crash.md",
+        "action": "edit",
+        "change": "Change `authors: [claude]` to `authors: [Shivam-Fl]`. The value must be the GitHub username of the person whose account authored the change, per packages/docs/docs/contributing/index.md:120; the published changelog renders it as `@${a}` (packages/ci-actions/src/release-notes/util.mjs:36), so a bare `claude` ships as a dangling mention. If the implementer's token resolves to a different account, use that account's username instead -- what matters is that it is a real GitHub handle, not a first name or a product name. Do not change the category or the body.",
+        "why": "The only user-visible surface in the diff, and the release-notes-check CI gate only asserts the field exists and is an array, so nothing catches it before it ships."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "cases": [
+          "the lone-backslash query at :213 (corrected to two source backslashes) returns [] over a seeded table, and would throw out of the SQL engine with the guard removed -- verified with node:sqlite that the single-backslash pattern throws and the four-source-backslash pattern does not",
+          "the completed-pattern query at :345 (corrected to REGEXP('#\\\\d+', string)) returns [] over the seeded '#mortgage note' row, exercising a valid pattern that matches nothing rather than duplicating the assertion at :336",
+          "the volume test asserts exactly 1 invalid-regex log after the first broken pattern over 300 seeded rows, exactly 2 after the second distinct broken pattern, and still exactly 2 after the valid '#mortgage' pattern -- so removing logger.log from either source file fails this test",
+          "the volume test is independent of test order: two databases opened in one process each log their own first occurrence of the same invalid pattern, which the module-scoped Set did not do (verified: 1 line module-level vs 2 per-database)",
+          "the 'no rows are scanned' test at :238 is deleted rather than rewritten, so no assertion remains that passes identically with and without the guard"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/server/transactions/transaction-rules.test.ts",
+        "action": "edit",
+        "cases": [
+          "the 'an unparseable `matches` pattern matches nothing rather than throwing' test asserts invalidRegexLogs is exactly 5 (equal to patterns.length) after five distinct invalid patterns over five seeded transactions, so removing logger.log from index.electron.ts fails this test",
+          "the same test still asserts the valid '#mortgage' pattern matches all five seeded transactions, so the exact count is not satisfied by a guard that suppresses everything"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "The lone-backslash case in index.test.ts hands the sqlite REGEXP function a pattern of exactly one backslash, so it enters the guard's catch block; with the guard removed from index.ts, that specific assertion throws instead of returning [].",
+        "how_to_verify": "Not browser-observable. Run the web suite: `yarn workspace @actual-app/core run test:web` (vitest.web.config.ts is the only config that includes src/platform/server/sqlite/index.test.ts; the node config excludes it). The case is 'should not throw on an unparseable regex, matching nothing instead'. To confirm it is no longer vacuous, temporarily delete the try/catch in packages/loot-core/src/platform/server/sqlite/index.ts and observe that case fail with a SyntaxError, then restore.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "The diagnostic's volume is asserted exactly, not by an upper bound: removing logger.log from either sqlite source file makes the test suite fail.",
+        "how_to_verify": "Run `yarn workspace @actual-app/core run test:web` and `yarn workspace @actual-app/core run test:node`. Then temporarily comment out the `logger.log('invalid regexp in sqlite REGEXP', e)` line in index.ts and confirm 'should report an unparseable regex once per pattern, not once per scanned row' fails; repeat for index.electron.ts and confirm the transaction-rules test fails. Restore both.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "The invalid-pattern dedupe Set is scoped to a single database rather than to the module, so the dedupe counts no longer depend on which tests ran earlier in the process.",
+        "how_to_verify": "Not browser-observable. The two volume tests must pass when run in file order and when run individually: `yarn workspace @actual-app/core run test:web -t 'once per pattern'` on its own, then the full file. Additionally, opening two databases and querying each with the same invalid pattern logs once per database (verified with node:sqlite: 1 line with a module-level Set, 2 with a per-database Set).",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "The test that asserts nothing when no rows are scanned is gone; no assertion remains in index.test.ts that returns the same result with and without the guard.",
+        "how_to_verify": "Not browser-observable. `grep -c \\\"no rows are scanned\\\" packages/loot-core/src/platform/server/sqlite/index.test.ts` returns 0, and the remaining REGEXP assertions are each backed by a seeded row so SQLite actually invokes the function. Confirmed by inspection against node:sqlite: over an empty table an UNGUARDED regexp returns [] and does not throw, so that case could never distinguish the two.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "The release note for this fix names a real GitHub username, so the published changelog renders a resolvable mention rather than a dangling '@claude'.",
+        "how_to_verify": "Not browser-observable. `cat upcoming-release-notes/fix-invalid-regex-rule-crash.md` shows a handle in authors, and `node packages/ci-actions/bin/release-notes-check.mjs` passes. The rendering path is packages/ci-actions/src/release-notes/util.mjs:36, which emits `@${a}`.",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "From the repo root, run `yarn workspace @actual-app/core run test:web` -- this is the only vitest config that includes packages/loot-core/src/platform/server/sqlite/index.test.ts (the node config excludes it explicitly). Every change in this ticket lands in or is exercised by that file.",
+      "Run `yarn workspace @actual-app/core run test:node` for packages/loot-core/src/server/transactions/transaction-rules.test.ts, which resolves #platform/server/sqlite to index.electron.ts and is the only coverage that file has.",
+      "Confirm the fix is not vacuous: temporarily remove the `logger.log('invalid regexp in sqlite REGEXP', e)` line from packages/loot-core/src/platform/server/sqlite/index.ts, re-run test:web, and confirm the volume test FAILS. Restore the line and re-run to confirm green. This is the check that the previous upper-bound assertions could not make.",
+      "Confirm the same for the electron path: temporarily remove the logger.log from packages/loot-core/src/platform/server/sqlite/index.electron.ts, re-run test:node, and confirm the transaction-rules test FAILS at the exact-count assertion. Restore.",
+      "Confirm the corrected escaping actually reaches the guard: temporarily remove the try/catch from index.ts's regexp and re-run test:web. The lone-backslash case must now FAIL with a SyntaxError (it passed before this change, which is the defect). Restore.",
+      "Run the volume tests individually with `-t` to confirm order independence, then the whole file, then the whole suite.",
+      "Run `yarn typecheck` and `yarn lint` from the repo root.",
+      "This ticket changes no user-facing behaviour, so there is nothing in a browser to click through. Do not spend QA minutes driving the app UI for it; the five acceptance criteria are all unit-level and name their own commands."
+    ],
+    "risks": [
+      "The exact-count assertions in transaction-rules.test.ts depend on the per-database Set landing in index.electron.ts in the same change. If only index.ts is fixed, that file's `toBe(5)` becomes order-dependent on module lifetime and can fail depending on which test ran first. Both files are in files[] for this reason; do not split them.",
+      "Moving the Set inside openDatabase changes memory lifetime: the dedupe state is now freed when a database handle is dropped, rather than living for the process. That is strictly better for the sheet cache, backup and cloud-storage paths (packages/loot-core/src/server/sheet.ts:118, budgetfiles/backups.ts:136, cloud-storage.ts:166), which each open a short-lived handle -- but it does mean a long-lived app that reopens the same budget (db.openDatabase, packages/loot-core/src/server/db/index.ts:72) will report a previously-seen invalid pattern once again. That is a log-volume change only, not a behaviour change, and it is the reviewer's prescribed remedy.",
+      "None of these paths is in forbidden_paths (.sdlc/config.yml:210). The nearest entries -- packages/loot-core/src/server/migrate/** and packages/loot-core/src/mocks/migrations/** -- are untouched; this change is in platform/server/sqlite/ and server/transactions/.",
+      "No new host is contacted. The change adds no network call and touches no env.api_allowlist entry.",
+      "The release-note author handle depends on whose token the implementer runs under. The value must be a real GitHub username; if the implementer cannot resolve one, say so in the PR rather than guessing a handle -- a wrong username is the same defect as `claude`."
+    ],
+    "out_of_scope": [
+      "Renaming PR #11 to carry the mandatory `[AI]` prefix. The implementing agent holds no token that can edit a PR title (the route note records this, and `gh api user` returns 403 from this environment). This is a one-line human action: rename PR #11 to `[AI] Fix crash when a rule or filter matches value is an incomplete regex`. Nothing else in this ticket depends on it.",
+      "Any other release note in upcoming-release-notes/ with a non-username in authors. `fix-weekly-report-final-bucket.md` has the same `authors: [claude]` value from PR #12, but it belongs to a different ticket and would ship on its own; changing it here would widen this diff into an unrelated PR's territory.",
+      "Changing what the guard does. The shipped behaviour -- an unparseable pattern matches nothing, and each distinct broken pattern is logged once -- is correct and is not in question here. This ticket only makes the tests able to fail when it is wrong.",
+      "Making the pattern a SQL parameter rather than an interpolated literal in compiler.ts:739. Interpolated string literals are how every other sqlite function is called and SQLite does not process backslash escapes inside '...' literals, so a backslash reaches `regexp` intact; that is correct today and changing it would be a much larger diff with no defect behind it.",
+      "Testing the sql.js (browser) and better-sqlite3 (desktop) REGEXP implementations from one shared file. They are separate module-scope copies today and stay that way; the ticket keeps the existing split rather than collapsing it."
+    ],
+    "confidence": 88,
+    "confidence_rationale": "Every one of the six findings was independently reproduced before planning it, not accepted from the review text: the escaping claims were checked by round-tripping the JS literals and driving node:sqlite with both the guarded and the unguarded function (the four-source-backslash form is a valid regex and returns [] unfixed; the corrected two-source form throws unfixed), and the per-database Set was shown to be observable (1 log line module-level vs 2 per-database), so the tightened assertions will actually distinguish it. The remaining uncertainty is small and named: the release-note author handle depends on whose token the implementer runs under, which is why the file entry states the rule rather than guessing a username, and I could not execute the two suites here because node_modules is not installed in this environment (yarn install has not been run), so the test-level claims rest on the node:sqlite reproduction plus reading the vitest configs rather than on a green run.",
+    "evidence": [
+      "node:sqlite with the SQL text produced by unescaping index.test.ts:213 (`REGEXP('\\\\', string)`) yields a pattern of length 2, and `new RegExp` on it compiles -- a valid regex matching a literal backslash. Confirmed by driving an UNGUARDED regexp over a seeded table: the query returns [], it does not throw.",
+      "The corrected form (`REGEXP('\\\\', string)`, two source backslashes) yields a pattern of length 1; `new RegExp` throws `Invalid regular expression: /\\\\/: \\ at end of pattern`, and an UNGUARDED regexp over the same seeded table throws that SyntaxError out of the query. This is the assertion that was missing.",
+      "index.test.ts:345 `REGEXP('#\\\\d+', string)` yields the 5-character pattern `#\\\\d+`, a valid regex, not the `#\\d+` the comment describes.",
+      "The three volume assertions at index.test.ts:285, :297 and :309 are all toBeLessThanOrEqual(1|2|2), and transaction-rules.test.ts:677 is toBeLessThanOrEqual(patterns.length) -- upper bounds only, so `return 0` with no logging satisfies all four.",
+      "reportedInvalidRegexps is declared at module scope in packages/loot-core/src/platform/server/sqlite/index.ts:217 and index.electron.ts:129. Grep for any reset across the repo returns nothing; openDatabase does not clear it, and index.test.ts calls openDatabase once per it block (lines 20, 49, 89, 132, 177, 198, 239, 253, 315) with no per-test setup. index.api.ts re-exports index.electron.ts, so there are exactly two copies and no third.",
+      "Modelled both Set lifetimes against node:sqlite: with the module-level Set, a second database queried with the same invalid pattern logs 0 additional lines (1 total); with the per-database Set it logs 1 (2 total). The finding is observable, not merely theoretical.",
+      "index.test.ts:238 'should not throw on an unparseable regex when no rows are scanned' runs one SELECT against a table with no rows. An UNGUARDED regexp over an empty table returns [] and does not throw, confirmed with node:sqlite, so the assertion holds identically with and without the guard.",
+      "upcoming-release-notes/fix-invalid-regex-rule-crash.md line 3 is `authors: [claude]`. packages/docs/docs/contributing/index.md:120 defines authors as the GitHub username(s) who did the work, packages/ci-actions/src/release-notes/util.mjs:36 renders it as `@${a}`, and packages/ci-actions/bin/release-notes-check.mjs:55-59 only asserts the field exists and is an array. No other file in upcoming-release-notes/ uses a bare first name.",
+      "gh pr view 11 --json title returns `fix: Rules notes with matches has a bug`, with no `[AI]` prefix, against the mandate in .github/agents/pr-and-commit-rules.md.",
+      "packages/loot-core/vitest.config.ts excludes src/platform/server/sqlite/index.test.ts; only vitest.web.config.ts includes it. The changed test file therefore runs under `test:web`, not `test:node`."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Keep the Set at module scope and instead export a reset function the tests call in beforeEach.",
+        "rejected_because": "It fixes the test's order-dependence without fixing the production defect the review named. The Set's lifetime would still outlive every database handle, so the sheet cache, backup and cloud-storage paths (which each open a short-lived handle) keep accumulating it for the life of the process. The reviewer's remedy -- scope the Set to openDatabase -- is one line per file and makes each test independent as a side effect, with no new export."
+      },
+      {
+        "approach": "Fix only the assertions (exact counts) and leave the Set at module scope.",
+        "rejected_because": "This is the tempting half-fix and it is wrong: the exact counts are only deterministic if each test starts from an unreported pattern, which the module-scoped Set does not guarantee. Today it happens to hold only because `(?<` and `[a-` each appear once in the file -- a coincidence of the current test set, which is precisely the defect. The Set move has to land with the assertion change."
+      },
+      {
+        "approach": "Rewrite the empty-table test at :238 to assert something falsifiable rather than deleting it.",
+        "rejected_because": "There is nothing falsifiable to assert. SQLite only invokes a user function when it scans a row, so any query against an empty table returns [] whether or not the guard exists -- I verified this with an UNGUARDED regexp. The harness fact it intended to pin is already carried by the comment on the neighbouring test, which sits on a case that does exercise the guard."
+      },
+      {
+        "approach": "Fix the escaping by escaping the pattern through the SQL string properly (REGEXP('\\\\', ...) meaning one backslash reaching SQLite) while keeping the existing four-backslash source, i.e. changing how the query is built rather than what it is.",
+        "rejected_because": "There is nothing to change on the SQL side: SQLite does not process backslash escapes inside '...' literals, so the correct SQL text is `REGEXP('\\', string)` and the fix belongs in the JS source literal, exactly as the review states. Doubling it again would produce a two-backslash pattern again."
+      },
+      {
+        "approach": "Split this ticket into per-finding issues, as the body invites.",
+        "rejected_because": "Findings 1, 2, 3 and 6 are one defect class in one pair of files and are mutually dependent -- the tightened counts need the per-database Set, which needs the assertion work to be worth making. Splitting them would produce tickets that each fail on their own. Findings 4 and 5 are the genuinely separable ones: 4 rides along as a one-word metadata fix, and 5 is a human action with no token, listed in out_of_scope."
+      },
+      {
+        "approach": "Add an explicit reset of the Set at the top of each test rather than moving it into openDatabase.",
+        "rejected_because": "It would require exporting test-only surface from two production files to make the tests pass, and it leaves the production lifetime unchanged -- the actual defect. Scoping the Set to openDatabase fixes the production behaviour and makes the tests independent without any new export."
+      }
+    ],
+    "assumptions": [
+      "PR #11's work is merged on main at commit 257195f, which is the state the findings were written against; I re-derived all six against that state rather than trusting the review's line numbers, and none had already been fixed.",
+      "The implementer's token cannot edit a PR title (`gh api user` returns 403 here), so the `[AI]` rename is left to a human rather than being planned as work.",
+      "The release note's authors value should be the GitHub username of whoever authored the change; where this is ambiguous the file entry states the rule ('a real GitHub handle, not a first name or a product name') instead of hardcoding a guess."
+    ],
+    "unknowns": [
+      "Which GitHub username belongs in the release note's authors field depends on whose account the change is authored under. The convention (packages/docs/docs/contributing/index.md:120) and the rendering path (util.mjs:36) are unambiguous; the value is not derivable from this environment.",
+      "node_modules is not installed in this environment, so I could not execute either suite. Every claim here about the tests rests on reading the source plus the node:sqlite reproduction above, not on a green or red run. The implementer should treat the first `yarn install && yarn workspace @actual-app/core run test:web` as the confirmation step."
+    ],
+    "residual_risks": [
+      "The tightened counts are exact rather than approximate, which is what makes them falsifiable but also makes them sensitive to anything else that logs 'invalid regexp in sqlite REGEXP' during those tests. Grep confirms the string appears only in the two source files and the two test files, and the filters match on call[0], so an unrelated console.log cannot inflate the count -- but if the implementer adds a second log site with that first argument, the counts must move with it.",
+      "The exact count of 5 in transaction-rules.test.ts assumes all five patterns in the array are distinct strings after the compiler's single-quote escaping (compiler.ts:355-357). They are -- `\\`, `#\\`, `#[`, `(`, `asdfasdf\\` -- and each throws in `new RegExp`, which I checked individually. If a future edit makes two of them equal, the expected count drops with them."
+    ]
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-02T18:45:36.610Z",
+  "validated_ac_changes": []
 }
