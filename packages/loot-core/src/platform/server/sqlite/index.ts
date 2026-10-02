@@ -208,6 +208,14 @@ export async function asyncTransaction(db: Database, fn: () => Promise<void>) {
   }
 }
 
+// SQLite calls `regexp` once per candidate row, and the rule editor re-runs
+// its live preview on every keystroke over the whole transaction table, so
+// logging unguarded produces one line (with a stringified SyntaxError) per row
+// scanned. Remember which patterns have been reported so each distinct one is
+// logged once per session; the set is bounded by what a user has typed, not by
+// the size of the budget.
+const reportedInvalidRegexps = new Set<string>();
+
 function regexp(regex: string, text: string) {
   try {
     return new RegExp(regex).test(text || '') ? 1 : 0;
@@ -216,7 +224,10 @@ function regexp(regex: string, text: string) {
     // `matches` condition, so treat it as matching nothing rather than
     // throwing out of the SQL engine. This mirrors `Condition.eval` and
     // `evaluateClause`, the other two `$regexp` consumers.
-    logger.log('invalid regexp in sqlite REGEXP', e);
+    if (!reportedInvalidRegexps.has(regex)) {
+      reportedInvalidRegexps.add(regex);
+      logger.log('invalid regexp in sqlite REGEXP', e);
+    }
     return 0;
   }
 }

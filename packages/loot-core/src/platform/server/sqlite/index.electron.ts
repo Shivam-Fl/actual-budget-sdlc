@@ -121,13 +121,23 @@ export async function asyncTransaction(
   }
 }
 
+// See the identically named set in ./index.ts: SQLite calls `regexp` once per
+// candidate row, so logging unguarded multiplies by the size of the budget.
+// Each distinct invalid pattern is reported once per session instead. The two
+// files define `regexp` independently and share no module state, so this file
+// needs its own set.
+const reportedInvalidRegexps = new Set<string>();
+
 function regexp(regex: string, text: string | null) {
   try {
     return new RegExp(regex).test(text || '') ? 1 : 0;
   } catch (e) {
     // See the identically named function in ./index.ts: a partially typed
     // regex matches nothing rather than throwing out of the SQL engine.
-    logger.log('invalid regexp in sqlite REGEXP', e);
+    if (!reportedInvalidRegexps.has(regex)) {
+      reportedInvalidRegexps.add(regex);
+      logger.log('invalid regexp in sqlite REGEXP', e);
+    }
     return 0;
   }
 }

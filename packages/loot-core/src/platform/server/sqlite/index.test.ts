@@ -249,6 +249,68 @@ describe('Web sqlite', () => {
     ).toEqual([]);
   });
 
+  it('should report an unparseable regex once per pattern, not once per scanned row', async () => {
+    const db = await openDatabase();
+    execQuery(db, initSQL);
+
+    // SQLite calls the REGEXP user function once per candidate row, and the
+    // rule editor re-runs its live preview on every keystroke. Logging from
+    // inside the function therefore multiplies by the size of the budget: on
+    // the demo budget one filter query produced 1203 lines. A single-row table
+    // cannot tell per-row logging apart from per-pattern logging, so the seed
+    // is load-bearing here.
+    for (let i = 0; i < 300; i++) {
+      runQuery(
+        db,
+        `INSERT INTO textstrings (id, string) VALUES ('id${i}', '#mortgage note')`,
+      );
+    }
+
+    // Patterns used by no other case in this file, so the count below starts
+    // from an unreported pattern rather than one an earlier test logged.
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => null);
+    const invalidRegexLogs = () =>
+      consoleSpy.mock.calls.filter(
+        call => call[0] === 'invalid regexp in sqlite REGEXP',
+      ).length;
+
+    expect(
+      runQuery(
+        db,
+        "SELECT id FROM textstrings where REGEXP('(?<', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
+    expect(invalidRegexLogs()).toBeLessThanOrEqual(1);
+
+    // Deduplicated per pattern, not globally: a second broken pattern is still
+    // reported, so a genuinely bad saved rule does not go unnoticed.
+    expect(
+      runQuery(
+        db,
+        "SELECT id FROM textstrings where REGEXP('[a-', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
+    expect(invalidRegexLogs()).toBeLessThanOrEqual(2);
+
+    // And the dedupe is not a blanket suppression: a valid pattern still
+    // matches every row, silently.
+    expect(
+      runQuery(
+        db,
+        "SELECT id FROM textstrings where REGEXP('#mortgage', string)",
+        null,
+        true,
+      ).length,
+    ).toBe(300);
+    expect(invalidRegexLogs()).toBeLessThanOrEqual(2);
+
+    consoleSpy.mockRestore();
+  });
+
   it('should still match a valid regex that does match, and not throw on one that does not', async () => {
     const db = await openDatabase();
     execQuery(db, initSQL);
