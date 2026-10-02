@@ -212,24 +212,29 @@ export async function asyncTransaction(db: Database, fn: () => Promise<void>) {
 // its live preview on every keystroke over the whole transaction table, so
 // logging unguarded produces one line (with a stringified SyntaxError) per row
 // scanned. Remember which patterns have been reported so each distinct one is
-// logged once per session; the set is bounded by what a user has typed, not by
-// the size of the budget.
-const reportedInvalidRegexps = new Set<string>();
+// logged once per database; the set is bounded by what a user has typed, not by
+// the size of the budget. It lives in the closure created by `createRegexp`
+// rather than at module scope, so its lifetime matches the handle it belongs
+// to instead of the process: a reopened database reports a pattern it has
+// already seen once more, which is a log line, not a behaviour change.
+function createRegexp() {
+  const reportedInvalidRegexps = new Set<string>();
 
-function regexp(regex: string, text: string) {
-  try {
-    return new RegExp(regex).test(text || '') ? 1 : 0;
-  } catch (e) {
-    // A partially typed regex is a normal transient state while editing a
-    // `matches` condition, so treat it as matching nothing rather than
-    // throwing out of the SQL engine. This mirrors `Condition.eval` and
-    // `evaluateClause`, the other two `$regexp` consumers.
-    if (!reportedInvalidRegexps.has(regex)) {
-      reportedInvalidRegexps.add(regex);
-      logger.log('invalid regexp in sqlite REGEXP', e);
+  return function regexp(regex: string, text: string) {
+    try {
+      return new RegExp(regex).test(text || '') ? 1 : 0;
+    } catch (e) {
+      // A partially typed regex is a normal transient state while editing a
+      // `matches` condition, so treat it as matching nothing rather than
+      // throwing out of the SQL engine. This mirrors `Condition.eval` and
+      // `evaluateClause`, the other two `$regexp` consumers.
+      if (!reportedInvalidRegexps.has(regex)) {
+        reportedInvalidRegexps.add(regex);
+        logger.log('invalid regexp in sqlite REGEXP', e);
+      }
+      return 0;
     }
-    return 0;
-  }
+  };
 }
 
 export async function openDatabase(pathOrBuffer?: string | Uint8Array) {
@@ -276,7 +281,7 @@ export async function openDatabase(pathOrBuffer?: string | Uint8Array) {
   db.create_function('UNICODE_LOWER', arg => arg?.toLowerCase());
   db.create_function('UNICODE_UPPER', arg => arg?.toUpperCase());
   db.create_function('UNICODE_LIKE', unicodeLike);
-  db.create_function('REGEXP', regexp);
+  db.create_function('REGEXP', createRegexp());
   db.create_function('NORMALISE', normalise);
   return db;
 }
