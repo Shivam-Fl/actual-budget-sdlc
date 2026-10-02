@@ -180,7 +180,13 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/grouped-spreadsheet.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/recalculate.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
