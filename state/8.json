@@ -548,7 +548,8 @@
         "detail": "`should not throw on an unparseable regex when no rows are scanned` (index.test.ts:238) is a test that cannot fail under any implementation of the code, guarded or unguarded. It adds maintenance surface and zero coverage.\n\n`packages/loot-core/src/platform/server/sqlite/index.test.ts:238`\n\nEvidence: The block opens a fresh database, runs initSQL, and issues one SELECT against a table with no rows. SQLite only invokes a user function when it scans a row, so `regexp` is never called; the query returns [] whether `regexp` has a try/catch or not. The work order asked for this case explicitly (AC-5's how_to_verify: \"The empty-table case is included deliberately to pin the harness behaviour\"), but the rationale does not survive contact with the assertion: the query's outcome is decided by the table being empty, not by the guard. Verified with node:sqlite — an UNFIXED `regexp` over an empty table returns [] and does not throw.\n\nFix: Delete the block. The harness fact it means to pin is already carried by the neighbouring test's comment at line 209-212 (\"SQLite only calls a user function when it scans a row\"), which sits on a test that does exercise the guard. Alternatively keep it only if it is rewritten to assert something falsifiable."
       }
     ],
-    "pr": "11"
+    "pr": "11",
+    "filed": 16
   },
   "failure_packet": {
     "issue": 8,
