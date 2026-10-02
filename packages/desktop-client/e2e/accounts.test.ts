@@ -119,6 +119,130 @@ test.describe('Accounts', () => {
     await expect(transaction.balance).toHaveText('25.00');
   });
 
+  test('keeps the running balance column when sorted oldest-first', async () => {
+    // A zero opening balance means no starting-balance transaction, so the
+    // balances are exactly the running totals of these three transactions.
+    // An account with a starting balance offsets every value by that row.
+    accountPage = await navigation.createAccount({
+      name: 'Running balance sorted',
+      offBudget: false,
+      balance: 0,
+    });
+    await accountPage.waitFor();
+
+    await accountPage.createSingleTransaction({
+      date: '01/01/2026',
+      notes: 'oldest',
+      credit: '100.00',
+    });
+    await accountPage.createSingleTransaction({
+      date: '02/01/2026',
+      notes: 'middle',
+      debit: '50.00',
+    });
+    await accountPage.createSingleTransaction({
+      date: '03/01/2026',
+      notes: 'newest',
+      credit: '25.00',
+    });
+
+    await accountPage.setTransactionColumnVisibility('balance', true);
+
+    const header = page
+      .getByTestId('transaction-table-header')
+      .getByTestId('balance');
+
+    // First click on the date header sorts newest-first.
+    await accountPage.sortByColumn('date');
+    await expect(header).toContainText('Balance');
+    await expect(accountPage.getNthTransaction(0).notes).toHaveText('newest');
+    await expect(accountPage.getNthTransaction(0).balance).toHaveText('75.00');
+    await expect(accountPage.getNthTransaction(1).balance).toHaveText('50.00');
+    await expect(accountPage.getNthTransaction(2).balance).toHaveText('100.00');
+
+    // Second click sorts oldest-first. The column used to disappear here.
+    await accountPage.sortByColumn('date');
+    await expect(accountPage.getNthTransaction(0).notes).toHaveText('oldest');
+    await expect(header).toContainText('Balance');
+
+    // Each transaction keeps the same balance it had in the other direction -
+    // the two views are the same three values in opposite row order.
+    await expect(accountPage.getNthTransaction(0).balance).toHaveText('100.00');
+    await expect(accountPage.getNthTransaction(1).balance).toHaveText('50.00');
+    await expect(accountPage.getNthTransaction(2).balance).toHaveText('75.00');
+
+    // The toggle stays available, without changing the sort first. The
+    // checkbox itself is visually hidden, so assert on its label.
+    const columnsModal = await accountPage.openTransactionColumnsModal();
+    await expect(
+      columnsModal.locator('label[for="toggle-column-balance"]'),
+    ).toBeVisible();
+    await columnsModal
+      .getByRole('button', { name: 'Cancel', exact: true })
+      .click();
+
+    await accountPage.setTransactionColumnVisibility('balance', false);
+    await expect(
+      page.getByTestId('transaction-table-header').getByTestId('balance'),
+    ).toHaveCount(0);
+
+    // Re-enabling the column resets the sort, so the table comes back in its
+    // default newest-first order with the same balances.
+    await accountPage.setTransactionColumnVisibility('balance', true);
+    await expect(accountPage.getNthTransaction(0).balance).toHaveText('75.00');
+
+    // Round trip desc -> asc -> desc, asserting both directions each time.
+    await accountPage.sortByColumn('date');
+    await expect(accountPage.getNthTransaction(0).notes).toHaveText('newest');
+    await expect(accountPage.getNthTransaction(0).balance).toHaveText('75.00');
+
+    await accountPage.sortByColumn('date');
+    await expect(accountPage.getNthTransaction(0).notes).toHaveText('oldest');
+    await expect(accountPage.getNthTransaction(0).balance).toHaveText('100.00');
+
+    await accountPage.sortByColumn('date');
+    await expect(accountPage.getNthTransaction(0).notes).toHaveText('newest');
+    await expect(accountPage.getNthTransaction(0).balance).toHaveText('75.00');
+    await expect(accountPage.getNthTransaction(1).balance).toHaveText('50.00');
+    await expect(accountPage.getNthTransaction(2).balance).toHaveText('100.00');
+  });
+
+  test('hides the running balance when the transaction set is not the whole account', async () => {
+    accountPage = await navigation.createAccount({
+      name: 'Running balance restrictions',
+      offBudget: false,
+      balance: 0,
+    });
+    await accountPage.waitFor();
+
+    await accountPage.createSingleTransaction({
+      notes: 'first transaction',
+      credit: '100.00',
+    });
+
+    await accountPage.setTransactionColumnVisibility('balance', true);
+    const balanceCells = page
+      .getByTestId('transaction-table')
+      .getByTestId('balance');
+    await expect(balanceCells).toHaveCount(1); // the one row
+
+    // Sorting by another column has no defined running order.
+    await accountPage.sortByColumn('payee');
+    await expect(balanceCells).toHaveCount(0);
+    const modal = await accountPage.openTransactionColumnsModal();
+    await expect(modal.locator('#toggle-column-balance')).toHaveCount(0);
+    await modal.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+    // A search narrows the rows to something that does not accumulate to the
+    // account total.
+    await accountPage.sortByColumn('date');
+    await expect(balanceCells).toHaveCount(1);
+    await page.getByPlaceholder(/^Search/).fill('first');
+    await expect(balanceCells).toHaveCount(0);
+    await page.getByPlaceholder(/^Search/).fill('');
+    await expect(balanceCells).toHaveCount(1);
+  });
+
   test('bulk editing the date shows a properly formatted date picker', async () => {
     async function measure(locator: Locator) {
       const box = await locator.boundingBox();
