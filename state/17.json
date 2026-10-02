@@ -246,8 +246,7 @@
   "touch_paths": [
     "packages/ci-actions/src/release-notes/util.mjs",
     "packages/ci-actions/bin/release-notes-check.mjs",
-    "upcoming-release-notes/fix-invalid-regex-rule-crash.md",
-    "upcoming-release-notes/fix-weekly-report-final-bucket.md",
+    "packages/ci-actions/src/release-notes/util.test.js",
     "packages/ci-actions/src/release-notes/util.test.js"
   ],
   "acceptance": [],
