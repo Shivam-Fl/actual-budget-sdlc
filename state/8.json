@@ -431,5 +431,27 @@
       "diagnosis": "The QA agent ran to completion and did its job; it just never wrote the one file the workflow gates on. The action returned subtype=success, is_error=false after 323 turns / 51 minutes / $20.19, so the step is green, and the agent left 24 evidence files in qa-evidence/ (a 636-line three-file Playwright suite, 19 screenshots, a HAR, a trace, plus an out-of-band better-sqlite3 check against the Electron registration). check-evidence.mjs then said the report could not be read and the judge's valida",
       "run": "36983695548"
     }
+  ],
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 1,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6"
+    ],
+    "sha": "196e961b76cd48aed24be12806d2daa7ee7030e8",
+    "run_id": "36992261450",
+    "work_order_version": 1,
+    "at": "2026-10-02T11:50:14.402Z"
+  },
+  "qa_open_bugs": [
+    {
+      "id": "BUG-1",
+      "title": "The invalid-regexp guard logs from inside the SQLite user function, so it prints once per scanned transaction on every keystroke"
+    }
   ]
 }
