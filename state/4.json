@@ -16,7 +16,6 @@
     "n": 1,
     "run": "36984276689"
   },
-  "halted": null,
   "pending": {
     "stage": "implement",
     "rework": null,
@@ -380,7 +379,7 @@
       "action": "-> needs-human"
     }
   ],
-  "resume_at": "qa",
+  "resume_at": null,
   "flow_plan": {
     "kind": "bug",
     "confidence": 90,
@@ -389,7 +388,7 @@
     "councils": {},
     "decided_at": "2026-10-02T04:33:57.411Z"
   },
-  "stopped_at": "qa",
+  "stopped_at": null,
   "dispatched_stage": "qa",
   "validated_from": "debug",
   "validated_at": "2026-10-02T05:53:26.654Z",
