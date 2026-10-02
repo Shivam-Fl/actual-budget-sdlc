@@ -117,13 +117,23 @@ export function createCustomSpreadsheet({
     });
     const conditionsOpKey = conditionsOp === 'or' ? '$or' : '$and';
 
+    // A weekly bucket is labelled with its week start but covers the whole week,
+    // so the query bound and the final bucket's `intervalEndDate` both use the
+    // week's true end, clamped to today so an in-progress week never projects
+    // into future days. The From/To pickers can only offer week starts, so
+    // without this the final week is truncated to a single day.
+    const weekEnd = monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx);
+    const today = monthUtils.currentDay();
+    const effectiveEndDate =
+      interval === 'Weekly' ? (today < weekEnd ? today : weekEnd) : endDate;
+
     let assets: QueryDataEntity[];
     let debts: QueryDataEntity[];
 
     ({ assets, debts } = await fetchSpreadsheetQueryData({
       balanceTypeOp,
       startDate,
-      endDate,
+      endDate: effectiveEndDate,
       interval,
       categories: categories.list,
       categoryGroups: categories.grouped,
@@ -254,7 +264,7 @@ export function createCustomSpreadsheet({
           intervalStartDate: index === 0 ? startDate : intervalItem,
           intervalEndDate:
             index + 1 === intervals.length
-              ? endDate
+              ? effectiveEndDate
               : monthUtils.subDays(intervals[index + 1], 1),
           totalAssets: perIntervalAssets,
           totalDebts: perIntervalDebts,
@@ -283,6 +293,8 @@ export function createCustomSpreadsheet({
         showUncategorized,
         startDate,
         endDate,
+        interval,
+        firstDayOfWeekIdx,
       });
       return { ...calc };
     });
