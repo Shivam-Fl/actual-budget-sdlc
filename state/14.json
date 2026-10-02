@@ -433,7 +433,7 @@
           "The `authors: [claude]` release-note finding, which is open as #17."
         ],
         "kind": "bug",
-        "issue": null
+        "issue": 20
       },
       {
         "title": "Command palette opens without React's DialogTitle accessibility warning",
@@ -476,5 +476,7 @@
     ],
     "deferred": []
   },
-  "children": []
+  "children": [
+    20
+  ]
 }
