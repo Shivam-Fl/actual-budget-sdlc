@@ -239,7 +239,16 @@
       "Whether AQL's f('date') conversion is correct for a NULL column in older databases. The migration defaults to NULL and every existing row is NULL, and the fallback arm tests `schedule_occurrence: null` - so the null path is load-bearing. I exercised it (an unstamped legacy transaction matched by the fallback arm), but not against a database migrated from a real pre-change file."
     ]
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/migrations/<timestamp>_add_schedule_occurrence_to_transactions.sql",
+    "packages/loot-core/src/server/aql/schema/index.ts",
+    "packages/loot-core/src/server/schedules/app.ts",
+    "packages/loot-core/src/shared/schedules.ts",
+    "packages/loot-core/src/types/models/transaction.ts",
+    "packages/loot-core/src/shared/schedules.test.ts",
+    "packages/loot-core/src/server/schedules/app.test.ts",
+    "packages/loot-core/src/server/sync/sync.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
