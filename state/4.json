@@ -1,20 +1,20 @@
 {
   "issue": 4,
   "pr": 9,
-  "state": "planning",
+  "state": "budget-exceeded",
   "owner": null,
   "lock_expires": null,
   "lock_run": null,
   "attempts": {
-    "plan": 10,
+    "plan": 11,
     "ci": 3,
     "review": 2,
     "qa": 3
   },
   "attempt_run": {
     "counter": "plan",
-    "n": 10,
-    "run": "37054675266"
+    "n": 11,
+    "run": "37055417858"
   },
   "pending": {
     "stage": "root-cause",
@@ -270,7 +270,7 @@
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-02T04:33:26.308Z",
-  "updated_at": "2026-10-02T19:38:35.185Z",
+  "updated_at": "2026-10-02T19:38:49.741Z",
   "history": [
     {
       "at": "2026-10-02T04:33:30.362Z",
@@ -586,6 +586,16 @@
       "at": "2026-10-02T19:38:35.185Z",
       "agent": "root-cause",
       "action": "lock released"
+    },
+    {
+      "at": "2026-10-02T19:38:49.741Z",
+      "agent": "plan",
+      "action": "plan attempt 11"
+    },
+    {
+      "at": "2026-10-02T19:38:49.741Z",
+      "agent": "watchdog",
+      "action": "-> budget-exceeded"
     }
   ],
   "resume_at": null,
