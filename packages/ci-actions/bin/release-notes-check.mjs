@@ -8,6 +8,7 @@ import {
   categoryAutocorrections,
   categoryOrder,
   findNonPersonAuthors,
+  sanitizeWorkflowCommandData,
 } from '../src/release-notes/util.mjs';
 
 const execFile = promisify(childProcess.execFile);
@@ -23,7 +24,7 @@ if (!baseRef) {
 }
 
 function reportError(message) {
-  console.log(`::error::${message}`);
+  console.log(`::error::${sanitizeWorkflowCommandData(message)}`);
 
   process.stdout.write('::notice::');
   fs.createReadStream(`${NOTES_DIR}/README.md`).pipe(process.stdout);
@@ -60,10 +61,16 @@ function validateFile(path) {
     reportError(`Release note ${path} authors should be a list.`);
     return false;
   }
+  if (data.authors.length === 0) {
+    reportError(`Release note ${path} has an empty authors list.`);
+    return false;
+  }
   const nonPersonAuthors = findNonPersonAuthors(data.authors);
   if (nonPersonAuthors.length > 0) {
     reportError(
-      `Release note ${path} authors must be GitHub usernames of people, not bots or agents: ${nonPersonAuthors.join(', ')}.`,
+      `Release note ${path} authors must be GitHub usernames of people, not bots or agents: ${nonPersonAuthors
+        .map(a => (typeof a === 'string' ? a : JSON.stringify(a)))
+        .join(', ')}.`,
     );
     return false;
   }
@@ -81,17 +88,26 @@ void (async () => {
   await execFile('git', ['fetch', 'origin', baseRef]);
   const { stdout } = await execFile('git', [
     'diff',
-    '--name-only',
-    '--diff-filter=A',
+    '--name-status',
+    '--diff-filter=AM',
     `origin/${baseRef}...HEAD`,
     '--',
     `${NOTES_DIR}/`,
   ]);
-  const added = stdout
+  // Selecting on the status column rather than a second diff keeps the
+  // added/modified distinction available: a note edited to credit a bot is as
+  // much a gate concern as one added with a bot in it.
+  const rows = stdout
     .split('\n')
     .map(s => s.trim())
     .filter(Boolean)
-    .filter(p => p.endsWith('.md') && p !== `${NOTES_DIR}/README.md`);
+    .map(line => line.split('\t'))
+    .filter(
+      ([, path]) => path?.endsWith('.md') && path !== `${NOTES_DIR}/README.md`,
+    );
+  const added = rows
+    .filter(([status]) => status.startsWith('A'))
+    .map(([, path]) => path);
 
   if (added.length === 0) {
     reportError(
@@ -100,7 +116,9 @@ void (async () => {
     return;
   }
 
-  for (const path of added) {
+  const changed = rows.map(([, path]) => path);
+
+  for (const path of changed) {
     if (!fs.existsSync(path)) {
       reportError(`Release note ${path} was added but does not exist on HEAD.`);
       return;

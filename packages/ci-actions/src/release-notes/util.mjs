@@ -33,17 +33,41 @@ export const NON_PERSON_AUTHORS = ['claude', 'github-actions'];
 const BOT_SUFFIX = /\[bot\]$/;
 
 /**
- * Returns the authors that are known bots or agents rather than people, in
- * input order, so the caller can name them in its error. Returns the offending
- * values instead of a boolean because they are already in hand here.
+ * Returns every author that is not a credit to a person — a known bot or agent,
+ * or any value that is not a string — in input order, so the caller can name
+ * them in its error. Returns the offending values instead of a boolean because
+ * they are already in hand here.
+ *
+ * The type check is what makes this total over YAML input: a flow sequence can
+ * hold an int, a float, a bool, null, a list or a map, none of which is a
+ * GitHub username, and normalising those would throw straight out of the gate.
  */
 export function findNonPersonAuthors(authors) {
   return authors.filter(author => {
+    if (typeof author !== 'string') {
+      return true;
+    }
     const normalized = author.toLowerCase().trim();
     return (
       NON_PERSON_AUTHORS.includes(normalized) || BOT_SUFFIX.test(normalized)
     );
   });
+}
+
+/**
+ * Escapes a value for use as workflow-command data, per GitHub's documented
+ * rules. The order matters: "%" is escaped first, so a value already holding
+ * the literal text "%0A" becomes "%250A" instead of being resurrected into a
+ * real newline by the LF rule below.
+ *
+ * ":" and "," are deliberately left alone — they are only special inside the
+ * property syntax, and the check script emits no properties.
+ */
+export function sanitizeWorkflowCommandData(value) {
+  return String(value)
+    .replace(/%/g, '%25')
+    .replace(/\r/g, '%0D')
+    .replace(/\n/g, '%0A');
 }
 
 export async function parseReleaseNotes(dir, owner, repo, historyRef, only) {
