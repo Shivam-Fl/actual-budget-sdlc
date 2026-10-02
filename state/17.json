@@ -100,5 +100,180 @@
       "by": "Shivam-Fl",
       "answer": "Credit Shivam-Fl. That account operates this pipeline, so a person is answerable for every change it ships. Correct both shipped notes to `authors: [Shivam-Fl]`. Then make the release-notes check reject an author that is an agent or a bot, not a person: `claude`, `github-actions`, and anything ending in `[bot]` (case-insensitive). Add a test for each, and a test that `Shivam-Fl` passes. A small denylist is the right rule here; skip the network lookup."
     }
-  ]
+  ],
+  "validated_work_order": {
+    "issue": 17,
+    "version": 1,
+    "kind": "bug",
+    "understanding": "The release-notes gate is packages/ci-actions/bin/release-notes-check.mjs. Its validateFile checks that front matter has a category, that the category is one of four, that authors exists and is an array, and that the body is exactly one line. It never inspects a single author value. I confirmed the defect by running the real script: on a branch that added upcoming-release-notes/fix-weekly-report-final-bucket.md (authors: [claude]), against the parent commit as BASE_REF, it printed `Validated 1 release note(s).` and exited 0. `claude` then reaches parseReleaseNotes in src/release-notes/util.mjs, which does `data.authors.map(a => '@' + a)` and emits the published line `- <body> — thanks @claude`, so the changelog credits an account that did not write the fix. The issue's proposed remedy — a handle shape check — does not catch this: `claude` is a syntactically perfect GitHub handle, so all 82 author values in the directory pass a shape rule including both bad ones. The owner recorded a decision answering both open questions: credit Shivam-Fl on both shipped notes, and reject bot/agent identities by an explicit denylist — `claude`, `github-actions`, and anything ending in `[bot]` case-insensitively — with a test per rule and a test that Shivam-Fl passes, and no network lookup. This plan implements exactly that.",
+    "root_cause": "validateFile in packages/ci-actions/bin/release-notes-check.mjs asserts only that `authors` is present and an array; the value of each element is never examined, so any string — a bot login, a first name, a product name — passes the gate that exists to keep the published changelog honest.",
+    "approach": "Two halves, one slice. (1) Put the identity rule in a pure, exported, unit-testable helper and call it from validateFile, so the gate fails a note that credits a bot or an agent. The helper lives in packages/ci-actions/src/release-notes/util.mjs, the existing shared home for release-notes helpers that the check script already imports from — no new file for one function. The rule is a denylist, exactly as decided: lowercase and trim the author, reject if it equals `claude` or `github-actions`, or if it ends in `[bot]`. That last clause already covers `claude[bot]` and `github-actions[bot]`, which are the logins the git history actually shows, so the two bare names are the only extra entries needed. (2) Correct the two shipped notes to `authors: [Shivam-Fl]`, per the decision, editing both files in place — they are on main, so this is an edit, not an amendment. Return the offending values from the helper rather than a bare boolean so the error names what was wrong and what to put instead; a gate that says only \"invalid author\" sends the author to the same guessing the ticket exists to stop. No network call: the decision rules it out, and existence on GitHub would not distinguish \"wrote it\" from \"asked for it\" anyway.",
+    "files": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.mjs",
+        "action": "edit",
+        "change": "Add an exported `NON_PERSON_AUTHORS` denylist (`['claude', 'github-actions']`) and an exported `findNonPersonAuthors(authors)` that returns the offending entries: lowercase+trim each author, keep it if it is in the denylist or matches /\\[bot\\]$/i. Return an array (empty when every author is a person) rather than a boolean, so the caller can name the bad values in its error. Put it beside `categoryAutocorrections`/`categoryOrder`, which the check script already imports from here. Add a short comment saying why this is a denylist and not a shape check: `claude` is a valid GitHub handle, so only the identity list distinguishes the tool from the person.",
+        "why": "The check script is a top-level script with side effects (it reads env, fetches git, exits) and cannot be imported by a test. util.mjs is the module the script already imports for its other two validation constants, so the rule is testable and the diff is one import line."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.mjs",
+        "action": "edit",
+        "change": "In `validateFile`, after the existing `Array.isArray(data.authors)` branch, add: `const nonPerson = findNonPersonAuthors(data.authors); if (nonPerson.length > 0) { reportError(`Release note ${path} authors must be GitHub usernames of people, not bots or agents: ${nonPerson.join(', ')}.`); return false; }`. Add `findNonPersonAuthors` to the existing import from `../src/release-notes/util.mjs`. Keep the failure message naming the rejected values so the author knows what to replace them with.",
+        "why": "This is the only place the gate validates `authors`; the check-action composite that runs it needs no edit, which matters because `.github/**` is a forbidden path."
+      },
+      {
+        "path": "upcoming-release-notes/fix-invalid-regex-rule-crash.md",
+        "action": "edit",
+        "change": "In the front matter, change `authors: [claude]` to `authors: [Shivam-Fl]`. Leave `category: Bugfix` and the body line byte-identical.",
+        "why": "Decided by the owner: that account operates this pipeline, so a person is answerable for every change it ships."
+      },
+      {
+        "path": "upcoming-release-notes/fix-weekly-report-final-bucket.md",
+        "action": "edit",
+        "change": "In the front matter, change `authors: [claude]` to `authors: [Shivam-Fl]`. Leave `category: Bugfix` and the body line byte-identical.",
+        "why": "Same decision; this is the note the reproduction ran against."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "create",
+        "cases": [
+          "returns [] for authors: ['Shivam-Fl'] — a person passes",
+          "returns ['claude'] for authors: ['claude'] — the bare agent name is rejected",
+          "returns ['github-actions'] for authors: ['github-actions'] — the bare bot name is rejected",
+          "returns ['dependabot[bot]'] for any handle ending in [bot], and the same for 'some-bot[BOT]' — the suffix rule is case-insensitive",
+          "returns ['claude[bot]'] for 'claude[bot]' — the suffix rule covers the suffixed form of a denylisted name, so no separate entry is needed",
+          "returns only the offenders from a mixed list: findNonPersonAuthors(['Shivam-Fl', 'claude', 'matt-fidd', 'github-actions']) is exactly ['claude', 'github-actions'], in input order",
+          "returns [] for an empty array, so a note cannot pass by having no authors at all here (the missing/array checks in the check script are what require a non-empty list)"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "findNonPersonAuthors returns ['claude'] for the single author 'claude' — the value that shipped in both notes.",
+        "verify": "test",
+        "how_to_verify": "`yarn workspace @actual-app/ci-actions test` — the case \"returns ['claude'] for authors: ['claude']\" in packages/ci-actions/src/release-notes/util.test.js."
+      },
+      {
+        "id": "AC-2",
+        "check": "findNonPersonAuthors returns ['github-actions'] for the single author 'github-actions'.",
+        "verify": "test",
+        "how_to_verify": "The case \"returns ['github-actions'] for authors: ['github-actions']\" in the same file."
+      },
+      {
+        "id": "AC-3",
+        "check": "Any author ending in [bot] is rejected, case-insensitively: 'dependabot[bot]' and 'some-bot[BOT]' both come back, and so does 'claude[bot]'.",
+        "verify": "test",
+        "how_to_verify": "The three [bot] cases in packages/ci-actions/src/release-notes/util.test.js, run by `yarn workspace @actual-app/ci-actions test`."
+      },
+      {
+        "id": "AC-4",
+        "check": "A real person's handle passes: findNonPersonAuthors(['Shivam-Fl']) returns [].",
+        "verify": "test",
+        "how_to_verify": "The case \"returns [] for authors: ['Shivam-Fl']\" in the same file."
+      },
+      {
+        "id": "AC-5",
+        "check": "A mixed list yields only the offenders, in input order: ['Shivam-Fl', 'claude', 'matt-fidd', 'github-actions'] returns exactly ['claude', 'github-actions'].",
+        "verify": "test",
+        "how_to_verify": "The mixed-list case in the same file."
+      },
+      {
+        "id": "AC-6",
+        "check": "End to end: the real gate rejects a note whose only author is 'claude'. On a branch that adds a note with `authors: [claude]` over its parent, running the check with BASE_REF set to the parent prints `::error::` naming the offending author and exits non-zero, where before this change the same branch printed `Validated 1 release note(s).` and exited 0.",
+        "verify": "test",
+        "how_to_verify": "This is the reproduction from the plan, re-run against the fixed script: check out a scratch branch off the default parent, add `upcoming-release-notes/tmp-bot-author.md` with `category: Bugfix` and `authors: [claude]`, then `BASE_REF=<parent-sha> GITHUB_STEP_SUMMARY=/tmp/summary.md node packages/ci-actions/bin/release-notes-check.mjs`; expect a non-zero exit and `::error::` output naming `claude`. Delete the scratch branch afterwards. (The equivalent automated coverage is the unit tests in AC-1..AC-5; this step proves the wiring from `validateFile` to the helper, which no unit test reaches.)"
+      },
+      {
+        "id": "AC-7",
+        "check": "Both corrected notes now read `authors: [Shivam-Fl]`, and no note left in upcoming-release-notes/ credits a bot or agent: grepping every `authors:` line in the directory finds no `claude`, no `github-actions`, and no value ending in `[bot]`.",
+        "verify": "test",
+        "how_to_verify": "`grep -h '^authors:' upcoming-release-notes/*.md | sort -u` — every value is a real GitHub handle; the 80 pre-existing handles (MikesGlitch, matt-fidd, …) are unchanged and the two `claude` entries are gone. Not browser-observable: these files are inputs to a CI gate, not a screen."
+      },
+      {
+        "id": "AC-8",
+        "check": "The rest of the gate is unharmed: a note with a valid person author, a valid category and a one-line body still passes, and a note with a bad category or a multi-line body still fails as before.",
+        "verify": "test",
+        "how_to_verify": "`yarn workspace @actual-app/ci-actions test` passes as a whole, and re-running the check on a scratch branch adding a well-formed note (`category: Bugfix`, `authors: [Shivam-Fl]`, one-line body) prints `Validated 1 release note(s).` and exits 0."
+      }
+    ],
+    "qa_script": [
+      "There is no browser surface here — this is a CI gate and two markdown files. Verify with the shell; do not open http://localhost:3001 looking for it.",
+      "`yarn workspace @actual-app/ci-actions test` — all cases green, including the seven new ones in src/release-notes/util.test.js.",
+      "Read the diff of packages/ci-actions/src/release-notes/util.mjs: the rule is a lowercase+trim comparison against ['claude', 'github-actions'] plus /\\[bot\\]$/i. Confirm there is no fetch, no API call and no token anywhere in the change.",
+      "Read the diff of packages/ci-actions/bin/release-notes-check.mjs: the new branch sits after the Array.isArray check, returns false, and its error message names the offending values.",
+      "`grep -h '^authors:' upcoming-release-notes/*.md | sort -u` — 41 distinct handles, no bot, two Shivam-Fl notes now.",
+      "`git diff --stat` — exactly four files: the two notes, the check script, util.mjs, plus the new test. Confirm nothing under `.github/**`, `.sdlc/**`, packages/ci-actions/src/migrations/** or docs/spec/** moved.",
+      "Optional, the wiring proof (AC-6): scratch branch off the default parent, add a note with `authors: [claude]`, run the check with BASE_REF=<parent-sha>; expect a non-zero exit and `::error::` naming `claude`. Then the same with `authors: [Shivam-Fl]`; expect `Validated 1 release note(s).` and exit 0. Clean up the branch."
+    ],
+    "risks": [
+      "The denylist is a denylist: `copilot`, `cursor-agent`, `codex` or any future agent login still passes. The owner chose this explicitly over a network lookup, so it is a decision to carry, not a gap to route around — say so in the code comment so the next person does not mistake it for an oversight.",
+      "A false positive would block a real contributor: someone whose actual GitHub handle is `claude` or `github-actions` can no longer be credited. No such account appears in the 82 existing author values, and the error names the value so it is diagnosable, but the failure mode is a red CI on an honest PR.",
+      "`validateFile` reports the first failing note and returns; the new branch follows that existing pattern rather than accumulating errors, so a PR with two bad notes is told about one at a time.",
+      "No new host is contacted. The change makes no network call of any kind, so nothing is added to env.api_allowlist in .sdlc/config.yml and QA is not blocked on an allowlist entry.",
+      "No forbidden path is touched. `.github/actions/release-notes/check/action.yml` needs no edit — it invokes `node packages/ci-actions/bin/release-notes-check.mjs` and reads the exit code — which matters because `.github/**` is in forbidden_paths.",
+      "Note that the composite check action has no caller in this repository's own workflows (nothing under .github/workflows/ references release-notes/check), so the gate runs on upstream Actual, not here. The fix is still correct and still ships; it just will not be exercised by this repo's CI until something wires the action up. Wiring it is out of scope."
+    ],
+    "out_of_scope": [
+      "Making the check action run in this repository's CI — it has no caller in .github/workflows/ today, and adding one means editing .github/**, a forbidden path.",
+      "The shape check the issue originally proposed. It is subsumed and was shown not to catch the reported bug: `claude` is a valid handle shape, so the rule passes both shipped notes unchanged.",
+      "Correcting the shape of the two notes' git authorship — both fixes were committed by github-actions[bot] and carry no human review. Decided: Shivam-Fl is credited and the pipeline does not rewrite history.",
+      "Any other release-notes field. `category` and the one-line body are validated as they were; nothing else in the front matter is checked and nothing else is added.",
+      "Validating authors in release-notes-generate.mjs, which renders `@<author>` into the published changelog. The gate is the correct seam — it fails the PR before it merges rather than at release time — and the generator's own blog `authors:` comes from GITHUB_ACTOR, not from these files."
+    ],
+    "confidence": 88,
+    "confidence_rationale": "The defect is reproduced against the real script, not inferred: the check printed `Validated 1 release note(s).` and exited 0 on a note crediting `claude`. The remedy is a decided one, quoted verbatim from the owner's answer, and it touches two existing lines and one pure function. The residual uncertainty is not about the fix but about QA's ability to observe it: there is no browser surface, so every criterion is verified with `verify: \"test\"` and a named command, and the wiring from validateFile to the helper is proven only by running the script by hand (AC-6). 88 rather than higher because the composite action is not wired into any workflow in this repository, so CI will not exercise the new branch here.",
+    "reproduced": true,
+    "evidence": [
+      "Ran the real gate. In a git worktree checked out at b593293 (which adds upcoming-release-notes/fix-weekly-report-final-bucket.md, authors: [claude]), with a bare repo standing in for origin and BASE_REF set to that commit's parent, `node packages/ci-actions/bin/release-notes-check.mjs` printed `Looking in /tmp/repro-rn/upcoming-release-notes` then `Validated 1 release note(s).` and exited 0.",
+      "Read packages/ci-actions/bin/release-notes-check.mjs: `validateFile` contains exactly four checks — data.category present, category in categoryOrder (after categoryAutocorrections), data.authors present, Array.isArray(data.authors), then the one-line body. No check reads an element of data.authors.",
+      "Confirmed the shape rule does not catch it: `grep -h '^authors:' upcoming-release-notes/*.md | sort -u` yields 41 distinct values, all syntactically valid GitHub handles including the two bad ones. There is nothing to shape-reject.",
+      "Confirmed the downstream damage: packages/ci-actions/src/release-notes/util.mjs line ~35 does `data.authors.map(a => `@${a}`)` and builds `- ${body} — thanks ${authors}`, so `authors: [claude]` ships to users as `— thanks @claude`.",
+      "Confirmed blast radius is exactly two files: `grep -ln '^authors:.*\\(claude\\|github-actions\\|\\[bot\\]\\)' upcoming-release-notes/*.md` returns fix-invalid-regex-rule-crash.md and fix-weekly-report-final-bucket.md. The other 80 notes carry real handles.",
+      "Confirmed the git provenance the ticket asked about: `git log -1 --format='%an <%ae>'` on both notes returns `github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>` — which is why the [bot] suffix rule is required, not merely the two bare names.",
+      "Confirmed the constraint that matters: `grep -rn 'release-notes/check' .github/` returns nothing, so no workflow in this repository invokes the composite action; and .github/actions/release-notes/check/action.yml runs the script directly (`node packages/ci-actions/bin/release-notes-check.mjs`), so it needs no edit."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Validate the GitHub handle shape (alphanumerics and single hyphens, no spaces), as the issue text proposed.",
+        "rejected_because": "It does not catch the bug it was filed for. I ran it over all 82 author values in the directory: zero fail, including both `claude` entries, because `claude` is a syntactically perfect handle. It would have let the next `authors: [claude]` through unchanged. The owner's decision replaces it with an identity denylist."
+      },
+      {
+        "approach": "Call the GitHub API to confirm each author exists.",
+        "rejected_because": "Decided against by the owner, and it would not work anyway: `claude` is not an account, but `Shivam-Fl` is a real account that asked for the change rather than writing it, so existence cannot distinguish the tool from the person. It would also make a fast gate slow and token-dependent."
+      },
+      {
+        "approach": "Ship only the two file corrections and leave the gate alone.",
+        "rejected_because": "This is what the previous plan stage asked about and the owner answered: a hand-corrected note leaves nothing stopping the third one. The recurrence path is the gate, so the gate is the fix."
+      },
+      {
+        "approach": "Put the rule in a new packages/ci-actions/src/release-notes/authors.mjs alongside util.mjs.",
+        "rejected_because": "One function, one caller, in a directory where util.mjs is already the shared home for release-notes helpers and is already imported by the very script that needs this. A new module would be an abstraction with one caller; exporting from util.mjs is a two-line diff."
+      },
+      {
+        "approach": "Return a boolean from the helper and let the check script write its own message.",
+        "rejected_because": "The gate would then say an author is invalid without saying which one. The values are already in hand at the point of failure; returning them costs nothing and makes the error actionable, which is the entire point of the ticket."
+      }
+    ],
+    "assumptions": [
+      "The owner's answer to `/sdlc answer` is binding and is implemented exactly: both notes become `authors: [Shivam-Fl]`, and the denylist is `claude`, `github-actions`, and anything ending in `[bot]` case-insensitively, with no network lookup. I agree with it and found no reason to deviate.",
+      "\"Anything ending in [bot]\" is read case-insensitively because the decision says so; lowercasing the value before both the equality test and the regex covers `CLAUDE`, `Github-Actions` and `SomeBot[BOT]` alike. This is strictly stronger than testing the bare names case-sensitively and cannot reject a real contributor who happens to capitalise differently.",
+      "The test file is `util.test.js` rather than `.ts`. The module under test is `util.mjs`, which is plain JavaScript with no types, and the sibling `src/build-runs/resolve.test.js` is `.js` for the same reason. The vitest include glob is `src/**/*.test.(js|jsx|ts|tsx)`, so `.js` is collected.",
+      "The seven unit cases plus the two file corrections are the whole change. No interface surface exists to plan: this is a CI script and two markdown files, with no screen, no API and no state."
+    ],
+    "unknowns": [
+      "Whether the owner wants the composite action wired into this repository's own CI. Nothing under .github/workflows/ calls .github/actions/release-notes/check today, so the fix will not be exercised here — and wiring it means touching .github/**, which no agent may do. Left out of scope and named in risks; a human can decide.",
+      "Whether the upstream Actual project wants the same denylist. This change lands in Shivam-Fl's fork; whether it is proposed upstream is a human's call, not this ticket's."
+    ],
+    "residual_risks": [
+      "Only `claude` and `github-actions` are denied by name. A note crediting `copilot`, `cursor-agent`, `codex` or a future agent login still passes the gate. Carried deliberately, per the decision; a human who wants it closed needs a different rule.",
+      "The gate's reach is upstream, not this repository — see the unknown above. The unit tests are the only automated proof in this repo that the rule works.",
+      "Correcting the notes does not change what was already published. If a release already shipped `— thanks @claude`, that text is in the git history of the blog post and in readers' release notes; this change prevents the recurrence, it does not retract the past."
+    ]
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-02T18:40:23.393Z",
+  "validated_ac_changes": []
 }
