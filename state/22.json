@@ -208,7 +208,11 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/reports/ReportCard.tsx",
+    "packages/desktop-client/src/components/reports/ReportCard.test.tsx",
+    "packages/desktop-client/src/components/reports/ReportCard.test.tsx"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
