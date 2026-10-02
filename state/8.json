@@ -368,5 +368,24 @@
       }
     ],
     "pr": "11"
+  },
+  "failure_packet": {
+    "issue": 8,
+    "pr": 11,
+    "head": "b635e0f57891fc6eb9122cd514c1907475c0446f",
+    "stage": "qa",
+    "attempt": 1,
+    "occurrences": 1,
+    "error_type": "unknown",
+    "error_signature": "c37004281dd5b2b4",
+    "raw_excerpt": "sdlc: the agent did not write qa-report.json.\nIt reported success, so it ran — it just put the file somewhere else, or never wrote one.\nJSON files that do exist: .nano-staged.json, .oxfmtrc.json, .oxlintrc.json, knip.json, package.json, tsconfig.json, tsconfig.root.json, work-order.json, .sdlc/flow-graph.json, .sdlc/manifest.json",
+    "digest": "The qa stage failed and no known error pattern matched. The raw output is below.",
+    "decision": "triage",
+    "decision_reason": "an agent reads the failed run's full log and decides what happens next — this script cannot see that log from inside the run that produced it",
+    "context": {
+      "work_order_version": 1,
+      "run_url": "https://github.com/Shivam-Fl/actual-budget-sdlc/actions/runs/36983695548",
+      "prior_signatures": []
+    }
   }
 }
