@@ -225,7 +225,6 @@ forbidden_paths:
   - "bin/sdlc"
   - "docker-compose.yml"
   - "packages/ci-actions/src/migrations/**"
-  - "packages/loot-core/migrations/**"
   - "packages/loot-core/src/mocks/migrations/**"
   - "packages/loot-core/src/server/migrate/**"
   - "packages/sync-server/docker-compose.yml"
