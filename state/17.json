@@ -79,5 +79,12 @@
     "decided_at": "2026-10-02T18:17:01.535Z"
   },
   "stopped_at": "plan",
-  "dispatched_stage": "debug"
+  "dispatched_stage": "debug",
+  "answers": [
+    {
+      "at": "2026-10-02T18:30:21.446Z",
+      "by": "Shivam-Fl",
+      "answer": "Credit Shivam-Fl. That account operates this pipeline, so a person is answerable for every change it ships. Correct both shipped notes to `authors: [Shivam-Fl]`. Then make the release-notes check reject an author that is an agent or a bot, not a person: `claude`, `github-actions`, and anything ending in `[bot]` (case-insensitive). Add a test for each, and a test that `Shivam-Fl` passes. A small denylist is the right rule here; skip the network lookup."
+    }
+  ]
 }
