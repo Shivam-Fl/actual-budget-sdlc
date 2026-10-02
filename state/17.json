@@ -16,7 +16,6 @@
     "n": 1,
     "run": "37046391168"
   },
-  "halted": null,
   "pending": null,
   "work_order": null,
   "touch_paths": [],
@@ -66,7 +65,7 @@
       "action": "lock released"
     }
   ],
-  "resume_at": "plan",
+  "resume_at": null,
   "flow_plan": {
     "kind": "bug",
     "confidence": 85,
@@ -78,8 +77,8 @@
     },
     "decided_at": "2026-10-02T18:17:01.535Z"
   },
-  "stopped_at": "plan",
-  "dispatched_stage": "debug",
+  "stopped_at": null,
+  "dispatched_stage": "plan",
   "answers": [
     {
       "at": "2026-10-02T18:30:21.446Z",
