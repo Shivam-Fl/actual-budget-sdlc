@@ -122,7 +122,14 @@ export async function asyncTransaction(
 }
 
 function regexp(regex: string, text: string | null) {
-  return new RegExp(regex).test(text || '') ? 1 : 0;
+  try {
+    return new RegExp(regex).test(text || '') ? 1 : 0;
+  } catch (e) {
+    // See the identically named function in ./index.ts: a partially typed
+    // regex matches nothing rather than throwing out of the SQL engine.
+    logger.log('invalid regexp in sqlite REGEXP', e);
+    return 0;
+  }
 }
 
 export function openDatabase(pathOrBuffer: string | Buffer): SQL.Database {

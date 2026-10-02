@@ -209,7 +209,16 @@ export async function asyncTransaction(db: Database, fn: () => Promise<void>) {
 }
 
 function regexp(regex: string, text: string) {
-  return new RegExp(regex).test(text || '') ? 1 : 0;
+  try {
+    return new RegExp(regex).test(text || '') ? 1 : 0;
+  } catch (e) {
+    // A partially typed regex is a normal transient state while editing a
+    // `matches` condition, so treat it as matching nothing rather than
+    // throwing out of the SQL engine. This mirrors `Condition.eval` and
+    // `evaluateClause`, the other two `$regexp` consumers.
+    logger.log('invalid regexp in sqlite REGEXP', e);
+    return 0;
+  }
 }
 
 export async function openDatabase(pathOrBuffer?: string | Uint8Array) {

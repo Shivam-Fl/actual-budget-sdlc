@@ -193,4 +193,97 @@ describe('Web sqlite', () => {
     // @ts-expect-error Property 'id' does not exist on type 'unknown'
     expect(rows[0].id).toBe('id1');
   });
+
+  it('should not throw on an unparseable regex, matching nothing instead', async () => {
+    const db = await openDatabase();
+    execQuery(db, initSQL);
+
+    runQuery(
+      db,
+      "INSERT INTO textstrings (id, string) VALUES ('id1', '#mortgage note')",
+    );
+
+    // A partially typed regex is a normal transient state while editing a
+    // `matches` filter, and must not throw out of the SQL engine. Note the
+    // seeded row: SQLite only calls a user function when it scans a row, so
+    // without one the broken behaviour is invisible.
+    expect(
+      runQuery(
+        db,
+        "SELECT id FROM textstrings where REGEXP('\\\\', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
+
+    expect(
+      runQuery(
+        db,
+        "SELECT id FROM textstrings where REGEXP('#[', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
+
+    expect(
+      runQuery(
+        db,
+        "SELECT id FROM textstrings where REGEXP('(', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
+  });
+
+  it('should not throw on an unparseable regex when no rows are scanned', async () => {
+    const db = await openDatabase();
+    execQuery(db, initSQL);
+
+    expect(
+      runQuery(
+        db,
+        "SELECT id FROM textstrings where REGEXP('\\\\', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
+  });
+
+  it('should still match a valid regex that does match, and not throw on one that does not', async () => {
+    const db = await openDatabase();
+    execQuery(db, initSQL);
+
+    runQuery(
+      db,
+      "INSERT INTO textstrings (id, string) VALUES ('id1', '#mortgage note')",
+    );
+
+    expect(
+      runQuery(
+        db,
+        "SELECT id FROM textstrings where REGEXP('#mortgage', string)",
+        null,
+        true,
+      ).length,
+    ).toBe(1);
+
+    // Well-formed, but matches nothing: that is an empty result, not an error
+    expect(
+      runQuery(
+        db,
+        "SELECT id FROM textstrings where REGEXP('normal', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
+
+    expect(
+      runQuery(
+        db,
+        "SELECT id FROM textstrings where REGEXP('#\\\\d+', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
+  });
 });

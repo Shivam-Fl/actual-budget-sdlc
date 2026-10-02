@@ -637,6 +637,37 @@ describe('Transaction rules', () => {
     // todo: isapprox
   });
 
+  test('an unparseable `matches` pattern matches nothing rather than throwing', async () => {
+    await loadRules();
+    const account = await db.insertAccount({ name: 'bank' });
+    const payeeId = await db.insertPayee({ name: 'payee' });
+
+    await db.insertTransaction({
+      id: '1',
+      date: '2020-10-01',
+      account,
+      payee: payeeId,
+      notes: 'Follow up #mortgage',
+      amount: 123,
+    });
+
+    // Partially typed patterns are the normal state of the value input while
+    // a rule is being edited, and each keystroke re-runs the preview query.
+    // They must resolve to no transactions, not reject.
+    for (const value of ['\\', '#\\', '#[', '(', 'asdfasdf\\']) {
+      const transactions = await getMatchingTransactions([
+        { field: 'notes', op: 'matches', value },
+      ]);
+      expect(transactions).toEqual([]);
+    }
+
+    // A valid pattern still matches, so the guard is not a blanket no-op
+    const transactions = await getMatchingTransactions([
+      { field: 'notes', op: 'matches', value: '#mortgage' },
+    ]);
+    expect(transactions.map(t => t.id)).toEqual(['1']);
+  });
+
   test('transactions can be queried by hasTags', async () => {
     await loadRules();
     const account = await db.insertAccount({ name: 'bank' });
