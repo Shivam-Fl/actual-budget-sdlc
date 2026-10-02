@@ -22,9 +22,9 @@
     "requested_at_head": null,
     "qa_run": "37067168228",
     "from": "qa",
-    "pr": "19",
+    "pr": 19,
     "work_order_version": 1,
-    "at": "2026-10-02T22:19:51.143Z"
+    "at": "2026-10-02T22:54:37.575Z"
   },
   "work_order": {
     "issue": 17,
@@ -442,7 +442,7 @@
     "decided_at": "2026-10-02T18:17:01.535Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "plan",
+  "dispatched_stage": "root-cause",
   "answers": [
     {
       "at": "2026-10-02T18:30:21.446Z",
