@@ -243,7 +243,13 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/grouped-spreadsheet.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+    "packages/desktop-client/e2e/reports.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
