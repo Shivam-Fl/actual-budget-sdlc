@@ -451,7 +451,7 @@
   "stopped_at": null,
   "dispatched_stage": "root-cause",
   "validated_from": "root-cause",
-  "validated_at": "2026-10-02T11:53:54.007Z",
+  "validated_at": "2026-10-02T12:25:42.952Z",
   "validated_ac_changes": [
     {
       "id": "AC-1",
@@ -464,10 +464,44 @@
       },
       "now": {
         "id": "AC-1",
+        "check": "With a category selection applied and 'Show empty rows' enabled, the report renders rows for SELECTABLE categories only: no category or group that appears as a checkbox in the sidebar and is unchecked appears in the report, at 0.00 or otherwise. The synthetic Uncategorized / Transfers / Off budget block is explicitly NOT covered by this criterion - it has no sidebar checkbox, is appended by categoryLists after the narrowing, and is governed by AC-9.",
         "source": "TR-1",
         "verify": "browser",
-        "check": "With a category selection applied and 'Show empty rows' enabled, the report renders rows for SELECTABLE categories only: no category or group that appears as a checkbox in the sidebar and is unchecked appears in the report, at 0.00 or otherwise. The synthetic Uncategorized / Transfers / Off budget block is explicitly NOT covered by this criterion - it has no sidebar checkbox, is appended by categoryLists after the narrowing, and is governed by AC-9.",
-        "how_to_verify": "Open /reports/custom on the demo budget, Split=Category, Type=Payment, Data Table view. Uncheck all categories, tick only the 'Bills' group, then Options -> 'Show empty rows'. The table lists Cell, Internet, Mortgage, Water, Power under Bills. The sidebar checkboxes that must NOT appear as rows are: Usual Expenses, Food, Restaurants, Entertainment, Clothing, General, Gift, Medical, Savings, Income, Starting Balances, Misc. The reporter's 'Unselect All' button does exist in this build (CategorySelector.tsx:133) and produces this state directly; unchecking the 19 checkboxes individually produces the identical state. Screenshot against the pre-fix run, which showed all 23 of these rows at 0.00."
+        "how_to_verify": "Open /reports/custom on the demo budget, Split=Category, Type=Payment, Data Table view. Uncheck all categories, tick only the 'Bills' group, then Options -> 'Show empty rows'. The table lists Cell, Internet, Mortgage, Water, Power under Bills. The sidebar checkboxes that must NOT appear as rows are: Usual Expenses, Food, Restaurants, Entertainment, Clothing, General, Gift, Medical, Savings, Income, Starting Balances, Misc. The reporter's 'Unselect All' button does exist in this build (CategorySelector.tsx:133) and QA's own reproduction used it; unchecking the 19 checkboxes individually produces the identical state. Screenshot against the pre-fix run, which showed all 23 of these rows at 0.00."
+      }
+    },
+    {
+      "id": "AC-2",
+      "was": {
+        "id": "AC-2",
+        "check": "The same holds for a selection narrower than a whole group - ticking a single category shows no other sidebar category and no other sidebar group, at 0.00 or otherwise. As in AC-1 the synthetic Uncategorized / Transfers / Off budget block is excluded and covered by AC-9.",
+        "source": "TR-2",
+        "verify": "browser",
+        "how_to_verify": "Same setup, uncheck all, tick only 'Food', Options -> 'Show empty rows'. Only Food and its group header 'Usual Expenses' appear among sidebar-derived rows; Restaurants, Entertainment, Clothing and the whole Bills and Income groups do not. I ran this variation in the pre-fix browser and it reproduced identically, so it is a real second case, not a hypothetical."
+      },
+      "now": {
+        "id": "AC-2",
+        "check": "The same holds for a selection narrower than a whole group - ticking a single category shows no other sidebar category and no other sidebar group, at 0.00 or otherwise. As in AC-1 the synthetic Uncategorized / Transfers / Off budget block is excluded and covered by AC-9.",
+        "source": "TR-2",
+        "verify": "browser",
+        "how_to_verify": "Same setup, uncheck all, tick only 'Food', Options -> 'Show empty rows'. Only Food and its group header 'Usual Expenses' appear among sidebar-derived rows; Restaurants, Entertainment, Clothing and the whole Bills and Income groups do not. The pre-fix browser run reproduced this variation identically, so it is a real second case, not a hypothetical."
+      }
+    },
+    {
+      "id": "AC-3",
+      "was": {
+        "id": "AC-3",
+        "check": "With no category condition set - the default state - the axis is unfiltered and every category still appears when 'Show empty rows' is on. The fix must not narrow the default report.",
+        "source": "TR-3",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts 'No condition leaves the axis untouched' case: with conditions [], all three fixture categories and both groups are present."
+      },
+      "now": {
+        "id": "AC-3",
+        "check": "With no category condition set - the default state - the axis is unfiltered and every category still appears when 'Show empty rows' is on. The fix must not narrow the default report.",
+        "source": "TR-3",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts 'leaves the axis untouched with no conditions': with conditions [], all three fixture categories and both groups are present."
       }
     },
     {
@@ -481,10 +515,10 @@
       },
       "now": {
         "id": "AC-4",
+        "check": "A category condition the filter cannot safely interpret leaves the axis unfiltered rather than dropping rows, preserving today's behaviour for complex conditions.",
         "source": "TR-4",
         "verify": "test",
-        "check": "A category condition the filter cannot safely interpret leaves the axis unfiltered rather than dropping rows, preserving today's behaviour for complex conditions.",
-        "how_to_verify": "custom-spreadsheet.test.ts 'An uninterpretable condition falls back to no narrowing' case: a 'hasTags' category condition still yields the full Category axis and the full Group axis. Run it under conditionsOp 'or' as well - the pre-existing conservative fallback inside filterCategoriesByConditions must still compose with the new gate, which is checked directly in budgetDataQuery.test.ts."
+        "how_to_verify": "custom-spreadsheet.test.ts 'falls back to no narrowing for a condition it cannot interpret': a 'hasTags' category condition still yields the full Category axis and the full Group axis. Run it under conditionsOp 'or' as well - the pre-existing conservative fallback inside filterCategoriesByConditions must still compose with the new gate, which budgetDataQuery.test.ts checks directly."
       }
     },
     {
@@ -498,10 +532,27 @@
       },
       "now": {
         "id": "AC-5",
+        "check": "Category conditions addressed to a group (field 'category_group') narrow the axis to that group's categories, matching how the amounts are already filtered.",
         "source": "TR-5",
         "verify": "test",
-        "check": "Category conditions addressed to a group (field 'category_group') narrow the axis to that group's categories, matching how the amounts are already filtered.",
-        "how_to_verify": "custom-spreadsheet.test.ts 'A category_group condition narrows the axis by group' case: a category_group 'is g-bills' condition leaves only c-cell in the Category axis and only g-bills in the Group axis. This must also hold under conditionsOp 'or' when every disjunct is a category or category_group condition, since the new gate keeps those narrowing."
+        "how_to_verify": "custom-spreadsheet.test.ts 'narrows the axis by group for a category_group condition': a category_group 'is g-bills' condition leaves only c-cell in the Category axis and only g-bills in the Group axis. This must also hold under conditionsOp 'or' when every disjunct is a category or category_group condition, which the new gate keeps narrowing - see AC-13."
+      }
+    },
+    {
+      "id": "AC-6",
+      "was": {
+        "id": "AC-6",
+        "check": "Every split whose axis comes from the category data is fixed - Category, Group, CategoryGroup and Interval - plus the Split=Category table view, which is rendered from groupedData rather than the Category axis. This holds because narrowCategoriesByConditions narrows BOTH halves of the axis (list and grouped) in the shared axis construction, not one split's branch.",
+        "source": "TR-6",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts, all cases: 'REGRESSION ... Category axis' (Category), 'Group split, for AC-6' (Group), 'The table view, i.e. the grouped path' (groupedData / CategoryGroup), and 'AC-7, Type=Budgeted' (Budgeted). Interval shares the Category branch of groupBySelections (ReportOptions.ts:466-468, groupByList = categoryList), so the Category case covers it by construction. Payee and Account are deliberately NOT claimed here and are listed in out_of_scope: groupBySelections builds those two axes from `payees`/`accounts` (ReportOptions.ts:453-465), never from `categories`, so they are unaffected by this defect and this change alters them not at all."
+      },
+      "now": {
+        "id": "AC-6",
+        "check": "Every split whose axis comes from the category data is fixed - Category, Group, CategoryGroup and Interval - plus the Split=Category table view, which is rendered from groupedData rather than the Category axis. This holds because narrowCategoriesByConditions narrows BOTH halves of the axis (list and grouped) in the shared axis construction, not one split's branch.",
+        "source": "TR-6",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts, all cases: the Category-axis case, the grouped-data case (CategoryGroup), the Group-split case and the Type=Budgeted case. Interval shares the Category branch of groupBySelections (ReportOptions.ts:466-468, groupByList = categoryList), so the Category case covers it by construction. Payee and Account are deliberately NOT claimed here and are listed in out_of_scope: groupBySelections builds those two axes from `payees`/`accounts` (ReportOptions.ts:453-465), never from `categories`, so they are unaffected by this defect and this change alters them not at all."
       }
     },
     {
@@ -515,10 +566,10 @@
       },
       "now": {
         "id": "AC-7",
+        "check": "Type=Budgeted still produces correct amounts, and its axis is now narrowed by the same helper - the previously-phantom zero rows for unchecked categories disappear there too. This is the same defect corrected on a second surface, not a regression: the phantom rows on the Budgeted axis were reproduced in the pre-fix browser, so the Budgeted output DOES change, by losing only zero rows. What must not change is the amounts.",
         "source": "TR-7",
         "verify": "test",
-        "check": "Type=Budgeted still produces correct amounts, and its axis is now narrowed by the same helper - the previously-phantom zero rows for unchecked categories disappear there too. This is the same defect corrected on a second surface, not a regression: I reproduced the phantom rows on the Budgeted axis in the pre-fix browser, so the Budgeted output DOES change, by losing only zero rows. What must not change is the amounts.",
-        "how_to_verify": "custom-spreadsheet.test.ts 'AC-7, Type=Budgeted' case, driven with the real fetchSpreadsheetQueryData - NOT with './fetchSpreadsheetQueryData' stubbed, which would skip the entire Budgeted path - stubbing only '@actual-app/core/platform/client/connection' (returning budget cells for envelope-budget-month) and '#queries/aqlQuery'. Assert the Budgeted axis is exactly ['c-cell','Uncategorized','Off budget','Transfers'] AND that c-cell carries the stubbed budgeted amount in intervalData, AND that the group total equals the pre-fix figure for the same selection. The pre-fix baseline I captured in the browser for the same scenario is: axis shows Usual Expenses and Income groups at 0.00, Bills 4,575.00 with Cell 225.00 / Internet 180.00 / Mortgage 3,600.00 / Water 270.00 / Power 300.00 - so 'the amounts are unchanged' is a checkable claim with a known number behind it."
+        "how_to_verify": "custom-spreadsheet.test.ts 'narrows the axis but not the amounts for Type=Budgeted', driven with the real fetchSpreadsheetQueryData - NOT with './fetchSpreadsheetQueryData' stubbed, which would skip the entire Budgeted path - stubbing only '@actual-app/core/platform/client/connection' (returning budget cells for envelope-budget-month) and '#queries/aqlQuery'. Assert the Budgeted axis is exactly ['c-cell','Uncategorized','Off budget','Transfers'] AND that c-cell carries the stubbed budgeted amount in intervalData AND that no other row carries a nonzero amount. The new gate short-circuits on conditionsOp !== 'or', so this case must be unchanged by the edit; add the 'or' variant of the gate check to budgetDataQuery.test.ts rather than here."
       }
     },
     {
@@ -532,10 +583,27 @@
       },
       "now": {
         "id": "AC-8",
+        "check": "No regression in existing report behaviour: the current reports e2e suite and the reports unit suites still pass.",
         "source": "TR-8",
         "verify": "test",
-        "check": "No regression in existing report behaviour: the current reports e2e suite and the reports unit suites still pass.",
-        "how_to_verify": "yarn workspace @actual-app/web run test, and yarn workspace @actual-app/web run playwright test reports.test.ts --browser=chromium. budgetDataQuery.test.ts must stay green as written on main: the gate is scoped to narrowCategoriesByConditions and filterCategoriesByConditions is left byte-identical, so its four existing cases cannot be affected."
+        "how_to_verify": "yarn workspace @actual-app/web run test, and yarn workspace @actual-app/web run playwright test reports.test.ts --browser=chromium. budgetDataQuery.test.ts must stay green as written on main: the gate is scoped to narrowCategoriesByConditions and filterCategoriesByConditions is left byte-identical, so its existing cases cannot be affected. The seven custom-spreadsheet.test.ts cases added by the PR must also stay green unchanged - none of them uses conditionsOp 'or', which is exactly why they all passed while the browser failed."
+      }
+    },
+    {
+      "id": "AC-9",
+      "was": {
+        "id": "AC-9",
+        "check": "The synthetic Uncategorized / Transfers / Off budget block is unaffected by the narrowing: it survives a category selection, because categoryLists appends uncategorizedGroup itself after the narrowed grouped array.",
+        "source": "TR-9",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts: the regression case asserts the Category axis is exactly ['c-cell','Uncategorized','Off budget','Transfers'] and the Group axis is exactly ['g-bills','Uncategorized & Off budget'] - the synthetic block is asserted present, not merely tolerated. The e2e case 'The synthetic block still renders' asserts the same thing on the real screen. I confirmed in the browser that post-fix these three rows and their group still render at 0.00 under a Bills-only selection."
+      },
+      "now": {
+        "id": "AC-9",
+        "check": "The synthetic Uncategorized / Transfers / Off budget block is unaffected by the narrowing: it survives a category selection, because categoryLists appends uncategorizedGroup itself after the narrowed grouped array.",
+        "source": "TR-9",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts: the Category-axis case asserts the axis is exactly ['c-cell','Uncategorized','Off budget','Transfers'] and the Group axis is exactly ['g-bills','Uncategorized & Off budget'] - the synthetic block is asserted present, not merely tolerated. The gate cannot reach it either, since it returns before categoryLists is called at all."
       }
     },
     {
@@ -549,10 +617,10 @@
       },
       "now": {
         "id": "AC-10",
+        "check": "A category group that is legitimately empty in an unfiltered report is not dropped. With no narrowing in play the helper must return the input unchanged, not rebuild the grouped array and delete the empty group.",
         "source": "TR-10",
         "verify": "test",
-        "check": "A category group that is legitimately empty in an unfiltered report is not dropped. With no narrowing in play the helper must return the input unchanged, not rebuild the grouped array and delete the empty group.",
-        "how_to_verify": "custom-spreadsheet.test.ts 'No condition leaves the axis untouched' case: the fixture carries a group with categories: [], and with conditions [] that group must still reach setData. This is the regression the identity guard in narrowCategoriesByConditions exists to prevent. Verified in this session: with conditions [] the helper returns the input by identity and the empty group survives; the same fixture under a real narrowing drops it, as intended."
+        "how_to_verify": "custom-spreadsheet.test.ts 'leaves the axis untouched with no conditions': the fixture carries a group with categories: [], and with conditions [] that group must still reach setData. Confirmed in this session against the PR branch's own function: with conditions [] it returns the input by identity, and the gate's early return takes that path before the identity check is even reached. The same holds under conditionsOp 'or' with no conditions, which budgetDataQuery.test.ts pins."
       }
     }
   ],
@@ -618,5 +686,230 @@
       "run": "37003567338",
       "at": "2026-10-02T12:01:00.151Z"
     }
+  },
+  "validated_work_order": {
+    "issue": 4,
+    "version": 2,
+    "mode": "committed",
+    "kind": "bug",
+    "reproduced": true,
+    "confidence": 88,
+    "confidence_rationale": "The diagnosis is not inferred from QA's error string. I re-derived it from the branch's own source (narrowCategoriesByConditions forwards conditionsOp into filterCategoriesByConditions, which reads only category/category_group conditions), then executed the PR's real functions - extracted from origin/sdlc/issue-4's budgetDataQuery.ts and run under node 22 type-stripping - across eight condition shapes: under 'or' with a notes disjunct the returned axis is byte-identical to the 'and' result for the same conditions (list ['c-cell'], grouped [['g-bills',['c-cell']]]), which is the axis/query asymmetry in one line of output. I then ran the same eight shapes through the proposed gate: exactly two outputs change (or+notes, or+date) and the other six are byte-identical, and the identity return that AC-10 depends on is preserved for the no-conditions and uninterpretable-condition cases. The two claims I could not execute are the browser ones: this checkout has no node_modules and no dev server, so I have not watched a report stop dropping money, and I have not measured the QA totals myself - QA's own figures, which I read from the report rather than recomputed. That is why this is 88 and not 95, and residual_risks names it as the first thing to watch.",
+    "understanding": "Two different things went wrong before this one, and both have to be named.\n\nThe first: the plan that built PR #9 diagnosed the ORIGINAL bug correctly and its fix works - QA passed AC-1 through AC-10 on a live browser, including the Group split, the table view and Type=Budgeted. What that plan never stated is the assumption it was quietly making, which is that the category conditions fully describe which categories can appear on the row axis. That assumption is false the moment the operator is 'any of', and its being false is BUG-1.\n\nThe second: my previous revision of this work order got that diagnosis right and proposed the right shape of fix, and was refused by the plan reviewer for one thing - AC-11, and the same assertion in tests[]'s e2e money case and in qa_script step 4, required the 'any of' TOTAL SPENDING to be at least as large in magnitude as max(notes-only, all-of), and the reviewer read the plan's own evidence as showing that a CORRECT fix would fail it (-7,900.41 against a notes-only branch of -8,302.84). I accept the substance of that objection. An acceptance criterion is re-checked by QA on every future run with no memory of this one, so it has to be a property the fix GUARANTEES; an arithmetic relation read off one run of one generated dataset is not that, whatever its true value today. AC-11, the e2e money assertion and qa_script step 4 are rewritten below on the relation the fix does guarantee - the row set - paired with a discriminator that is a statement about equality rather than about size.\n\nI do not accept the reviewer's numeric premise, and the reason matters for how the new criteria are written. Its two figures are not two readings of one dataset. QA's runner (.sdlc/qa/playwright.config.mjs) uses devices['Desktop Chrome'] and never sets userAgent: 'playwright' - the repo's own e2e config does, at packages/desktop-client/playwright.config.ts:17 - so Platform.isPlaywright is false in a QA run (packages/loot-core/src/shared/platform.ts:10-13) and createTestBudget draws from Math.random (packages/loot-core/src/mocks/random.ts:16). The differential control was a worktree at /tmp/base served on a second port: a second origin, with its own demo budget, generated from a different Math.random draw. -7,900.41 and -8,302.84 therefore describe different data and cannot be compared. The same fact cuts the other way and is why this revision goes further than the reviewer asked: in a QA run the demo budget is NOT stable, so no absolute figure may be written into any criterion as an expected literal. What IS stable is the category NAMES, which are hard-coded (packages/loot-core/src/mocks/budget.ts:804-834) - which is why AC-11 can name 'Food' and must not name a number.\n\nI reproduced the defect myself rather than taking QA's word for it. Extracting the PR's own narrowCategoriesByConditions and filterCategoriesByConditions from origin/sdlc/issue-4 and running them over a four-category fixture: with conditions [notes contains 'e', category oneOf ['c-cell']] the helper returns list ['c-cell'] and grouped [['g-bills',['c-cell']]] under 'or' - byte-identical to what it returns for the same two conditions under 'and'. That is the whole bug in one line: the axis is computed as though the category condition were the only condition, while the query side unions every disjunct. Add the gate proposed below and exactly two of the eight shapes I exercised change; 'or' with two category conditions, 'or' with a category plus a category_group, 'and' with notes plus a category, 'and' with a category alone, no conditions, and 'or' with a customName plus a category are all byte-identical, and the identity return AC-10 depends on survives.\n\nEverything else from the previous revision is kept unchanged: the one-file fix, the decision to leave filterCategoriesByConditions byte-identical, the decision not to touch the query side, and AC-1 through AC-10 exactly as QA last saw and passed them.",
+    "root_cause": "The PR's new helper narrowCategoriesByConditions (packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts) forwards conditionsOp straight into filterCategoriesByConditions, which considers ONLY conditions whose field is 'category' or 'category_group' (budgetDataQuery.ts:85-94) and evaluates them with `.some` when conditionsOp is 'or' (budgetDataQuery.ts:171-177). Every other condition in the list is discarded without a trace. Under 'and' that is correct - a returned transaction must satisfy every condition, so a category condition genuinely filters the axis on its own. Under 'or' it is not: a returned transaction only has to satisfy ONE condition, so the category condition is a single disjunct among several and no longer describes the result set, and the helper narrows as if it did. The query side is not narrowed that way and never was: custom-spreadsheet.ts:115-118 sends the whole condition list to 'make-filters-from-conditions' and wraps the result in `{ [conditionsOpKey]: filters }` with conditionsOpKey '$or', which makeQuery.ts:28-30 turns into a genuine $or, so every disjunct's transactions are fetched. The axis and the query then describe different sets: transactions in categories the axis has just deleted are fetched, recalculate finds no row to attach them to, and their amounts are dropped from every total - silently, with no error, no empty state and no warning. 'Show empty rows' is not involved; the rows are gone from the axis either way. Measured by QA on one demo budget: notes-only -8,302.84, all-of -4,575.00, any-of -4,575.00 - the union collapsed exactly onto the 'all of' figure, and the row axis collapsed to Bills/Cell/Internet/Mortgage/Water/Power while the notes-only run immediately before it had rendered Food. I confirmed the same asymmetry at the function level: under 'or' the helper returns byte-identical output to 'and' for the same condition list. This is a defect INTRODUCED by this PR - before it the axis was unnarrowed under every condition set, which is a superset and therefore never loses money - and it went unnoticed because none of the PR's seven unit tests combines conditionsOp 'or' with a non-category condition.",
+    "approach": "Keep the previous plan's structure, which QA verified, and repair the one unsound step in it. Add a small predicate canNarrowAxisByConditions(conditions, conditionsOp) beside narrowCategoriesByConditions in budgetDataQuery.ts and call it as the first thing that helper does, returning `categories` unchanged when it is false and before it ever calls filterCategoriesByConditions. The predicate: false when there are no conditions; TRUE unconditionally when conditionsOp !== 'or', because a conjunctive result satisfies every condition, so a category condition does describe the axis by itself and the 'and' behaviour QA validated is untouched; and under 'or' TRUE only when every effective (non-customName) condition has field 'category' or 'category_group', because then the union of the disjuncts is itself a statement about the category axis and the existing `.some` evaluation is exactly right. Under 'or' with any disjunct on another field - notes, date, payee, account, amount - return false. The unnarrowed axis is main's behaviour and it is the safe direction: conditionsToAQL unions every disjunct on the query side, so an unnarrowed axis is a superset of the true result set, which costs empty rows under 'Show empty rows' and never costs money. Dropping money silently is the one failure mode that is not acceptable here.\n\nPut the gate inside narrowCategoriesByConditions and NOT inside filterCategoriesByConditions. The latter has two callers this PR did not introduce - spending-spreadsheet.ts:60 and fetchBudgetData at budgetDataQuery.ts:203 - both untouched main code, and moving the gate there would change behaviour on both, widening the fix well past the defect. narrowCategoriesByConditions is the function this PR added and the only one it is responsible for; scoping the gate there leaves filterCategoriesByConditions byte-identical, which is what makes AC-7's Budgeted path and AC-8's existing suites provably unaffected rather than merely asserted.\n\nNeither call site needs an edit: custom-spreadsheet.ts:91-97 and grouped-spreadsheet.ts:43-49 already pass `conditionsOp === 'or' ? 'or' : 'and'` into the helper, which is exactly what the gate reads. Keep the identity-return guard the previous plan added, keep passing the unfiltered categories.list / categories.grouped to fetchSpreadsheetQueryData in both factories - the query side must stay untouched, because the fix is about the axis agreeing with the query, not about changing what the query asks for - and keep filterEmptyRows unchanged, since it was only ever what exposed the original defect and is correct for its job.\n\nDo NOT try to widen the axis to the union of all disjuncts. A non-category condition is a predicate over a transaction, not over a category, so there is nothing to union it with at the axis level without running the query first; see alternatives_considered.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts",
+        "action": "edit",
+        "change": "Add an exported `canNarrowAxisByConditions(conditions, conditionsOp): boolean` predicate immediately above `narrowCategoriesByConditions`, and make `narrowCategoriesByConditions` return its `categories` argument unchanged when the predicate is false, before it calls `filterCategoriesByConditions`. Predicate body: `if (!conditions || conditions.length === 0) return false;` then `if (conditionsOp !== 'or') return true;` then, disjunctive case only, `const effective = conditions.filter(cond => !cond.customName); return effective.length > 0 && effective.every(cond => cond.field === 'category' || cond.field === 'category_group');`. Comment each branch with why it is sound - conjunctive results satisfy every condition so a category condition filters the axis alone; disjunctive results satisfy only one, so a category condition is one disjunct and describes the axis only when every disjunct is itself about the axis. The `customName` exclusion is not optional: custom-spreadsheet.ts:116 filters those conditions out before building the query, so they are not disjuncts of the result set either. Leave `filterCategoriesByConditions` byte-identical and leave both call sites alone - custom-spreadsheet.ts:91-97 and grouped-spreadsheet.ts:43-49 already pass `conditionsOp === 'or' ? 'or' : 'and'`, which is what the gate reads. I ran the PR's own two functions over eight condition shapes against this exact predicate: it changes only 'or' + [notes, category] and 'or' + [date, category], and leaves 'or' + [category, category], 'or' + [category, category_group], 'and' + [notes, category], 'and' + [category], no conditions, and 'or' + [customName, category] byte-identical; the `list === categories.list` identity return that AC-10 depends on still fires for the empty and uninterpretable cases.",
+        "why": "This is the whole fix, and it is the only file that needs changing. Putting the gate inside the helper means both spreadsheet factories - and any future caller - get it without having to remember to."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.test.ts",
+        "action": "edit",
+        "cases": [
+          "BUG-1 REPRODUCER, fails on the PR head: conditionsOp 'or' with [notes contains 'e', category oneOf ['c-cell']] must return the FULL axis - both `list` and `grouped` - so the rows the notes disjunct populates still have somewhere to render. Assert it is NOT ['c-cell'] / [['g-bills',['c-cell']]]; that is exactly what the head returns, so this case fails today.",
+          "BUG-1, second shape: conditionsOp 'or' with [date gte ..., category oneOf ['c-cell']] also returns the full axis - a date disjunct escapes the category axis exactly as a notes disjunct does.",
+          "MUST STILL NARROW (AC-13), sound disjunctive: conditionsOp 'or' with [category oneOf ['c-food'], category oneOf ['c-cell']] still narrows to ['c-food','c-cell']. The fix is not a blanket revert, and issue #4 stays fixed wherever the union of the disjuncts is itself an axis bound.",
+          "MUST STILL NARROW (AC-13), mixed axis-bound fields: conditionsOp 'or' with [category oneOf ['c-food'], category_group is 'g-bills'] still narrows to ['c-food','c-cell','c-net'] with grouped Usual Expenses + Bills.",
+          "Guard against the gate being written one notch too wide: conditionsOp 'or' with [a customName condition, category oneOf ['c-cell']] still narrows, because customName conditions are stripped from the query as well.",
+          "AC-3/AC-1 regression: conditionsOp 'and' with [notes contains 'e', category oneOf ['c-cell']] still narrows to ['c-cell'] - the exact scenario issue #4 was filed about, which QA validated, asserted unchanged.",
+          "AC-10: conditionsOp 'or' with an empty list, and with no conditions at all, returns the full axis AND returns the same object by identity, so a legitimately empty group still survives.",
+          "AC-4: an uninterpretable CATEGORY condition (field 'category', op 'hasTags') under 'or' still returns the full axis through the pre-existing conservative fallback inside filterCategoriesByConditions, confirming the new gate composes with that fallback rather than replacing it."
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+        "action": "edit",
+        "cases": [
+          "BUG-1 MONEY, full pipeline and exact figures. Turn the flat `aqlQuery` mock into a seam: a test-scoped `serverRows` array that the mock returns, standing in for the server exactly as it already stands in for it today. Fixture rows: c-food -700, c-rent -300 (the notes branch) and c-cell -500 (the Bills branch), each carrying `date`, `category`, `categoryGroup`, `amount`, and hidden flags, dated inside the fixture's Monthly interval range. Drive three runs with the existing runCustom/baseProps helpers against conditions [notes contains 'e', category oneOf ['c-cell']]: (1) notes-only - conditions [notes], conditionsOp 'and', serverRows = the two notes rows - must total -1000; (2) all-of - the full condition list, 'and', serverRows = [c-cell -500] - must total -500; (3) any-of - the same list, conditionsOp 'or', serverRows = all three rows - must total -1500 AND carry c-food and c-rent on the axis. Run (3) is the reproducer: on the PR head its axis is ['c-cell','Uncategorized','Off budget','Transfers'] and its total is -500. Assert `data.totalDebts`, not the axis alone - an axis assertion can be satisfied by a report that renders the rows and zeroes them. The same stub returning the rows for both the assets and the debts query is harmless here because only totalDebts is asserted, but say so in a comment so the next reader does not think it is a mistake.",
+          "BUG-1, grouped path: the same conditions and serverRows with runGrouped must put BOTH groups on the axis - ['g-usual','g-bills','uncategorized'] with Usual Expenses carrying ['c-food','c-rent'] - because the grouped half is what the table view renders. Fails on the PR head.",
+          "BUG-1, Group split: the same conditions with groupBy 'Group' must still render g-usual, which the notes disjunct populates. Fails on the PR head.",
+          "REGRESSION GUARD (AC-1), so the money case cannot be satisfied by narrowing being switched off: 'and' with the Bills-only selection still yields exactly ['c-cell','Uncategorized','Off budget','Transfers'] with no c-food and no c-rent, and with no conditions at all the axis is untouched by identity, including the empty group.",
+          "REGRESSION GUARD (AC-7): Type=Budgeted under 'and' is byte-identical to before this edit - the axis is still narrowed and the budgeted amounts are unchanged - because the gate short-circuits on conditionsOp !== 'or' and filterCategoriesByConditions was not touched.",
+          "EDGE: conditionsOp 'or' with a single category condition still narrows, since one disjunct is trivially a union of one. Pins that the gate is not merely 'op === or means never narrow'."
+        ]
+      },
+      {
+        "path": "packages/desktop-client/e2e/reports.test.ts",
+        "action": "edit",
+        "cases": [
+          "Browser reproduction of BUG-1, mirroring QA's T-10 with the relation rewritten: on the demo budget open /reports/custom in Data Table view, apply Notes contains 'e', read the rendered row set, unselect all categories and tick only the Bills group, flip the operator from 'all of' to 'any of', and assert that every row from BOTH earlier row sets is still rendered. 'Any of' matches a superset of each branch, so its rows must be a superset of each branch's rows - that is the relation the fix guarantees, and it is what the PR head fails (QA measured rows collapsing to exactly Bills/Cell/Internet/Mortgage/Water/Power). Assert against the row sets read earlier in the same test, not against a hardcoded list.",
+          "The same case names 'Food' explicitly: it is a hard-coded demo category outside Bills (packages/loot-core/src/mocks/budget.ts:815), so it is stable across runs even though the money is not. Guard it - assert the notes-only run rendered Food first - so the case cannot go vacuous.",
+          "Browser reproduction of BUG-1, mirroring QA's T-9 with the money assertion rewritten: with the summary shown, record TOTAL SPENDING for the notes-only branch and again for the 'all of' branch, then flip to 'any of' and record it a third time. Assert the third figure is NOT EQUAL to the 'all of' figure, guarded by the precondition that the notes-only run rendered at least one row outside the Bills selection. Do NOT compare magnitudes and do NOT assert any absolute figure: in a QA run the demo budget is generated from Math.random (packages/loot-core/src/mocks/random.ts:16), so only within-run relations are stable.",
+          "NEGATIVE CONTROL, so a pass on the any-of case cannot come from narrowing having been switched off entirely: with 'all of' and the Bills-only selection and 'Show empty rows' on, every category outside Bills must still be absent from the rows (AC-1)."
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "With a category selection applied and 'Show empty rows' enabled, the report renders rows for SELECTABLE categories only: no category or group that appears as a checkbox in the sidebar and is unchecked appears in the report, at 0.00 or otherwise. The synthetic Uncategorized / Transfers / Off budget block is explicitly NOT covered by this criterion - it has no sidebar checkbox, is appended by categoryLists after the narrowing, and is governed by AC-9.",
+        "source": "TR-1",
+        "verify": "browser",
+        "how_to_verify": "Open /reports/custom on the demo budget, Split=Category, Type=Payment, Data Table view. Uncheck all categories, tick only the 'Bills' group, then Options -> 'Show empty rows'. The table lists Cell, Internet, Mortgage, Water, Power under Bills. The sidebar checkboxes that must NOT appear as rows are: Usual Expenses, Food, Restaurants, Entertainment, Clothing, General, Gift, Medical, Savings, Income, Starting Balances, Misc. The reporter's 'Unselect All' button does exist in this build (CategorySelector.tsx:133) and QA's own reproduction used it; unchecking the 19 checkboxes individually produces the identical state. Screenshot against the pre-fix run, which showed all 23 of these rows at 0.00."
+      },
+      {
+        "id": "AC-2",
+        "check": "The same holds for a selection narrower than a whole group - ticking a single category shows no other sidebar category and no other sidebar group, at 0.00 or otherwise. As in AC-1 the synthetic Uncategorized / Transfers / Off budget block is excluded and covered by AC-9.",
+        "source": "TR-2",
+        "verify": "browser",
+        "how_to_verify": "Same setup, uncheck all, tick only 'Food', Options -> 'Show empty rows'. Only Food and its group header 'Usual Expenses' appear among sidebar-derived rows; Restaurants, Entertainment, Clothing and the whole Bills and Income groups do not. The pre-fix browser run reproduced this variation identically, so it is a real second case, not a hypothetical."
+      },
+      {
+        "id": "AC-3",
+        "check": "With no category condition set - the default state - the axis is unfiltered and every category still appears when 'Show empty rows' is on. The fix must not narrow the default report.",
+        "source": "TR-3",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts 'leaves the axis untouched with no conditions': with conditions [], all three fixture categories and both groups are present."
+      },
+      {
+        "id": "AC-4",
+        "check": "A category condition the filter cannot safely interpret leaves the axis unfiltered rather than dropping rows, preserving today's behaviour for complex conditions.",
+        "source": "TR-4",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts 'falls back to no narrowing for a condition it cannot interpret': a 'hasTags' category condition still yields the full Category axis and the full Group axis. Run it under conditionsOp 'or' as well - the pre-existing conservative fallback inside filterCategoriesByConditions must still compose with the new gate, which budgetDataQuery.test.ts checks directly."
+      },
+      {
+        "id": "AC-5",
+        "check": "Category conditions addressed to a group (field 'category_group') narrow the axis to that group's categories, matching how the amounts are already filtered.",
+        "source": "TR-5",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts 'narrows the axis by group for a category_group condition': a category_group 'is g-bills' condition leaves only c-cell in the Category axis and only g-bills in the Group axis. This must also hold under conditionsOp 'or' when every disjunct is a category or category_group condition, which the new gate keeps narrowing - see AC-13."
+      },
+      {
+        "id": "AC-6",
+        "check": "Every split whose axis comes from the category data is fixed - Category, Group, CategoryGroup and Interval - plus the Split=Category table view, which is rendered from groupedData rather than the Category axis. This holds because narrowCategoriesByConditions narrows BOTH halves of the axis (list and grouped) in the shared axis construction, not one split's branch.",
+        "source": "TR-6",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts, all cases: the Category-axis case, the grouped-data case (CategoryGroup), the Group-split case and the Type=Budgeted case. Interval shares the Category branch of groupBySelections (ReportOptions.ts:466-468, groupByList = categoryList), so the Category case covers it by construction. Payee and Account are deliberately NOT claimed here and are listed in out_of_scope: groupBySelections builds those two axes from `payees`/`accounts` (ReportOptions.ts:453-465), never from `categories`, so they are unaffected by this defect and this change alters them not at all."
+      },
+      {
+        "id": "AC-7",
+        "check": "Type=Budgeted still produces correct amounts, and its axis is now narrowed by the same helper - the previously-phantom zero rows for unchecked categories disappear there too. This is the same defect corrected on a second surface, not a regression: the phantom rows on the Budgeted axis were reproduced in the pre-fix browser, so the Budgeted output DOES change, by losing only zero rows. What must not change is the amounts.",
+        "source": "TR-7",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts 'narrows the axis but not the amounts for Type=Budgeted', driven with the real fetchSpreadsheetQueryData - NOT with './fetchSpreadsheetQueryData' stubbed, which would skip the entire Budgeted path - stubbing only '@actual-app/core/platform/client/connection' (returning budget cells for envelope-budget-month) and '#queries/aqlQuery'. Assert the Budgeted axis is exactly ['c-cell','Uncategorized','Off budget','Transfers'] AND that c-cell carries the stubbed budgeted amount in intervalData AND that no other row carries a nonzero amount. The new gate short-circuits on conditionsOp !== 'or', so this case must be unchanged by the edit; add the 'or' variant of the gate check to budgetDataQuery.test.ts rather than here."
+      },
+      {
+        "id": "AC-8",
+        "check": "No regression in existing report behaviour: the current reports e2e suite and the reports unit suites still pass.",
+        "source": "TR-8",
+        "verify": "test",
+        "how_to_verify": "yarn workspace @actual-app/web run test, and yarn workspace @actual-app/web run playwright test reports.test.ts --browser=chromium. budgetDataQuery.test.ts must stay green as written on main: the gate is scoped to narrowCategoriesByConditions and filterCategoriesByConditions is left byte-identical, so its existing cases cannot be affected. The seven custom-spreadsheet.test.ts cases added by the PR must also stay green unchanged - none of them uses conditionsOp 'or', which is exactly why they all passed while the browser failed."
+      },
+      {
+        "id": "AC-9",
+        "check": "The synthetic Uncategorized / Transfers / Off budget block is unaffected by the narrowing: it survives a category selection, because categoryLists appends uncategorizedGroup itself after the narrowed grouped array.",
+        "source": "TR-9",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts: the Category-axis case asserts the axis is exactly ['c-cell','Uncategorized','Off budget','Transfers'] and the Group axis is exactly ['g-bills','Uncategorized & Off budget'] - the synthetic block is asserted present, not merely tolerated. The gate cannot reach it either, since it returns before categoryLists is called at all."
+      },
+      {
+        "id": "AC-10",
+        "check": "A category group that is legitimately empty in an unfiltered report is not dropped. With no narrowing in play the helper must return the input unchanged, not rebuild the grouped array and delete the empty group.",
+        "source": "TR-10",
+        "verify": "test",
+        "how_to_verify": "custom-spreadsheet.test.ts 'leaves the axis untouched with no conditions': the fixture carries a group with categories: [], and with conditions [] that group must still reach setData. Confirmed in this session against the PR branch's own function: with conditions [] it returns the input by identity, and the gate's early return takes that path before the identity check is even reached. The same holds under conditionsOp 'or' with no conditions, which budgetDataQuery.test.ts pins."
+      },
+      {
+        "id": "AC-11",
+        "check": "With the operator set to 'any of', the categories rendered by the report are a superset of the categories each individual condition renders on its own. A transaction matching ANY disjunct is in the result set, so every category holding one must still have a row - including categories outside the selected group, which only the non-category condition reaches. This is BUG-1's row-axis half and it is stated as a set relation, not as a total: the demo budget is regenerated with Math.random in a QA run (packages/loot-core/src/mocks/random.ts:16), so no figure and no magnitude comparison between runs is stable, but a row that was rendered by a branch is still rendered under the union in every run.",
+        "verify": "browser",
+        "how_to_verify": "Open /reports/custom on the demo budget in Data Table view. (1) Apply Notes contains 'e' and read the rendered row names - call this set S1. (2) Unselect all categories, tick only the 'Bills' group, and read the row names - set S2. (3) Flip the operator toggle from 'all of' to 'any of', wait for the report to settle, and read the row names - set S3. ASSERT every name in S1 and every name in S2 is also in S3. 'Food' is a hard-coded demo category (packages/loot-core/src/mocks/budget.ts:815) and is expected in S3 once S1 contained it; assert it by name in addition to the set relation. QA's T-10 is the same case and observed the failure: S3 collapsed to exactly ['Bills','Cell','Internet','Mortgage','Water','Power'] while S1 had contained Food. Repeat the row check with Split=Group, whose axis comes from the grouped half."
+      },
+      {
+        "id": "AC-12",
+        "check": "With the operator set to 'any of' and a category condition combined with a non-category condition, the report's total is not the 'all of' total whenever the non-category condition alone matched spending outside the selected categories. A report whose 'any of' figure equals its 'all of' figure has dropped that spending, silently - no error, no empty state, no warning. The claim is about equality, never about size: under a union of transaction sets the totals are not ordered by magnitude, so no 'greater than' or 'greater than or equal' assertion is made here, and none may be added to this criterion later.",
+        "verify": "browser",
+        "how_to_verify": "Same setup as AC-11 with the report summary shown. Record TOTAL SPENDING for the notes-only branch (step 1), again for the 'all of' branch (step 2), and a third time under 'any of' (step 3). Precondition, checked in the same run: S1 from AC-11 contains at least one row outside the Bills group - if it does not, this criterion has nothing to discriminate and the run should be reported as inconclusive rather than passed. With that precondition met, ASSERT the 'any of' total is not equal to the 'all of' total. Do not assert any absolute figure and do not compare the 'any of' total against the notes-only total: QA's control measurement on origin/main was taken against a different demo budget from a second origin, so the two numbers describe different data and no cross-run magnitude comparison is meaningful."
+      },
+      {
+        "id": "AC-13",
+        "check": "The fix is narrow, not a revert. Where the conditions combined with 'any of' are ALL addressed to the category axis - two category conditions, or a category and a category_group - the union of the disjuncts is itself a statement about the axis, so the axis MUST still narrow exactly as it does today. And under 'all of' a category condition narrows the axis even when a non-category condition is present, because a conjunctive result satisfies every condition. Without this criterion AC-11 and AC-12 could be satisfied by never narrowing under 'or' at all, silently returning to the pre-PR behaviour for a case the pre-PR behaviour handled correctly.",
+        "verify": "test",
+        "how_to_verify": "budgetDataQuery.test.ts: 'or' with [category oneOf ['c-food'], category oneOf ['c-cell']] must return ['c-food','c-cell'], 'or' with [category oneOf ['c-food'], category_group is 'g-bills'] must return ['c-food','c-cell','c-net'], and 'and' with [notes contains 'e', category oneOf ['c-cell']] must return ['c-cell']. custom-spreadsheet.test.ts additionally pins the negative control on screen-facing behaviour: with 'all of' and a Bills-only selection the axis is still exactly ['c-cell','Uncategorized','Off budget','Transfers'] (AC-1), so the AC-11/AC-12 passes cannot have come from narrowing being switched off."
+      }
+    ],
+    "qa_script": [
+      "Open the app, 'Try the demo', then /reports/custom (fresh Custom Report, Data Table view, summary on).",
+      "Add a filter on a non-category field: the compact filter button in the report topbar -> Notes -> contains -> 'e' -> Apply. Record TOTAL SPENDING and the rendered #list row names. The row names are set S1.",
+      "Guard: S1 must contain at least one row outside the Bills group ('Food' is the expected one - a hard-coded demo category). If it does not, the run proves nothing; say so rather than passing it.",
+      "In the category sidebar click 'Unselect All', then tick only the 'Bills' group. Record TOTAL SPENDING and the rendered #list row names - set S2.",
+      "With two or more conditions present the operator toggle appears. Change it from 'all of' to 'any of'. Wait for the report to settle. Record TOTAL SPENDING and the rendered row names - set S3.",
+      "ASSERT the set relation, which is the one the fix guarantees: every row in S1 and every row in S2 is still present in S3. 'Any of' matches a superset of each branch, so its rows must be a superset of each branch's rows. This is what QA's T-10 checked and what the PR head fails (its S3 collapsed to exactly Bills/Cell/Internet/Mortgage/Water/Power).",
+      "ASSERT 'Food' by name in S3, given step 3's guard held. The name is hard-coded in the demo budget, so this is stable across runs.",
+      "ASSERT the 'any of' TOTAL SPENDING is NOT EQUAL to the 'all of' TOTAL SPENDING. Given step 3's guard, the notes disjunct contributes spending outside the Bills selection, so a report whose two totals are identical has dropped it. Do NOT compare magnitudes and do NOT assert any absolute figure: in a QA run the demo budget is generated from Math.random, so only within-run relations are stable.",
+      "Repeat the row check with Split=Group, whose axis comes from the same grouped half.",
+      "NEGATIVE CONTROL, so a pass cannot come from narrowing being switched off entirely: set the operator back to 'all of' with the Bills-only selection and 'Show empty rows' on. ASSERT every category outside Bills is absent from the rows (AC-1).",
+      "If you want the differential, run the same script against origin/main on a second port. Read its 'any of' rows and total as the target shape, not as a number to compare against: it is a second origin with its own demo budget, so its figures describe different data."
+    ],
+    "risks": [
+      "The gate deliberately restores pre-PR (unnarrowed) axis behaviour for every 'or' combination containing a non-category condition. Under 'Show empty rows' those users will see empty category rows they did not see on the PR head - the same cosmetic symptom issue #4 is about, in the one case where narrowing by category conditions cannot be sound. This is the deliberate trade: an empty row is visible and recoverable, a wrong total is neither.",
+      "A user on 'or' who selects only categories today gets a narrowed axis and will keep getting one, but the moment they add a date or notes condition the axis silently widens. That is correct behaviour, but it is a visible change at the moment the second condition is added, and it can read as a regression to someone who liked the narrowing.",
+      "The gate keys on `cond.field`, so any future condition type added to RuleConditionEntity that is not literally 'category' or 'category_group' will default to NOT narrowing under 'or'. That is the safe direction to fail - a wider axis, never a narrower one - but it means new condition types get the pre-PR behaviour until someone updates the predicate.",
+      "filterCategoriesByConditions' `.some` under 'or' remains what decides correctness for the sound disjunctive cases. I verified it for category+category and category+category_group against the PR branch's own code; I did not audit it against every operator (isNot, notOneOf, contains, doesNotContain, matches) under 'or'. That is pre-existing behaviour this PR inherits rather than introduces.",
+      "QA's own AC-1 how_to_verify carried a wrong claim from the original plan - that no 'Unselect All' button exists in this build. It does (CategorySelector.tsx:133) and QA's reproduction used it. The correction is in the criterion's how_to_verify only; the criterion's claim is unchanged."
+    ],
+    "out_of_scope": [
+      "GetCardData.tsx, the second caller of filterCategoriesByConditions. It reads the pre-existing helper, which this fix deliberately leaves byte-identical, so its behaviour is unchanged by this work. QA named it as a coverage gap in the last run; it stays one, and it is a gap in the coverage, not a new risk.",
+      "Split=Payee and Split=Account. groupBySelections builds those two axes from `payees`/`accounts` (ReportOptions.ts:453-465), never from `categories`, so they cannot be affected by this defect and are not changed by this work.",
+      "The query side. makeQuery, conditionsToAQL and 'make-filters-from-conditions' are correct as they stand - they union every disjunct under 'or', which is the behaviour the axis is being brought into line with. They are not touched.",
+      "filterEmptyRows. It was only ever what exposed the original defect, by returning true unconditionally when showEmpty is on. It is correct for its job and stays unchanged.",
+      "Re-litigating issue #4's original fix. AC-1 through AC-10 all passed QA on the PR head and the diagnosis behind them is confirmed correct by this run; this work order adds a gate to that fix rather than rewriting it."
+    ],
+    "assumptions": [
+      "The demo budget is NOT deterministic in a QA run, and no criterion may rest on an absolute figure. .sdlc/qa/playwright.config.mjs uses devices['Desktop Chrome'] without setting userAgent: 'playwright' - unlike packages/desktop-client/playwright.config.ts:17 - so Platform.isPlaywright is false (packages/loot-core/src/shared/platform.ts:10-13) and createTestBudget draws from Math.random (packages/loot-core/src/mocks/random.ts:16). Every comparison in AC-11 and AC-12 is therefore between readings taken inside one run. What IS stable is the category NAMES, hard-coded at packages/loot-core/src/mocks/budget.ts:804-834, which is why AC-11 names 'Food'.",
+      "The `customName` flag marks a condition excluded from the query as well (custom-spreadsheet.ts:116 filters them out before 'make-filters-from-conditions'), which is why the gate excludes customName conditions from its 'every disjunct is axis-bound' test. If that exclusion is ever removed from the query side, the gate must stop excluding them too.",
+      "ConditionsOpMenu only renders the operator toggle when there are two or more conditions, so the 'any of' failure needs at least two conditions - exactly QA's repro - and the gate's 'no conditions' early return is unreachable in practice but kept as a guard."
+    ],
+    "unknowns": [
+      "Whether any path outside the two spreadsheet factories reaches narrowCategoriesByConditions with conditionsOp 'or'. Grepping callers of the helper and of filterCategoriesByConditions finds only custom-spreadsheet.ts, grouped-spreadsheet.ts, spending-spreadsheet.ts and fetchBudgetData - but a grep is not a browser.",
+      "Whether Split=CategoryGroup and Split=Interval behave identically to Category under 'or'. They read the same grouped half so they must, and QA accepted that reasoning for AC-6, but QA recorded that it did not drive those two in the browser and neither did I. AC-11's how_to_verify tells QA to check Split=Group, which shares the grouped half with both.",
+      "Whether a reports surface outside /reports/custom - a dashboard card, a saved report - reaches the same factories with 'or'. None was found by grep."
+    ],
+    "residual_risks": [
+      "This fix has NOT been driven in a real browser. It was reproduced and verified at the function level against the PR branch's own source and through a full-pipeline unit case with a stubbed server; what I have not done is watch a report on screen stop dropping money. That is the first thing to watch.",
+      "The money is now proven by a stub, not by the demo budget. The unit case asserts exact figures (-1000 / -500 / -1500) against a server stand-in, which is airtight but says nothing about the real query. AC-12 is where the browser check of the same thing lives, and it is deliberately an inequality rather than a magnitude so it cannot fail on data that shifts between runs.",
+      "AC-12's precondition is real work for QA: if the notes-only run happens to render nothing outside Bills, the criterion has nothing to discriminate and the honest outcome is 'inconclusive', not 'pass'. The guard is written into qa_script step 3 for that reason.",
+      "The gate makes the axis unnarrowed under 'or' with a non-category condition. Watch the row list under that combination for rows appearing at 0.00 that the PR head did not show. That is expected and correct, but it is a visible change and should be confirmed as such rather than assumed benign.",
+      "The nine existing custom-spreadsheet.test.ts cases from the PR and the existing budgetDataQuery.test.ts cases from main must all still pass. The gate is a pure early return on paths those cases do not reach except through 'and' - except the 'falls back to no narrowing' case, which does use conditionsOp 'or' in spirit and must still pass through the pre-existing fallback untouched.",
+      "Money is involved. The gate must err toward the axis being too WIDE, never too narrow. If a future change makes any disjunctive path narrow again, that is the regression to catch - a report that renders fewer rows than it fetches, which is silent."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Widen the axis to the union of all disjuncts under 'or' - keep every category any disjunct could match, rather than only the category-bound ones. This is the second option in QA's suspected_cause.",
+        "rejected_because": "It cannot be computed. A non-category condition - notes, date, payee, account, amount - is a predicate over a transaction, not over a category, so there is nothing to union it with at the axis level: you cannot ask which categories a notes condition matches without first running the query. Any implementation would either approximate it, and drop money again when the guess is wrong, or rebuild the axis from the query result, which changes the factory's shape and its `groupByList.length === 0` early return. Leaving the axis unnarrowed reaches the same safe superset for free and is what main does today."
+      },
+      {
+        "approach": "Put the soundness gate inside filterCategoriesByConditions instead, so one predicate governs every narrowing in the file.",
+        "rejected_because": "It widens the blast radius past the defect. filterCategoriesByConditions has two callers this PR did not introduce - spending-spreadsheet.ts:60 and fetchBudgetData at budgetDataQuery.ts:203 - and both are untouched main code whose behaviour under 'or' with a non-category condition is not this ticket's business. Scoping the gate to the PR's own helper keeps filterCategoriesByConditions byte-identical, which is what makes AC-7 and AC-8 provably unaffected rather than merely asserted."
+      },
+      {
+        "approach": "Narrow under 'or' by evaluating the category conditions with `.some` but keeping every category GROUP rather than every category, so no group row is lost.",
+        "rejected_because": "It treats the symptom. QA's T-10 shows the lost rows are leaf category rows - 'Food' is absent - not group headers, and the money lives in the leaf rows. Keeping group headers while dropping their categories still loses every cent the notes disjunct contributes."
+      },
+      {
+        "approach": "Leave narrowing as it is and fix the query side instead - make makeQuery honour the category condition alone, so the total shrinks consistently on both sides.",
+        "rejected_because": "It makes the report agree with itself by deleting transactions the user asked for. The user chose 'any of' precisely to widen the result set, and the query side is the correct one; the axis is what is wrong. This trades a silent under-report for a silent over-restriction."
+      },
+      {
+        "approach": "Hide or disable the 'any of' option in ConditionsOpMenu when a non-category condition is present, so the unsound combination can never be built.",
+        "rejected_because": "It removes a legitimate capability to paper over a data-layer defect. 'Any of' over a notes condition and a category condition is a reasonable query; the report engine should answer the union correctly rather than refuse to be asked. Named here because it is the change a reader may expect, and it is a worse answer."
+      }
+    ],
+    "evidence": [
+      "Reproduced first-hand from the PR branch's own code: extracted narrowCategoriesByConditions and filterCategoriesByConditions from origin/sdlc/issue-4's budgetDataQuery.ts and ran them under node 22 type-stripping over a fixture of g-usual[c-food,c-rent] + g-bills[c-cell,c-net]. With conditions [notes contains 'e', category oneOf ['c-cell']] the helper returns list ['c-cell'], grouped [['g-bills',['c-cell']]] under 'or' - byte-identical to the 'and' result for the same two conditions. That equality is the defect: the axis is computed as if the category condition were the only one.",
+      "Query-side asymmetry read from source: custom-spreadsheet.ts:115-118 sends the whole condition list to 'make-filters-from-conditions' and wraps it in `{ [conditionsOpKey]: filters }` with conditionsOpKey '$or', and makeQuery.ts:28-30 applies that as a real $or - so the query unions every disjunct while the axis narrows by one.",
+      "Gate differential, same harness, same eight shapes: with the proposed canNarrowAxisByConditions the only two outputs that change are 'or' + [notes, category] and 'or' + [date, category], both of which go from the narrowed Bills axis to the full axis. 'or' + [category, category], 'or' + [category, category_group], 'and' + [notes, category], 'and' + [category], no conditions, and 'or' + [customName, category] are byte-identical.",
+      "Identity guard, same harness: narrowCategoriesByConditions returns its input object by identity with conditions [] and with an uninterpretable category 'hasTags' condition, both before and after the gate - which is what AC-10 depends on.",
+      "QA's T-9 error text: notes-only -8,302.84, all-of -4,575.00, any-of -4,575.00 - the union collapsed exactly onto the 'all of' figure, 3,727.84 (45%) of spending missing with no error on screen.",
+      "QA's T-10 error text and error-context.md: after switching to 'any of' the rendered rows were exactly ['Bills','Cell','Internet','Mortgage','Water','Power'] while the notes-only run immediately before it had contained Food.",
+      "QA's acceptance rollup: AC-1 through AC-10 all pass on the PR head. The only coverage gap QA names that bears on this fix is the untested 'or' path, which is BUG-1.",
+      "Demo-budget determinism, read from source: .sdlc/qa/playwright.config.mjs uses devices['Desktop Chrome'] and sets no userAgent, while packages/desktop-client/playwright.config.ts:17 sets userAgent: 'playwright'; platform.ts:10-13 therefore reports isPlaywright false in a QA run and mocks/random.ts:16 falls back to Math.random. Category names, by contrast, are hard-coded at mocks/budget.ts:804-834."
+    ]
   }
 }
