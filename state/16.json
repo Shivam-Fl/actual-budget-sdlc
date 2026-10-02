@@ -377,7 +377,8 @@
         "detail": "AC-5's stated rule is 'a real GitHub username', and Shivam-Fl satisfies it — but this PR ships no user-facing behaviour change, so it is riding on a release note that describes work done in PR #11. Worth a line in the PR body so a reviewer does not read this note as describing this diff.\n\n`upcoming-release-notes/fix-invalid-regex-rule-crash.md:3`\n\nEvidence: The diff's only runtime change is the dedupe Set's lifetime (index.ts:220, index.electron.ts:130); guard semantics — catch, dedupe, log once, return 0 — are byte-identical. The work order's own qa_script says 'This ticket changes no user-facing behaviour — the guard's runtime semantics are untouched — so there is nothing in a browser to click through.' The note's body describes the crash fix from #11. Not a defect: the note was already in upcoming-release-notes/ and is the correct home for the combined user-visible fix, so keeping it is right.\n\nFix: Optional. One line in the PR body noting that the release-note edit is metadata for the note introduced by #11, not a new user-facing change in this PR."
       }
     ],
-    "pr": "18"
+    "pr": "18",
+    "filed": 24
   },
   "qa": {
     "verdict": "pass",
