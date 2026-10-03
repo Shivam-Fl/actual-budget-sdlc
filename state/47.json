@@ -145,7 +145,12 @@
     "confidence_rationale": "Findings A, B and C were reproduced by mutation on the current branch and both prescribed fixes were run green and red in both directions: AC-1's line flipped isMock=true to false, and AC-2's second handle turned a surviving close-one mutant red while leaving the unmutated suite green. D and E are verified by reading the exact lines and carry no risk, so the residual uncertainty is only whether the reviewer would have compressed the comments differently — the one place my judgement substitutes for theirs.",
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
