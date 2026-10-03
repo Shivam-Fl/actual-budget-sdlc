@@ -349,7 +349,8 @@
         "detail": "The web file's new comment claims it 'Mirrors ./index.electron.test.ts', but it mirrors only the handle half. The electron teardown also calls vi.restoreAllMocks(); the web one does not. The comment as written overstates the resemblance and will keep the asymmetry invisible to the next reader.\n\n`packages/loot-core/src/platform/server/sqlite/index.test.ts:28`\n\nEvidence: index.test.ts:28-30 reads 'Teardown lives here rather than at the tail of a test body: an assertion failing above it would skip the cleanup and leave the handle open. Mirrors ./index.electron.test.ts.' — it says 'the handle', singular, and never claims to restore mocks. But index.electron.test.ts:32-37 does both, and the cited precedent file (src/platform/server/connection/index.api.test.ts:6-8), which both files name, is `afterEach(() => { vi.restoreAllMocks(); });` — restoreAllMocks only, no handles. So the citation points at a precedent neither file matches, and the asymmetry A found is real: forcing a mid-test failure at index.test.ts:364 and appending an observer printing vi.isMockFunction(console.log) printed 'OBSERVER isMock=true'; adding vi.restoreAllMocks() as the afterEach's first statement flipped it to 'OBSERVER isMock=false'.\n\nFix: Either add `vi.restoreAllMocks();` as the first statement of the web afterEach (making the mirror claim true and closing A's finding in one line), or leave the code and narrow the comment to 'Mirrors the handle half of ./index.electron.test.ts.' The first is better: one line, matches the cited precedent, removes the leak."
       }
     ],
-    "pr": "40"
+    "pr": "40",
+    "filed": 47
   },
   "qa": {
     "verdict": "pass",
