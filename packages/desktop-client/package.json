@@ -155,6 +155,7 @@
     "@internationalized/date": "^3.12.2",
     "@lezer/highlight": "^1.2.3",
     "@playwright/test": "1.61.1",
+    "@radix-ui/react-dialog": "^1.1.6",
     "@react-aria/interactions": "^3.28.1",
     "@reduxjs/toolkit": "^2.12.0",
     "@rolldown/plugin-babel": "~0.2.3",
