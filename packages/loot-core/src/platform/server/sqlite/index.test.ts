@@ -1,7 +1,14 @@
 // @ts-strict-ignore
 import { patchFetchForSqlJS } from '#mocks/util';
 
-import { execQuery, init, openDatabase, runQuery, transaction } from './index';
+import {
+  closeDatabase,
+  execQuery,
+  init,
+  openDatabase,
+  runQuery,
+  transaction,
+} from './index';
 
 beforeAll(async () => {
   const baseURL = `${__dirname}/../../../../../../node_modules/@jlongster/sql.js/dist/`;
@@ -329,40 +336,31 @@ describe('Web sqlite', () => {
         call => call[0] === 'invalid regexp in sqlite REGEXP',
       ).length;
 
-    expect(
+    // This backend binds its params, so it takes null where the native one
+    // takes [].
+    const query = (db, pattern) =>
       runQuery(
-        db1,
-        "SELECT id FROM textstrings where REGEXP('(?<handle', string)",
+        db,
+        `SELECT id FROM textstrings where REGEXP('${pattern}', string)`,
         null,
         true,
-      ),
-    ).toEqual([]);
+      );
+
+    expect(query(db1, '(?<handle')).toEqual([]);
     expect(invalidRegexLogs()).toBe(1);
 
     // The same pattern over a second handle in the same process is reported
     // again: the dedupe set belongs to the handle, not the process.
-    expect(
-      runQuery(
-        db2,
-        "SELECT id FROM textstrings where REGEXP('(?<handle', string)",
-        null,
-        true,
-      ),
-    ).toEqual([]);
+    expect(query(db2, '(?<handle')).toEqual([]);
     expect(invalidRegexLogs()).toBe(2);
 
     // And each handle still dedupes on its own afterwards.
-    expect(
-      runQuery(
-        db1,
-        "SELECT id FROM textstrings where REGEXP('(?<handle', string)",
-        null,
-        true,
-      ),
-    ).toEqual([]);
+    expect(query(db1, '(?<handle')).toEqual([]);
     expect(invalidRegexLogs()).toBe(2);
 
     consoleSpy.mockRestore();
+    closeDatabase(db1);
+    closeDatabase(db2);
   });
 
   it('should still match a valid regex that does match, and not throw on one that does not', async () => {
