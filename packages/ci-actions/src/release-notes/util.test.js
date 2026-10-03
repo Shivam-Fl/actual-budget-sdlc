@@ -180,6 +180,24 @@ describe('selectReleaseNotePaths', () => {
     ).toEqual([]);
   });
 
+  it('consumes both path fields of a copy row so the row after it survives', () => {
+    // Git cannot emit a C row under the invocation this gate uses: with no copy
+    // detection a byte-identical copy arrives as an A, and asking for
+    // `--find-copies-harder` drops the row entirely at --diff-filter=AMR. The
+    // row is unreachable today for two independent mechanisms, and the fixture
+    // feeds it to the parser directly so the two-path consumption stays
+    // correct if the invocation ever changes. A copy is not a selected status,
+    // so the row it must not desynchronise is the only one asserted here.
+    const output = [
+      `C100\0${dir}/copy-source.md\0${dir}/copy-target.md\0`,
+      `A\0${dir}/real-note.md\0`,
+    ].join('');
+    expect(select(output)).toEqual({
+      added: [`${dir}/real-note.md`],
+      changed: [`${dir}/real-note.md`],
+    });
+  });
+
   it('keeps the order git reported and separates added from the rest', () => {
     // The deletion is here to prove D rows are still filtered, which under a
     // field-consuming parser means consuming its single path field anyway.
