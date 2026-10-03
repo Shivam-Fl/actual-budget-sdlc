@@ -18,13 +18,13 @@
   },
   "pending": {
     "stage": "implement",
-    "rework": "fix:triage",
-    "requested_at_head": "f1079db403364bdfc311f515bcae6f3e2b39b89e",
+    "rework": "merge-conflict",
+    "requested_at_head": "db839aab3cde3786b0b04c92ed5158d16161e3ee",
     "qa_run": null,
     "from": null,
-    "pr": 15,
+    "pr": "15",
     "work_order_version": 1,
-    "at": "2026-10-02T22:29:44.622Z"
+    "at": "2026-10-03T00:50:23.839Z"
   },
   "work_order": {
     "issue": 6,
@@ -463,7 +463,7 @@
     "decided_at": "2026-10-02T09:47:50.361Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "qa",
+  "dispatched_stage": "implement",
   "validated_from": "debug",
   "validated_at": "2026-10-02T12:15:24.893Z",
   "validated_ac_changes": [],
