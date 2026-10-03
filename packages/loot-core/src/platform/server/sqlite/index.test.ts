@@ -26,11 +26,13 @@ CREATE TABLE textstrings (id TEXT PRIMARY KEY, string TEXT);
 
 describe('Web sqlite', () => {
   // Teardown lives here rather than at the tail of a test body: an assertion
-  // failing above it would skip the cleanup and leave the handle open. Mirrors
-  // ./index.electron.test.ts.
+  // failing above it would skip the cleanup and leave an open handle and a
+  // mocked console.log behind for the next test. Mirrors ./index.electron.test.ts
+  // on both halves — restore mocks, then close handles.
   const handles: Database[] = [];
 
   afterEach(() => {
+    vi.restoreAllMocks();
     for (const handle of handles.splice(0)) {
       closeDatabase(handle);
     }

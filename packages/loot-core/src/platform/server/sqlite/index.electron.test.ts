@@ -48,8 +48,7 @@ describe('Native sqlite REGEXP guard', () => {
   // the scenario — cleanup has to survive an assertion failing partway through
   // a test — and verifies nothing about whether teardown happened. It is kept
   // because it is the only exercise of that scenario. The last test in this
-  // describe is what actually proves the teardown: it calls teardown() itself,
-  // so it stays falsifiable under `-t` filtering and reordering.
+  // describe is what actually proves the teardown — see there for why.
   it.fails('leaves nothing behind when an assertion fails mid-test', () => {
     vi.spyOn(console, 'log').mockImplementation(() => null);
     const db = openDatabase(':memory:');
@@ -64,8 +63,7 @@ describe('Native sqlite REGEXP guard', () => {
     // the mock installed two statements down and pass unconditionally.
     // It is also vacuous whenever the guard above did not run — under `-t`
     // filtering or reordering nothing has mocked console.log yet, so this is
-    // true for the wrong reason. That is why it is not the only assertion on
-    // the teardown; the last test in this describe covers what this cannot.
+    // true for the wrong reason. The last test covers what this cannot.
     expect(vi.isMockFunction(console.log)).toBe(false);
 
     // SQLite calls the REGEXP function once per candidate row, so a single-row
@@ -141,14 +139,20 @@ describe('Native sqlite REGEXP guard', () => {
     vi.spyOn(console, 'log').mockImplementation(() => null);
     const db = openDatabase(':memory:');
     handles.push(db);
+    // Two handles, so the teardown's loop has to run more than once: with one
+    // handle, `expect(handles).toHaveLength(0)` above is satisfied by the
+    // splice whether or not close() was called on anything.
+    const db2 = openDatabase(':memory:');
+    handles.push(db2);
 
     teardown();
 
     // Nothing left for the next test to trip over.
     expect(handles).toHaveLength(0);
     expect(vi.isMockFunction(console.log)).toBe(false);
-    // better-sqlite3 exposes its own closed state, so this is the handle's
-    // report rather than an inference from the array being empty.
+    // better-sqlite3 exposes its own closed state, so these are the handles'
+    // reports rather than an inference from the array being empty.
     expect(db.open).toBe(false);
+    expect(db2.open).toBe(false);
   });
 });
