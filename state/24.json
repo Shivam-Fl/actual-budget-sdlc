@@ -18,7 +18,154 @@
   },
   "halted": null,
   "pending": null,
-  "work_order": null,
+  "work_order": {
+    "issue": 24,
+    "version": 1,
+    "kind": "chore",
+    "mode": "committed",
+    "reproduced": true,
+    "confidence": 86,
+    "confidence_rationale": "Every claim I kept I reproduced and then proved the proposed fix works: both new tests pass, both fail when the Set is hoisted back to module scope, and the pair typechecks, lints and runs inside the full loot-core node suite. The 86 rather than a higher number covers the two findings I dropped rather than implemented (the release-note author handle, and the PR-body suggestion) — each is a judgement call a reviewer could reasonably have expected in the diff.",
+    "understanding": "Of the four review findings on #16, two still reproduce and are the same defect seen twice; two no longer belong to this ticket. The live defect is that AC-3's per-database dedupe is delivered in the source but pinned by nothing: the five patterns in transaction-rules.test.ts:661 and the two in index.test.ts's volume test are each unique to their file, so a process-wide Set and a per-database Set produce identical counts, and hoisting reportedInvalidRegexps back to module scope in either file leaves the suite green (the reviewer reproduced this; I reproduced it independently on both files). The comment at index.test.ts:255 is the same gap stated as prose: it says 'the dedupe set below is scoped to this database handle', but there is no Set in that file — grep for reportedInvalidRegexps in index.test.ts returns nothing; the Sets live in index.ts:221 and index.electron.ts:131 — and it is the only place the file claims the order-independence the assertion does not have. So one fix closes both findings: a test that opens two databases in one process and expects one log per handle, which makes the comment's claim true instead of implied, and a comment that stops pointing at a Set the file does not contain. No production source changes: the guard's semantics are already correct, and the change is to make the suite able to say so.",
+    "root_cause": "The dedupe set's lifetime is a property of where a variable is declared, and the tests written for it assert only observable counts over patterns unique to a single file. A per-handle Set and a process-wide Set are indistinguishable under those assertions, so the test passes under both the correct code and the reverted code — the property AC-3 is about was never made falsifiable. The comment at index.test.ts:255 then described the intended lifetime in prose, in a file that contains no Set, which is how the gap survived review.",
+    "approach": "Add one test per sqlite backend that distinguishes the two Set lifetimes, and correct the comment that misstates where the Set lives. The distinguishing assertion is the same on both sides: open two databases in one process, run the SAME broken pattern over both, expect the log count to go 1 then 2. A per-handle Set reports it twice; a module-scoped Set silences the second handle and the count stays 1. I verified this fails on both files when the Set is hoisted.\n\nTwo constraints the implementer must not discover the hard way, both found by running the checks:\n\n1. The electron test CANNOT import './index.electron'. The eslint/no-restricted-imports rule in .oxlintrc.json:339-343 blocks the '**/*.electron' pattern, and `yarn lint` fails on it. Import from the '#platform/server/sqlite' subpath instead — package.json maps it to index.electron.ts under the 'electron' condition, which is what ENV=node resolves (vitest.config.ts sets ssr.resolve.conditions to ['electron', ...]). This is the same path transaction-rules.test.ts already reaches the file by.\n\n2. The new file lands where the node suite already collects it. vitest.config.ts excludes only 'src/platform/server/sqlite/index.test.ts', so index.electron.test.ts is picked up by ENV=node automatically, and vitest.web.config.ts has an explicit include list that does not mention it, so it runs exactly once. The sibling unicodeLike.test.ts is the precedent.\n\nThe web-side test goes in the existing index.test.ts, which is already in the web config's include list. Its helper `invalidRegexLogs` is duplicated rather than extracted: the two files run in different vitest projects with different module graphs, and a shared helper would have to live outside both.\n\nNothing in packages/loot-core/src/platform/server/sqlite/index.ts or index.electron.ts changes. Their comments stay accurate — they describe the closure correctly, and after this change a test holds them to it.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "change": "Two changes. (1) Replace the comment at lines 255-257, which currently reads 'Patterns used by no other case in this file, and the dedupe set below is scoped to this database handle, so the count starts from an unreported pattern regardless of which tests ran before this one', with: 'Patterns used by no other case in this file, so the count starts from an unreported pattern. That each is reported exactly once is a statement about this handle's rows, not about the lifetime of the dedupe set — the Set lives in the closure createRegexp returns in ./index.ts, and the test below is what pins that lifetime.' (2) Insert a new `it` immediately after the test ending at line 299 and before 'should still match a valid regex that does match, and not throw on one that does not', named 'should report an unparseable pattern once per database handle, not once per process'. It opens two databases with `await openDatabase()` (no argument), seeds each with `execQuery(db, initSQL)` plus three rows INSERTed into textstrings with string '#mortgage note', spies console.log with `vi.spyOn(console, 'log').mockImplementation(() => null)`, and asserts the count of calls whose first argument is 'invalid regexp in sqlite REGEXP' goes 1 then 2 across `runQuery(db1, \"SELECT id FROM textstrings where REGEXP('(?<handle', string)\", null, true)` followed by the identical query on db2. It then repeats the db1 query and asserts the count is still 2, so each handle dedupes independently after its own first report. Use the pattern '(?<handle' — no other case in this file uses it. Restore the spy at the end.",
+        "why": "This file is the only coverage index.ts (the browser/sql.js backend) has, and its existing assertions cannot tell a per-handle Set from a process-wide one. index.test.ts:255's comment is also finding 1: it points at 'the dedupe set below' when no Set exists in this file."
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+        "action": "create",
+        "change": "New file. It is the first direct test of index.electron.ts and exists solely to pin the dedupe Set's lifetime for the native backend. Import `{ execQuery, openDatabase, runQuery } from '#platform/server/sqlite'` — NOT from './index.electron', which the eslint/no-restricted-imports pattern '**/*.electron' in .oxlintrc.json rejects and which fails `yarn lint`. Under ENV=node that subpath resolves to index.electron.ts. Declare a module-level `const initSQL` creating `CREATE TABLE textstrings (id TEXT PRIMARY KEY, string TEXT);`, and two constants PATTERN_ONE = '(?<electron-lifetime-one' and PATTERN_TWO = '(?<electron-lifetime-two', neither used anywhere else in the suite. Add a `seed(db)` helper that runs execQuery(db, initSQL) then inserts ids '1','2','3' with string '#mortgage note' — several rows, because SQLite calls the REGEXP function once per candidate row and a single-row table cannot tell per-pattern logging from per-row logging. Add a `countInvalidRegexLogs(spy)` helper returning the number of spy calls whose first argument is 'invalid regexp in sqlite REGEXP'. One `describe('Native sqlite REGEXP guard')` containing one `it('reports an unparseable pattern once per database handle, not once per process')`: open db1 = openDatabase(':memory:') and db2 = openDatabase(':memory:'), seed both, spy on console.log, assert runQuery(db1, `SELECT id FROM textstrings where REGEXP('${PATTERN_ONE}', string)`, [], true) returns [] and the count is 1; assert the identical query on db2 returns [] and the count is 2; repeat on db1 and assert the count is still 2; run PATTERN_TWO on db2 and assert 3; run the valid pattern '#mortgage' on db1 with fetchAll and assert it returns 3 rows with the count still 3. Restore the spy, then db1.close() and db2.close(). Note that this backend's runQuery takes [] for params — passing null throws 'params is not iterable'.",
+        "why": "transaction-rules.test.ts reaches index.electron.ts only through getMatchingTransactions on a single shared handle, which is why hoisting the Set there left the suite green. The reviewer flagged exactly this and named the fix: open two databases in one process and expect one log per handle."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "cases": [
+          "should report an unparseable pattern once per database handle, not once per process — the same broken pattern over two handles in one process yields log counts 1 then 2",
+          "the same broken pattern repeated on the first handle after both handles have reported it does not log again (count stays 2), so each handle dedupes independently",
+          "hoisting `const reportedInvalidRegexps = new Set<string>()` in index.ts out of createRegexp() to module scope makes this test fail with 'expected 1 to be 2' — verified; the suite is otherwise unaffected by the hoist",
+          "the pre-existing 'once per pattern, not once per scanned row' test still passes unchanged, including its exact toBe(1)/toBe(2) counts"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+        "action": "create",
+        "cases": [
+          "reports an unparseable pattern once per database handle, not once per process — PATTERN_ONE over two :memory: handles yields log counts 1 then 2",
+          "a repeat of PATTERN_ONE on the first handle after the second has reported it does not log again (count stays 2)",
+          "PATTERN_TWO on the second handle is reported (count 3), so dedupe is per pattern and not a blanket suppression",
+          "the valid pattern '#mortgage' returns all 3 seeded rows and logs nothing (count stays 3)",
+          "hoisting `const reportedInvalidRegexps = new Set<string>()` in index.electron.ts out of createRegexp() to module scope makes this test fail with 'expected 1 to be 2' — verified"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "A test opens two databases in a single process, runs the same unparseable pattern over both, and asserts the count of 'invalid regexp in sqlite REGEXP' log lines goes 1 then 2. Present once for the browser/sql.js backend (index.test.ts) and once for the native backend (index.electron.test.ts).",
+        "verify": "test",
+        "how_to_verify": "yarn workspace @actual-app/core run test:web for the index.test.ts case and yarn workspace @actual-app/core run test:node for the index.electron.test.ts case; both are in the default `yarn test` run. No browser path exists — the guard's runtime semantics are unchanged and nothing user-facing moves."
+      },
+      {
+        "id": "AC-2",
+        "check": "The new tests are falsifiable with respect to the Set's lifetime: moving `const reportedInvalidRegexps = new Set<string>()` in index.ts out of createRegexp() to module scope fails the web test, and the same move in index.electron.ts fails the electron test, each with 'expected 1 to be 2'.",
+        "verify": "test",
+        "how_to_verify": "Reproduce each: hoist the Set in one file, run that file's suite (`ENV=web vitest --run -c vitest.web.config.ts` and `ENV=node vitest --run`), observe the failure, restore. I ran both directions and both failed as specified. The implementer should do the same before opening the PR — a test that cannot fail here is the defect this ticket exists to close."
+      },
+      {
+        "id": "AC-3",
+        "check": "No comment in index.test.ts claims a dedupe Set exists in that file. The comment above the log-count helper names ./index.ts's createRegexp as where the Set lives and points at the following test as what pins its lifetime.",
+        "verify": "test",
+        "how_to_verify": "`grep -n 'dedupe set below' packages/loot-core/src/platform/server/sqlite/index.test.ts` returns no match. Review the comment as part of the diff."
+      },
+      {
+        "id": "AC-4",
+        "check": "yarn typecheck and yarn lint pass, and index.electron.test.ts imports '#platform/server/sqlite' rather than './index.electron' so the eslint/no-restricted-imports '**/*.electron' pattern is not tripped.",
+        "verify": "test",
+        "how_to_verify": "`yarn typecheck` and `yarn lint` from the repo root (the commands .sdlc/config.yml wires to CI). `npx oxlint packages/loot-core/src/platform/server/sqlite/` reports no errors. I confirmed the direct './index.electron' import fails this lint and the alias import passes."
+      },
+      {
+        "id": "AC-5",
+        "check": "The whole loot-core suite is green with the new file present: ENV=node runs 87 test files including index.electron.test.ts exactly once, and the web config still runs only index.test.ts and fs/index.test.ts.",
+        "verify": "test",
+        "how_to_verify": "`yarn workspace @actual-app/core run test:node` and `test:web`. I ran the full node suite with the new file in place: 86 passed | 1 skipped (87 files), 1212 passed | 2 skipped."
+      }
+    ],
+    "qa_script": [
+      "There is nothing to click through in a browser: this change adds tests and corrects a comment, and no runtime behaviour moves. The guard still catches, dedupes, logs once and returns 0 — byte-identical to before.",
+      "Run `yarn typecheck` from the repo root. Expect no errors.",
+      "Run `yarn lint` from the repo root. Expect no errors. If it reports eslint(no-restricted-imports) on index.electron.test.ts line 1, the implementer used a direct './index.electron' import; it must be '#platform/server/sqlite'.",
+      "Run `yarn workspace @actual-app/core run test:web`. Expect 2 files / 15 tests, all passing, with the new 'once per database handle' case named in the sqlite file.",
+      "Run `yarn workspace @actual-app/core run test:node`. Expect the new 'Native sqlite REGEXP guard' describe block present and passing, and the file count one higher than before the change.",
+      "Confirm the falsifiability claim rather than taking it on trust: hoist the Set in index.electron.ts to module scope, re-run the node suite, and check the new test fails with 'expected 1 to be 2'. Restore the file. This is the one check that separates a real fix from a test that only looks like one.",
+      "Read the diff of index.test.ts and confirm the old comment claiming 'the dedupe set below' is gone and the replacement names ./index.ts's createRegexp.",
+      "Confirm no file under packages/loot-core/src/platform/server/sqlite/index.ts or index.electron.ts was modified — this ticket changes tests and comments only."
+    ],
+    "risks": [
+      "The new tests depend on console.log as the logger's sink. Both count log lines by spying on console.log, which is what the existing dedupe tests already do (index.test.ts, transaction-rules.test.ts). If the node test environment ever stops routing logger.log to console.log, these fail for the same reason the existing ones would.",
+      "index.electron.test.ts depends on ENV=node resolving the '#platform/server/sqlite' subpath to index.electron.ts via the 'electron' export condition. If loot-core's vitest.config.ts ssr.resolve.conditions ever drops 'electron', this file silently starts testing index.ts instead and would pass without exercising index.electron.ts at all. The sibling connection/index.api.test.ts already relies on the same mechanism.",
+      "Fulfilling finding 3 here would edit a line that open PR #19 (issue #17) also edits in upcoming-release-notes/fix-weekly-report-final-bucket.md, producing a conflict. That is why it is out of scope here — but if #19 is closed unmerged, the dangling '@claude' handle returns to the published changelog and needs its own ticket. Check #19's state before merging this one.",
+      "No file in forbidden_paths (.sdlc/config.yml:210) is touched. The nearest is packages/loot-core/src/server/migrate/**, which this change does not reach."
+    ],
+    "out_of_scope": [
+      "Finding 3 — the `authors: [claude]` handle in upcoming-release-notes/fix-weekly-report-final-bucket.md. It does still reproduce on main (I read the file: line 3 is `authors: [claude]`), but open PR #19 for issue #17 already corrects this exact line to `Shivam-Fl` and adds the findNonPersonAuthors gate that rejects it, so the note is fixed the moment #19 merges. The issue body itself flags this as assigned to a different ticket. Editing it here would conflict with #19 for no gain.",
+      "Finding 4 — the observation that AC-5's release note describes work done in PR #11 rather than in #18, and the suggestion of 'a line in the PR body'. The reviewer marked it explicitly 'Not a defect' and 'Optional'. PR #18 is already merged, so its body is immutable, and a release note is the correct home for the combined user-visible fix. There is no code change to make and no file to edit.",
+      "The release-notes gate itself: .github/actions/release-notes/check/action.yml exists but no workflow in .github/workflows/ invokes it, and .github/** is a forbidden path, so strengthening or wiring that check is not available here.",
+      "Adding a release note for this PR. This change ships no user-facing behaviour — it is tests and a comment — and the gate that would require one is not running. The existing fix-invalid-regex-rule-crash.md note already covers the user-visible fix from #11."
+    ],
+    "evidence": [
+      "Reproduced finding 1: `grep -n reportedInvalidRegexps packages/loot-core/src/platform/server/sqlite/index.test.ts` returns no match; the Sets are at index.ts:221 and index.electron.ts:131. index.test.ts:255 still reads 'the dedupe set below is scoped to this database handle'.",
+      "Reproduced finding 2 by construction on both backends. Hoisting `const reportedInvalidRegexps = new Set<string>()` out of createRegexp() in index.electron.ts and running the new electron test: 'AssertionError: expected 1 to be 2', 'Tests 1 failed'. Restored: 'Tests 1 passed'. Same hoist in index.ts with the web test: 'AssertionError: expected 1 to be 2', 'Tests 1 failed | 14 passed'. Restored: green.",
+      "The existing suite is blind to the hoist, which is the finding: with the Set at module scope in index.electron.ts, the pre-existing transaction-rules.test.ts count assertion still held (reviewer's reproduction, confirmed as the premise of this work), because its five patterns are unique to that file.",
+      "Found a constraint that would have shipped broken: `npx oxlint packages/loot-core/src/platform/server/sqlite/` on a test importing './index.electron' reports 'error eslint(no-restricted-imports): ./index.electron import is restricted ... Don't directly reference imports from other platforms' (.oxlintrc.json:339-343). Rewritten to import '#platform/server/sqlite' — lint clean, typecheck clean, test green.",
+      "`npx tsgo -p tsconfig.root.json --noEmit` exits 0 with the new file present.",
+      "Full node suite with the new file: 'Test Files 86 passed | 1 skipped (87)', 'Tests 1212 passed | 2 skipped (1214)'.",
+      "Web suite with the new web test appended: 'Test Files 2 passed (2)', 'Tests 15 passed (15)' — index.test.ts 9 tests, fs/index.test.ts 6.",
+      "Finding 3 is real on main but owned elsewhere: `grep -n authors upcoming-release-notes/fix-weekly-report-final-bucket.md` returns '3:authors: [claude]', and commit 622c500 on origin/sdlc/issue-17 (PR #19, OPEN) changes exactly that line to `authors: [Shivam-Fl]` plus adds the gate.",
+      "The release-notes check is defined at .github/actions/release-notes/check/action.yml but no file under .github/workflows/ references it, so it does not gate this PR."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Take the reviewer's second option for finding 2: state in the AC-3 evidence that the lifetime is verified by reading the source and by a manual two-database reproduction, and add no test.",
+        "rejected_because": "It records the gap instead of closing it, and the ticket's own framing ('nothing in the suite pins it') asks for the pin. A two-handle test is ~20 lines and I have already verified it is falsifiable in both directions. Recording a known gap in prose is what let the gap survive the first review round."
+      },
+      {
+        "approach": "Put the electron two-handle assertion inside the existing transaction-rules.test.ts rather than a new file, reaching a second handle through the rules API.",
+        "rejected_because": "transaction-rules.test.ts drives getMatchingTransactions against one shared global handle seeded by emptyDatabase(); opening a second handle from there means constructing a second full database fixture inside a rules test, testing sqlite plumbing in a file about rules. A dedicated index.electron.test.ts beside the source is where the next person looking for this coverage will look — and it is currently the first direct test that file has."
+      },
+      {
+        "approach": "Strengthen the existing count assertions (for example by reusing a pattern across two tests in index.test.ts) instead of opening two databases.",
+        "rejected_because": "Still does not distinguish the lifetimes. A process-wide Set and a per-handle Set both suppress a repeat within one process; only two handles separate them. This is precisely the reviewer's point that the five patterns are 'unique to their file', so both counts are identical under either implementation."
+      },
+      {
+        "approach": "Assert the lifetime indirectly, by checking that the Set is lexically inside createRegexp — a source-text or structural test.",
+        "rejected_because": "Tests the file's shape rather than its behaviour, breaks on any harmless refactor, and is the kind of assertion that reads as coverage without being coverage. The two-handle test fails on the reverted code, which is the only property worth having."
+      },
+      {
+        "approach": "Fix findings 3 and 4 here as well, since the issue bundles all four.",
+        "rejected_because": "Finding 3 collides with open PR #19 on the same line, and the issue's own text assigns it elsewhere. Finding 4 is a PR-body suggestion the reviewer marked optional and not a defect, against a PR that is already merged. Bundling them would widen the diff for no shipped value."
+      }
+    ],
+    "assumptions": [
+      "PR #19 stays open and merges. If it is closed instead, finding 3 needs its own ticket and the note keeps a dangling '@claude'.",
+      "console.log remains the logger's sink in both the node and jsdom test environments, which the existing dedupe tests already depend on.",
+      "The two new tests stay in the default `yarn test` run: index.electron.test.ts under ENV=node (vitest.config.ts excludes only index.test.ts and fs/index.test.ts) and the index.test.ts case under ENV=web (already in vitest.web.config.ts's explicit include list). No config change is needed or intended."
+    ],
+    "unknowns": [
+      "Whether the reviewer wants the two tests merged into one shared helper. I duplicated the ~4-line log-counting helper across the two files rather than extracting it, because the two run in different vitest projects with separate module graphs; a shared helper would have to live outside both and be reachable from both."
+    ],
+    "residual_risks": [
+      "The falsifiability claim rests on my running the hoist in both directions, not on a permanent regression test that keeps doing it. A future refactor that hoists the Set would be caught by the new tests, but nothing re-verifies that the tests themselves stay falsifiable."
+    ],
+    "debate_summary": "No council ran — this was a single-agent plan, so debate_summary is empty. The plan rests on reproduction rather than argument: I wrote both proposed tests, ran them, and then hoisted the dedupe Set back to module scope in each source file to confirm each test fails ('expected 1 to be 2'). I also found and corrected a defect in my own first draft — a direct './index.electron' import that `yarn lint` rejects under the no-restricted-imports '**/*.electron' pattern — and verified the '#platform/server/sqlite' alias instead."
+  },
   "touch_paths": [],
   "acceptance": [],
   "planned_route": [
@@ -69,304 +216,12 @@
   },
   "stopped_at": null,
   "dispatched_stage": "plan",
-  "validated_work_order": {
-    "issue": 24,
-    "version": 1,
-    "kind": "chore",
-    "mode": "committed",
-    "reproduced": true,
-    "confidence": 86,
-    "confidence_rationale": "Every claim I kept I reproduced and then proved the proposed fix works: both new tests pass, both fail when the Set is hoisted back to module scope, and the pair typechecks, lints and runs inside the full loot-core node suite. The 86 rather than a higher number covers the two findings I dropped rather than implemented (the release-note author handle, and the PR-body suggestion) — each is a judgement call a reviewer could reasonably have expected in the diff.",
-    "understanding": "Of the four review findings on #16, two still reproduce and are the same defect seen twice; two no longer belong to this ticket. The live defect is that AC-3's per-database dedupe is delivered in the source but pinned by nothing: the five patterns in transaction-rules.test.ts:661 and the two in index.test.ts's volume test are each unique to their file, so a process-wide Set and a per-database Set produce identical counts, and hoisting reportedInvalidRegexps back to module scope in either file leaves the suite green (the reviewer reproduced this; I reproduced it independently on both files). The comment at index.test.ts:255 is the same gap stated as prose: it says 'the dedupe set below is scoped to this database handle', but there is no Set in that file — grep for reportedInvalidRegexps in index.test.ts returns nothing; the Sets live in index.ts:221 and index.electron.ts:131 — and it is the only place the file claims the order-independence the assertion does not have. So one fix closes both findings: a test that opens two databases in one process and expects one log per handle, which makes the comment's claim true instead of implied, and a comment that stops pointing at a Set the file does not contain. No production source changes: the guard's semantics are already correct, and the change is to make the suite able to say so.",
-    "root_cause": "The dedupe set's lifetime is a property of where a variable is declared, and the tests written for it assert only observable counts over patterns unique to a single file. A per-handle Set and a process-wide Set are indistinguishable under those assertions, so the test passes under both the correct code and the reverted code — the property AC-3 is about was never made falsifiable. The comment at index.test.ts:255 then described the intended lifetime in prose, in a file that contains no Set, which is how the gap survived review.",
-    "approach": "Add one test per sqlite backend that distinguishes the two Set lifetimes, and correct the comment that misstates where the Set lives. The distinguishing assertion is the same on both sides: open two databases in one process, run the SAME broken pattern over both, expect the log count to go 1 then 2. A per-handle Set reports it twice; a module-scoped Set silences the second handle and the count stays 1. I verified this fails on both files when the Set is hoisted.\n\nTwo constraints the implementer must not discover the hard way, both found by running the checks:\n\n1. The electron test CANNOT import './index.electron'. The eslint/no-restricted-imports rule in .oxlintrc.json:339-343 blocks the '**/*.electron' pattern, and `yarn lint` fails on it. Import from the '#platform/server/sqlite' subpath instead — package.json maps it to index.electron.ts under the 'electron' condition, which is what ENV=node resolves (vitest.config.ts sets ssr.resolve.conditions to ['electron', ...]). This is the same path transaction-rules.test.ts already reaches the file by.\n\n2. The new file lands where the node suite already collects it. vitest.config.ts excludes only 'src/platform/server/sqlite/index.test.ts', so index.electron.test.ts is picked up by ENV=node automatically, and vitest.web.config.ts has an explicit include list that does not mention it, so it runs exactly once. The sibling unicodeLike.test.ts is the precedent.\n\nThe web-side test goes in the existing index.test.ts, which is already in the web config's include list. Its helper `invalidRegexLogs` is duplicated rather than extracted: the two files run in different vitest projects with different module graphs, and a shared helper would have to live outside both.\n\nNothing in packages/loot-core/src/platform/server/sqlite/index.ts or index.electron.ts changes. Their comments stay accurate — they describe the closure correctly, and after this change a test holds them to it.",
-    "files": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
-        "action": "edit",
-        "change": "Two changes. (1) Replace the comment at lines 255-257, which currently reads 'Patterns used by no other case in this file, and the dedupe set below is scoped to this database handle, so the count starts from an unreported pattern regardless of which tests ran before this one', with: 'Patterns used by no other case in this file, so the count starts from an unreported pattern. That each is reported exactly once is a statement about this handle's rows, not about the lifetime of the dedupe set — the Set lives in the closure createRegexp returns in ./index.ts, and the test below is what pins that lifetime.' (2) Insert a new `it` immediately after the test ending at line 299 and before 'should still match a valid regex that does match, and not throw on one that does not', named 'should report an unparseable pattern once per database handle, not once per process'. It opens two databases with `await openDatabase()` (no argument), seeds each with `execQuery(db, initSQL)` plus three rows INSERTed into textstrings with string '#mortgage note', spies console.log with `vi.spyOn(console, 'log').mockImplementation(() => null)`, and asserts the count of calls whose first argument is 'invalid regexp in sqlite REGEXP' goes 1 then 2 across `runQuery(db1, \"SELECT id FROM textstrings where REGEXP('(?<handle', string)\", null, true)` followed by the identical query on db2. It then repeats the db1 query and asserts the count is still 2, so each handle dedupes independently after its own first report. Use the pattern '(?<handle' — no other case in this file uses it. Restore the spy at the end.",
-        "why": "This file is the only coverage index.ts (the browser/sql.js backend) has, and its existing assertions cannot tell a per-handle Set from a process-wide one. index.test.ts:255's comment is also finding 1: it points at 'the dedupe set below' when no Set exists in this file."
-      },
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
-        "action": "create",
-        "change": "New file. It is the first direct test of index.electron.ts and exists solely to pin the dedupe Set's lifetime for the native backend. Import `{ execQuery, openDatabase, runQuery } from '#platform/server/sqlite'` — NOT from './index.electron', which the eslint/no-restricted-imports pattern '**/*.electron' in .oxlintrc.json rejects and which fails `yarn lint`. Under ENV=node that subpath resolves to index.electron.ts. Declare a module-level `const initSQL` creating `CREATE TABLE textstrings (id TEXT PRIMARY KEY, string TEXT);`, and two constants PATTERN_ONE = '(?<electron-lifetime-one' and PATTERN_TWO = '(?<electron-lifetime-two', neither used anywhere else in the suite. Add a `seed(db)` helper that runs execQuery(db, initSQL) then inserts ids '1','2','3' with string '#mortgage note' — several rows, because SQLite calls the REGEXP function once per candidate row and a single-row table cannot tell per-pattern logging from per-row logging. Add a `countInvalidRegexLogs(spy)` helper returning the number of spy calls whose first argument is 'invalid regexp in sqlite REGEXP'. One `describe('Native sqlite REGEXP guard')` containing one `it('reports an unparseable pattern once per database handle, not once per process')`: open db1 = openDatabase(':memory:') and db2 = openDatabase(':memory:'), seed both, spy on console.log, assert runQuery(db1, `SELECT id FROM textstrings where REGEXP('${PATTERN_ONE}', string)`, [], true) returns [] and the count is 1; assert the identical query on db2 returns [] and the count is 2; repeat on db1 and assert the count is still 2; run PATTERN_TWO on db2 and assert 3; run the valid pattern '#mortgage' on db1 with fetchAll and assert it returns 3 rows with the count still 3. Restore the spy, then db1.close() and db2.close(). Note that this backend's runQuery takes [] for params — passing null throws 'params is not iterable'.",
-        "why": "transaction-rules.test.ts reaches index.electron.ts only through getMatchingTransactions on a single shared handle, which is why hoisting the Set there left the suite green. The reviewer flagged exactly this and named the fix: open two databases in one process and expect one log per handle."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
-        "action": "edit",
-        "cases": [
-          "should report an unparseable pattern once per database handle, not once per process — the same broken pattern over two handles in one process yields log counts 1 then 2",
-          "the same broken pattern repeated on the first handle after both handles have reported it does not log again (count stays 2), so each handle dedupes independently",
-          "hoisting `const reportedInvalidRegexps = new Set<string>()` in index.ts out of createRegexp() to module scope makes this test fail with 'expected 1 to be 2' — verified; the suite is otherwise unaffected by the hoist",
-          "the pre-existing 'once per pattern, not once per scanned row' test still passes unchanged, including its exact toBe(1)/toBe(2) counts"
-        ]
-      },
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
-        "action": "create",
-        "cases": [
-          "reports an unparseable pattern once per database handle, not once per process — PATTERN_ONE over two :memory: handles yields log counts 1 then 2",
-          "a repeat of PATTERN_ONE on the first handle after the second has reported it does not log again (count stays 2)",
-          "PATTERN_TWO on the second handle is reported (count 3), so dedupe is per pattern and not a blanket suppression",
-          "the valid pattern '#mortgage' returns all 3 seeded rows and logs nothing (count stays 3)",
-          "hoisting `const reportedInvalidRegexps = new Set<string>()` in index.electron.ts out of createRegexp() to module scope makes this test fail with 'expected 1 to be 2' — verified"
-        ]
-      }
-    ],
-    "acceptance": [
-      {
-        "id": "AC-1",
-        "check": "A test opens two databases in a single process, runs the same unparseable pattern over both, and asserts the count of 'invalid regexp in sqlite REGEXP' log lines goes 1 then 2. Present once for the browser/sql.js backend (index.test.ts) and once for the native backend (index.electron.test.ts).",
-        "verify": "test",
-        "how_to_verify": "yarn workspace @actual-app/core run test:web for the index.test.ts case and yarn workspace @actual-app/core run test:node for the index.electron.test.ts case; both are in the default `yarn test` run. No browser path exists — the guard's runtime semantics are unchanged and nothing user-facing moves."
-      },
-      {
-        "id": "AC-2",
-        "check": "The new tests are falsifiable with respect to the Set's lifetime: moving `const reportedInvalidRegexps = new Set<string>()` in index.ts out of createRegexp() to module scope fails the web test, and the same move in index.electron.ts fails the electron test, each with 'expected 1 to be 2'.",
-        "verify": "test",
-        "how_to_verify": "Reproduce each: hoist the Set in one file, run that file's suite (`ENV=web vitest --run -c vitest.web.config.ts` and `ENV=node vitest --run`), observe the failure, restore. I ran both directions and both failed as specified. The implementer should do the same before opening the PR — a test that cannot fail here is the defect this ticket exists to close."
-      },
-      {
-        "id": "AC-3",
-        "check": "No comment in index.test.ts claims a dedupe Set exists in that file. The comment above the log-count helper names ./index.ts's createRegexp as where the Set lives and points at the following test as what pins its lifetime.",
-        "verify": "test",
-        "how_to_verify": "`grep -n 'dedupe set below' packages/loot-core/src/platform/server/sqlite/index.test.ts` returns no match. Review the comment as part of the diff."
-      },
-      {
-        "id": "AC-4",
-        "check": "yarn typecheck and yarn lint pass, and index.electron.test.ts imports '#platform/server/sqlite' rather than './index.electron' so the eslint/no-restricted-imports '**/*.electron' pattern is not tripped.",
-        "verify": "test",
-        "how_to_verify": "`yarn typecheck` and `yarn lint` from the repo root (the commands .sdlc/config.yml wires to CI). `npx oxlint packages/loot-core/src/platform/server/sqlite/` reports no errors. I confirmed the direct './index.electron' import fails this lint and the alias import passes."
-      },
-      {
-        "id": "AC-5",
-        "check": "The whole loot-core suite is green with the new file present: ENV=node runs 87 test files including index.electron.test.ts exactly once, and the web config still runs only index.test.ts and fs/index.test.ts.",
-        "verify": "test",
-        "how_to_verify": "`yarn workspace @actual-app/core run test:node` and `test:web`. I ran the full node suite with the new file in place: 86 passed | 1 skipped (87 files), 1212 passed | 2 skipped."
-      }
-    ],
-    "qa_script": [
-      "There is nothing to click through in a browser: this change adds tests and corrects a comment, and no runtime behaviour moves. The guard still catches, dedupes, logs once and returns 0 — byte-identical to before.",
-      "Run `yarn typecheck` from the repo root. Expect no errors.",
-      "Run `yarn lint` from the repo root. Expect no errors. If it reports eslint(no-restricted-imports) on index.electron.test.ts line 1, the implementer used a direct './index.electron' import; it must be '#platform/server/sqlite'.",
-      "Run `yarn workspace @actual-app/core run test:web`. Expect 2 files / 15 tests, all passing, with the new 'once per database handle' case named in the sqlite file.",
-      "Run `yarn workspace @actual-app/core run test:node`. Expect the new 'Native sqlite REGEXP guard' describe block present and passing, and the file count one higher than before the change.",
-      "Confirm the falsifiability claim rather than taking it on trust: hoist the Set in index.electron.ts to module scope, re-run the node suite, and check the new test fails with 'expected 1 to be 2'. Restore the file. This is the one check that separates a real fix from a test that only looks like one.",
-      "Read the diff of index.test.ts and confirm the old comment claiming 'the dedupe set below' is gone and the replacement names ./index.ts's createRegexp.",
-      "Confirm no file under packages/loot-core/src/platform/server/sqlite/index.ts or index.electron.ts was modified — this ticket changes tests and comments only."
-    ],
-    "risks": [
-      "The new tests depend on console.log as the logger's sink. Both count log lines by spying on console.log, which is what the existing dedupe tests already do (index.test.ts, transaction-rules.test.ts). If the node test environment ever stops routing logger.log to console.log, these fail for the same reason the existing ones would.",
-      "index.electron.test.ts depends on ENV=node resolving the '#platform/server/sqlite' subpath to index.electron.ts via the 'electron' export condition. If loot-core's vitest.config.ts ssr.resolve.conditions ever drops 'electron', this file silently starts testing index.ts instead and would pass without exercising index.electron.ts at all. The sibling connection/index.api.test.ts already relies on the same mechanism.",
-      "Fulfilling finding 3 here would edit a line that open PR #19 (issue #17) also edits in upcoming-release-notes/fix-weekly-report-final-bucket.md, producing a conflict. That is why it is out of scope here — but if #19 is closed unmerged, the dangling '@claude' handle returns to the published changelog and needs its own ticket. Check #19's state before merging this one.",
-      "No file in forbidden_paths (.sdlc/config.yml:210) is touched. The nearest is packages/loot-core/src/server/migrate/**, which this change does not reach."
-    ],
-    "out_of_scope": [
-      "Finding 3 — the `authors: [claude]` handle in upcoming-release-notes/fix-weekly-report-final-bucket.md. It does still reproduce on main (I read the file: line 3 is `authors: [claude]`), but open PR #19 for issue #17 already corrects this exact line to `Shivam-Fl` and adds the findNonPersonAuthors gate that rejects it, so the note is fixed the moment #19 merges. The issue body itself flags this as assigned to a different ticket. Editing it here would conflict with #19 for no gain.",
-      "Finding 4 — the observation that AC-5's release note describes work done in PR #11 rather than in #18, and the suggestion of 'a line in the PR body'. The reviewer marked it explicitly 'Not a defect' and 'Optional'. PR #18 is already merged, so its body is immutable, and a release note is the correct home for the combined user-visible fix. There is no code change to make and no file to edit.",
-      "The release-notes gate itself: .github/actions/release-notes/check/action.yml exists but no workflow in .github/workflows/ invokes it, and .github/** is a forbidden path, so strengthening or wiring that check is not available here.",
-      "Adding a release note for this PR. This change ships no user-facing behaviour — it is tests and a comment — and the gate that would require one is not running. The existing fix-invalid-regex-rule-crash.md note already covers the user-visible fix from #11."
-    ],
-    "evidence": [
-      "Reproduced finding 1: `grep -n reportedInvalidRegexps packages/loot-core/src/platform/server/sqlite/index.test.ts` returns no match; the Sets are at index.ts:221 and index.electron.ts:131. index.test.ts:255 still reads 'the dedupe set below is scoped to this database handle'.",
-      "Reproduced finding 2 by construction on both backends. Hoisting `const reportedInvalidRegexps = new Set<string>()` out of createRegexp() in index.electron.ts and running the new electron test: 'AssertionError: expected 1 to be 2', 'Tests 1 failed'. Restored: 'Tests 1 passed'. Same hoist in index.ts with the web test: 'AssertionError: expected 1 to be 2', 'Tests 1 failed | 14 passed'. Restored: green.",
-      "The existing suite is blind to the hoist, which is the finding: with the Set at module scope in index.electron.ts, the pre-existing transaction-rules.test.ts count assertion still held (reviewer's reproduction, confirmed as the premise of this work), because its five patterns are unique to that file.",
-      "Found a constraint that would have shipped broken: `npx oxlint packages/loot-core/src/platform/server/sqlite/` on a test importing './index.electron' reports 'error eslint(no-restricted-imports): ./index.electron import is restricted ... Don't directly reference imports from other platforms' (.oxlintrc.json:339-343). Rewritten to import '#platform/server/sqlite' — lint clean, typecheck clean, test green.",
-      "`npx tsgo -p tsconfig.root.json --noEmit` exits 0 with the new file present.",
-      "Full node suite with the new file: 'Test Files 86 passed | 1 skipped (87)', 'Tests 1212 passed | 2 skipped (1214)'.",
-      "Web suite with the new web test appended: 'Test Files 2 passed (2)', 'Tests 15 passed (15)' — index.test.ts 9 tests, fs/index.test.ts 6.",
-      "Finding 3 is real on main but owned elsewhere: `grep -n authors upcoming-release-notes/fix-weekly-report-final-bucket.md` returns '3:authors: [claude]', and commit 622c500 on origin/sdlc/issue-17 (PR #19, OPEN) changes exactly that line to `authors: [Shivam-Fl]` plus adds the gate.",
-      "The release-notes check is defined at .github/actions/release-notes/check/action.yml but no file under .github/workflows/ references it, so it does not gate this PR."
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Take the reviewer's second option for finding 2: state in the AC-3 evidence that the lifetime is verified by reading the source and by a manual two-database reproduction, and add no test.",
-        "rejected_because": "It records the gap instead of closing it, and the ticket's own framing ('nothing in the suite pins it') asks for the pin. A two-handle test is ~20 lines and I have already verified it is falsifiable in both directions. Recording a known gap in prose is what let the gap survive the first review round."
-      },
-      {
-        "approach": "Put the electron two-handle assertion inside the existing transaction-rules.test.ts rather than a new file, reaching a second handle through the rules API.",
-        "rejected_because": "transaction-rules.test.ts drives getMatchingTransactions against one shared global handle seeded by emptyDatabase(); opening a second handle from there means constructing a second full database fixture inside a rules test, testing sqlite plumbing in a file about rules. A dedicated index.electron.test.ts beside the source is where the next person looking for this coverage will look — and it is currently the first direct test that file has."
-      },
-      {
-        "approach": "Strengthen the existing count assertions (for example by reusing a pattern across two tests in index.test.ts) instead of opening two databases.",
-        "rejected_because": "Still does not distinguish the lifetimes. A process-wide Set and a per-handle Set both suppress a repeat within one process; only two handles separate them. This is precisely the reviewer's point that the five patterns are 'unique to their file', so both counts are identical under either implementation."
-      },
-      {
-        "approach": "Assert the lifetime indirectly, by checking that the Set is lexically inside createRegexp — a source-text or structural test.",
-        "rejected_because": "Tests the file's shape rather than its behaviour, breaks on any harmless refactor, and is the kind of assertion that reads as coverage without being coverage. The two-handle test fails on the reverted code, which is the only property worth having."
-      },
-      {
-        "approach": "Fix findings 3 and 4 here as well, since the issue bundles all four.",
-        "rejected_because": "Finding 3 collides with open PR #19 on the same line, and the issue's own text assigns it elsewhere. Finding 4 is a PR-body suggestion the reviewer marked optional and not a defect, against a PR that is already merged. Bundling them would widen the diff for no shipped value."
-      }
-    ],
-    "assumptions": [
-      "PR #19 stays open and merges. If it is closed instead, finding 3 needs its own ticket and the note keeps a dangling '@claude'.",
-      "console.log remains the logger's sink in both the node and jsdom test environments, which the existing dedupe tests already depend on.",
-      "The two new tests stay in the default `yarn test` run: index.electron.test.ts under ENV=node (vitest.config.ts excludes only index.test.ts and fs/index.test.ts) and the index.test.ts case under ENV=web (already in vitest.web.config.ts's explicit include list). No config change is needed or intended."
-    ],
-    "unknowns": [
-      "Whether the reviewer wants the two tests merged into one shared helper. I duplicated the ~4-line log-counting helper across the two files rather than extracting it, because the two run in different vitest projects with separate module graphs; a shared helper would have to live outside both and be reachable from both."
-    ],
-    "residual_risks": [
-      "The falsifiability claim rests on my running the hoist in both directions, not on a permanent regression test that keeps doing it. A future refactor that hoists the Set would be caught by the new tests, but nothing re-verifies that the tests themselves stay falsifiable."
-    ],
-    "debate_summary": "No council ran — this was a single-agent plan, so debate_summary is empty. The plan rests on reproduction rather than argument: I wrote both proposed tests, ran them, and then hoisted the dedupe Set back to module scope in each source file to confirm each test fails ('expected 1 to be 2'). I also found and corrected a defect in my own first draft — a direct './index.electron' import that `yarn lint` rejects under the no-restricted-imports '**/*.electron' pattern — and verified the '#platform/server/sqlite' alias instead."
-  },
   "validated_from": "plan",
   "validated_at": "2026-10-02T23:59:54.441Z",
   "validated_ac_changes": [],
-  "approved_work_order": {
-    "issue": 24,
-    "version": 1,
-    "kind": "chore",
-    "mode": "committed",
-    "reproduced": true,
-    "confidence": 86,
-    "confidence_rationale": "Every claim I kept I reproduced and then proved the proposed fix works: both new tests pass, both fail when the Set is hoisted back to module scope, and the pair typechecks, lints and runs inside the full loot-core node suite. The 86 rather than a higher number covers the two findings I dropped rather than implemented (the release-note author handle, and the PR-body suggestion) — each is a judgement call a reviewer could reasonably have expected in the diff.",
-    "understanding": "Of the four review findings on #16, two still reproduce and are the same defect seen twice; two no longer belong to this ticket. The live defect is that AC-3's per-database dedupe is delivered in the source but pinned by nothing: the five patterns in transaction-rules.test.ts:661 and the two in index.test.ts's volume test are each unique to their file, so a process-wide Set and a per-database Set produce identical counts, and hoisting reportedInvalidRegexps back to module scope in either file leaves the suite green (the reviewer reproduced this; I reproduced it independently on both files). The comment at index.test.ts:255 is the same gap stated as prose: it says 'the dedupe set below is scoped to this database handle', but there is no Set in that file — grep for reportedInvalidRegexps in index.test.ts returns nothing; the Sets live in index.ts:221 and index.electron.ts:131 — and it is the only place the file claims the order-independence the assertion does not have. So one fix closes both findings: a test that opens two databases in one process and expects one log per handle, which makes the comment's claim true instead of implied, and a comment that stops pointing at a Set the file does not contain. No production source changes: the guard's semantics are already correct, and the change is to make the suite able to say so.",
-    "root_cause": "The dedupe set's lifetime is a property of where a variable is declared, and the tests written for it assert only observable counts over patterns unique to a single file. A per-handle Set and a process-wide Set are indistinguishable under those assertions, so the test passes under both the correct code and the reverted code — the property AC-3 is about was never made falsifiable. The comment at index.test.ts:255 then described the intended lifetime in prose, in a file that contains no Set, which is how the gap survived review.",
-    "approach": "Add one test per sqlite backend that distinguishes the two Set lifetimes, and correct the comment that misstates where the Set lives. The distinguishing assertion is the same on both sides: open two databases in one process, run the SAME broken pattern over both, expect the log count to go 1 then 2. A per-handle Set reports it twice; a module-scoped Set silences the second handle and the count stays 1. I verified this fails on both files when the Set is hoisted.\n\nTwo constraints the implementer must not discover the hard way, both found by running the checks:\n\n1. The electron test CANNOT import './index.electron'. The eslint/no-restricted-imports rule in .oxlintrc.json:339-343 blocks the '**/*.electron' pattern, and `yarn lint` fails on it. Import from the '#platform/server/sqlite' subpath instead — package.json maps it to index.electron.ts under the 'electron' condition, which is what ENV=node resolves (vitest.config.ts sets ssr.resolve.conditions to ['electron', ...]). This is the same path transaction-rules.test.ts already reaches the file by.\n\n2. The new file lands where the node suite already collects it. vitest.config.ts excludes only 'src/platform/server/sqlite/index.test.ts', so index.electron.test.ts is picked up by ENV=node automatically, and vitest.web.config.ts has an explicit include list that does not mention it, so it runs exactly once. The sibling unicodeLike.test.ts is the precedent.\n\nThe web-side test goes in the existing index.test.ts, which is already in the web config's include list. Its helper `invalidRegexLogs` is duplicated rather than extracted: the two files run in different vitest projects with different module graphs, and a shared helper would have to live outside both.\n\nNothing in packages/loot-core/src/platform/server/sqlite/index.ts or index.electron.ts changes. Their comments stay accurate — they describe the closure correctly, and after this change a test holds them to it.",
-    "files": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
-        "action": "edit",
-        "change": "Two changes. (1) Replace the comment at lines 255-257, which currently reads 'Patterns used by no other case in this file, and the dedupe set below is scoped to this database handle, so the count starts from an unreported pattern regardless of which tests ran before this one', with: 'Patterns used by no other case in this file, so the count starts from an unreported pattern. That each is reported exactly once is a statement about this handle's rows, not about the lifetime of the dedupe set — the Set lives in the closure createRegexp returns in ./index.ts, and the test below is what pins that lifetime.' (2) Insert a new `it` immediately after the test ending at line 299 and before 'should still match a valid regex that does match, and not throw on one that does not', named 'should report an unparseable pattern once per database handle, not once per process'. It opens two databases with `await openDatabase()` (no argument), seeds each with `execQuery(db, initSQL)` plus three rows INSERTed into textstrings with string '#mortgage note', spies console.log with `vi.spyOn(console, 'log').mockImplementation(() => null)`, and asserts the count of calls whose first argument is 'invalid regexp in sqlite REGEXP' goes 1 then 2 across `runQuery(db1, \"SELECT id FROM textstrings where REGEXP('(?<handle', string)\", null, true)` followed by the identical query on db2. It then repeats the db1 query and asserts the count is still 2, so each handle dedupes independently after its own first report. Use the pattern '(?<handle' — no other case in this file uses it. Restore the spy at the end.",
-        "why": "This file is the only coverage index.ts (the browser/sql.js backend) has, and its existing assertions cannot tell a per-handle Set from a process-wide one. index.test.ts:255's comment is also finding 1: it points at 'the dedupe set below' when no Set exists in this file."
-      },
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
-        "action": "create",
-        "change": "New file. It is the first direct test of index.electron.ts and exists solely to pin the dedupe Set's lifetime for the native backend. Import `{ execQuery, openDatabase, runQuery } from '#platform/server/sqlite'` — NOT from './index.electron', which the eslint/no-restricted-imports pattern '**/*.electron' in .oxlintrc.json rejects and which fails `yarn lint`. Under ENV=node that subpath resolves to index.electron.ts. Declare a module-level `const initSQL` creating `CREATE TABLE textstrings (id TEXT PRIMARY KEY, string TEXT);`, and two constants PATTERN_ONE = '(?<electron-lifetime-one' and PATTERN_TWO = '(?<electron-lifetime-two', neither used anywhere else in the suite. Add a `seed(db)` helper that runs execQuery(db, initSQL) then inserts ids '1','2','3' with string '#mortgage note' — several rows, because SQLite calls the REGEXP function once per candidate row and a single-row table cannot tell per-pattern logging from per-row logging. Add a `countInvalidRegexLogs(spy)` helper returning the number of spy calls whose first argument is 'invalid regexp in sqlite REGEXP'. One `describe('Native sqlite REGEXP guard')` containing one `it('reports an unparseable pattern once per database handle, not once per process')`: open db1 = openDatabase(':memory:') and db2 = openDatabase(':memory:'), seed both, spy on console.log, assert runQuery(db1, `SELECT id FROM textstrings where REGEXP('${PATTERN_ONE}', string)`, [], true) returns [] and the count is 1; assert the identical query on db2 returns [] and the count is 2; repeat on db1 and assert the count is still 2; run PATTERN_TWO on db2 and assert 3; run the valid pattern '#mortgage' on db1 with fetchAll and assert it returns 3 rows with the count still 3. Restore the spy, then db1.close() and db2.close(). Note that this backend's runQuery takes [] for params — passing null throws 'params is not iterable'.",
-        "why": "transaction-rules.test.ts reaches index.electron.ts only through getMatchingTransactions on a single shared handle, which is why hoisting the Set there left the suite green. The reviewer flagged exactly this and named the fix: open two databases in one process and expect one log per handle."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
-        "action": "edit",
-        "cases": [
-          "should report an unparseable pattern once per database handle, not once per process — the same broken pattern over two handles in one process yields log counts 1 then 2",
-          "the same broken pattern repeated on the first handle after both handles have reported it does not log again (count stays 2), so each handle dedupes independently",
-          "hoisting `const reportedInvalidRegexps = new Set<string>()` in index.ts out of createRegexp() to module scope makes this test fail with 'expected 1 to be 2' — verified; the suite is otherwise unaffected by the hoist",
-          "the pre-existing 'once per pattern, not once per scanned row' test still passes unchanged, including its exact toBe(1)/toBe(2) counts"
-        ]
-      },
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
-        "action": "create",
-        "cases": [
-          "reports an unparseable pattern once per database handle, not once per process — PATTERN_ONE over two :memory: handles yields log counts 1 then 2",
-          "a repeat of PATTERN_ONE on the first handle after the second has reported it does not log again (count stays 2)",
-          "PATTERN_TWO on the second handle is reported (count 3), so dedupe is per pattern and not a blanket suppression",
-          "the valid pattern '#mortgage' returns all 3 seeded rows and logs nothing (count stays 3)",
-          "hoisting `const reportedInvalidRegexps = new Set<string>()` in index.electron.ts out of createRegexp() to module scope makes this test fail with 'expected 1 to be 2' — verified"
-        ]
-      }
-    ],
-    "acceptance": [
-      {
-        "id": "AC-1",
-        "check": "A test opens two databases in a single process, runs the same unparseable pattern over both, and asserts the count of 'invalid regexp in sqlite REGEXP' log lines goes 1 then 2. Present once for the browser/sql.js backend (index.test.ts) and once for the native backend (index.electron.test.ts).",
-        "verify": "test",
-        "how_to_verify": "yarn workspace @actual-app/core run test:web for the index.test.ts case and yarn workspace @actual-app/core run test:node for the index.electron.test.ts case; both are in the default `yarn test` run. No browser path exists — the guard's runtime semantics are unchanged and nothing user-facing moves."
-      },
-      {
-        "id": "AC-2",
-        "check": "The new tests are falsifiable with respect to the Set's lifetime: moving `const reportedInvalidRegexps = new Set<string>()` in index.ts out of createRegexp() to module scope fails the web test, and the same move in index.electron.ts fails the electron test, each with 'expected 1 to be 2'.",
-        "verify": "test",
-        "how_to_verify": "Reproduce each: hoist the Set in one file, run that file's suite (`ENV=web vitest --run -c vitest.web.config.ts` and `ENV=node vitest --run`), observe the failure, restore. I ran both directions and both failed as specified. The implementer should do the same before opening the PR — a test that cannot fail here is the defect this ticket exists to close."
-      },
-      {
-        "id": "AC-3",
-        "check": "No comment in index.test.ts claims a dedupe Set exists in that file. The comment above the log-count helper names ./index.ts's createRegexp as where the Set lives and points at the following test as what pins its lifetime.",
-        "verify": "test",
-        "how_to_verify": "`grep -n 'dedupe set below' packages/loot-core/src/platform/server/sqlite/index.test.ts` returns no match. Review the comment as part of the diff."
-      },
-      {
-        "id": "AC-4",
-        "check": "yarn typecheck and yarn lint pass, and index.electron.test.ts imports '#platform/server/sqlite' rather than './index.electron' so the eslint/no-restricted-imports '**/*.electron' pattern is not tripped.",
-        "verify": "test",
-        "how_to_verify": "`yarn typecheck` and `yarn lint` from the repo root (the commands .sdlc/config.yml wires to CI). `npx oxlint packages/loot-core/src/platform/server/sqlite/` reports no errors. I confirmed the direct './index.electron' import fails this lint and the alias import passes."
-      },
-      {
-        "id": "AC-5",
-        "check": "The whole loot-core suite is green with the new file present: ENV=node runs 87 test files including index.electron.test.ts exactly once, and the web config still runs only index.test.ts and fs/index.test.ts.",
-        "verify": "test",
-        "how_to_verify": "`yarn workspace @actual-app/core run test:node` and `test:web`. I ran the full node suite with the new file in place: 86 passed | 1 skipped (87 files), 1212 passed | 2 skipped."
-      }
-    ],
-    "qa_script": [
-      "There is nothing to click through in a browser: this change adds tests and corrects a comment, and no runtime behaviour moves. The guard still catches, dedupes, logs once and returns 0 — byte-identical to before.",
-      "Run `yarn typecheck` from the repo root. Expect no errors.",
-      "Run `yarn lint` from the repo root. Expect no errors. If it reports eslint(no-restricted-imports) on index.electron.test.ts line 1, the implementer used a direct './index.electron' import; it must be '#platform/server/sqlite'.",
-      "Run `yarn workspace @actual-app/core run test:web`. Expect 2 files / 15 tests, all passing, with the new 'once per database handle' case named in the sqlite file.",
-      "Run `yarn workspace @actual-app/core run test:node`. Expect the new 'Native sqlite REGEXP guard' describe block present and passing, and the file count one higher than before the change.",
-      "Confirm the falsifiability claim rather than taking it on trust: hoist the Set in index.electron.ts to module scope, re-run the node suite, and check the new test fails with 'expected 1 to be 2'. Restore the file. This is the one check that separates a real fix from a test that only looks like one.",
-      "Read the diff of index.test.ts and confirm the old comment claiming 'the dedupe set below' is gone and the replacement names ./index.ts's createRegexp.",
-      "Confirm no file under packages/loot-core/src/platform/server/sqlite/index.ts or index.electron.ts was modified — this ticket changes tests and comments only."
-    ],
-    "risks": [
-      "The new tests depend on console.log as the logger's sink. Both count log lines by spying on console.log, which is what the existing dedupe tests already do (index.test.ts, transaction-rules.test.ts). If the node test environment ever stops routing logger.log to console.log, these fail for the same reason the existing ones would.",
-      "index.electron.test.ts depends on ENV=node resolving the '#platform/server/sqlite' subpath to index.electron.ts via the 'electron' export condition. If loot-core's vitest.config.ts ssr.resolve.conditions ever drops 'electron', this file silently starts testing index.ts instead and would pass without exercising index.electron.ts at all. The sibling connection/index.api.test.ts already relies on the same mechanism.",
-      "Fulfilling finding 3 here would edit a line that open PR #19 (issue #17) also edits in upcoming-release-notes/fix-weekly-report-final-bucket.md, producing a conflict. That is why it is out of scope here — but if #19 is closed unmerged, the dangling '@claude' handle returns to the published changelog and needs its own ticket. Check #19's state before merging this one.",
-      "No file in forbidden_paths (.sdlc/config.yml:210) is touched. The nearest is packages/loot-core/src/server/migrate/**, which this change does not reach."
-    ],
-    "out_of_scope": [
-      "Finding 3 — the `authors: [claude]` handle in upcoming-release-notes/fix-weekly-report-final-bucket.md. It does still reproduce on main (I read the file: line 3 is `authors: [claude]`), but open PR #19 for issue #17 already corrects this exact line to `Shivam-Fl` and adds the findNonPersonAuthors gate that rejects it, so the note is fixed the moment #19 merges. The issue body itself flags this as assigned to a different ticket. Editing it here would conflict with #19 for no gain.",
-      "Finding 4 — the observation that AC-5's release note describes work done in PR #11 rather than in #18, and the suggestion of 'a line in the PR body'. The reviewer marked it explicitly 'Not a defect' and 'Optional'. PR #18 is already merged, so its body is immutable, and a release note is the correct home for the combined user-visible fix. There is no code change to make and no file to edit.",
-      "The release-notes gate itself: .github/actions/release-notes/check/action.yml exists but no workflow in .github/workflows/ invokes it, and .github/** is a forbidden path, so strengthening or wiring that check is not available here.",
-      "Adding a release note for this PR. This change ships no user-facing behaviour — it is tests and a comment — and the gate that would require one is not running. The existing fix-invalid-regex-rule-crash.md note already covers the user-visible fix from #11."
-    ],
-    "evidence": [
-      "Reproduced finding 1: `grep -n reportedInvalidRegexps packages/loot-core/src/platform/server/sqlite/index.test.ts` returns no match; the Sets are at index.ts:221 and index.electron.ts:131. index.test.ts:255 still reads 'the dedupe set below is scoped to this database handle'.",
-      "Reproduced finding 2 by construction on both backends. Hoisting `const reportedInvalidRegexps = new Set<string>()` out of createRegexp() in index.electron.ts and running the new electron test: 'AssertionError: expected 1 to be 2', 'Tests 1 failed'. Restored: 'Tests 1 passed'. Same hoist in index.ts with the web test: 'AssertionError: expected 1 to be 2', 'Tests 1 failed | 14 passed'. Restored: green.",
-      "The existing suite is blind to the hoist, which is the finding: with the Set at module scope in index.electron.ts, the pre-existing transaction-rules.test.ts count assertion still held (reviewer's reproduction, confirmed as the premise of this work), because its five patterns are unique to that file.",
-      "Found a constraint that would have shipped broken: `npx oxlint packages/loot-core/src/platform/server/sqlite/` on a test importing './index.electron' reports 'error eslint(no-restricted-imports): ./index.electron import is restricted ... Don't directly reference imports from other platforms' (.oxlintrc.json:339-343). Rewritten to import '#platform/server/sqlite' — lint clean, typecheck clean, test green.",
-      "`npx tsgo -p tsconfig.root.json --noEmit` exits 0 with the new file present.",
-      "Full node suite with the new file: 'Test Files 86 passed | 1 skipped (87)', 'Tests 1212 passed | 2 skipped (1214)'.",
-      "Web suite with the new web test appended: 'Test Files 2 passed (2)', 'Tests 15 passed (15)' — index.test.ts 9 tests, fs/index.test.ts 6.",
-      "Finding 3 is real on main but owned elsewhere: `grep -n authors upcoming-release-notes/fix-weekly-report-final-bucket.md` returns '3:authors: [claude]', and commit 622c500 on origin/sdlc/issue-17 (PR #19, OPEN) changes exactly that line to `authors: [Shivam-Fl]` plus adds the gate.",
-      "The release-notes check is defined at .github/actions/release-notes/check/action.yml but no file under .github/workflows/ references it, so it does not gate this PR."
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Take the reviewer's second option for finding 2: state in the AC-3 evidence that the lifetime is verified by reading the source and by a manual two-database reproduction, and add no test.",
-        "rejected_because": "It records the gap instead of closing it, and the ticket's own framing ('nothing in the suite pins it') asks for the pin. A two-handle test is ~20 lines and I have already verified it is falsifiable in both directions. Recording a known gap in prose is what let the gap survive the first review round."
-      },
-      {
-        "approach": "Put the electron two-handle assertion inside the existing transaction-rules.test.ts rather than a new file, reaching a second handle through the rules API.",
-        "rejected_because": "transaction-rules.test.ts drives getMatchingTransactions against one shared global handle seeded by emptyDatabase(); opening a second handle from there means constructing a second full database fixture inside a rules test, testing sqlite plumbing in a file about rules. A dedicated index.electron.test.ts beside the source is where the next person looking for this coverage will look — and it is currently the first direct test that file has."
-      },
-      {
-        "approach": "Strengthen the existing count assertions (for example by reusing a pattern across two tests in index.test.ts) instead of opening two databases.",
-        "rejected_because": "Still does not distinguish the lifetimes. A process-wide Set and a per-handle Set both suppress a repeat within one process; only two handles separate them. This is precisely the reviewer's point that the five patterns are 'unique to their file', so both counts are identical under either implementation."
-      },
-      {
-        "approach": "Assert the lifetime indirectly, by checking that the Set is lexically inside createRegexp — a source-text or structural test.",
-        "rejected_because": "Tests the file's shape rather than its behaviour, breaks on any harmless refactor, and is the kind of assertion that reads as coverage without being coverage. The two-handle test fails on the reverted code, which is the only property worth having."
-      },
-      {
-        "approach": "Fix findings 3 and 4 here as well, since the issue bundles all four.",
-        "rejected_because": "Finding 3 collides with open PR #19 on the same line, and the issue's own text assigns it elsewhere. Finding 4 is a PR-body suggestion the reviewer marked optional and not a defect, against a PR that is already merged. Bundling them would widen the diff for no shipped value."
-      }
-    ],
-    "assumptions": [
-      "PR #19 stays open and merges. If it is closed instead, finding 3 needs its own ticket and the note keeps a dangling '@claude'.",
-      "console.log remains the logger's sink in both the node and jsdom test environments, which the existing dedupe tests already depend on.",
-      "The two new tests stay in the default `yarn test` run: index.electron.test.ts under ENV=node (vitest.config.ts excludes only index.test.ts and fs/index.test.ts) and the index.test.ts case under ENV=web (already in vitest.web.config.ts's explicit include list). No config change is needed or intended."
-    ],
-    "unknowns": [
-      "Whether the reviewer wants the two tests merged into one shared helper. I duplicated the ~4-line log-counting helper across the two files rather than extracting it, because the two run in different vitest projects with separate module graphs; a shared helper would have to live outside both and be reachable from both."
-    ],
-    "residual_risks": [
-      "The falsifiability claim rests on my running the hoist in both directions, not on a permanent regression test that keeps doing it. A future refactor that hoists the Set would be caught by the new tests, but nothing re-verifies that the tests themselves stay falsifiable."
-    ],
-    "debate_summary": "No council ran — this was a single-agent plan, so debate_summary is empty. The plan rests on reproduction rather than argument: I wrote both proposed tests, ran them, and then hoisted the dedupe Set back to module scope in each source file to confirm each test fails ('expected 1 to be 2'). I also found and corrected a defect in my own first draft — a direct './index.electron' import that `yarn lint` rejects under the no-restricted-imports '**/*.electron' pattern — and verified the '#platform/server/sqlite' alias instead."
-  },
-  "approved_too_high": false
+  "approved_too_high": false,
+  "work_order_version": 1,
+  "work_order_posted_at": "2026-10-03T00:14:26.027Z",
+  "work_order_from": "plan",
+  "work_order_comment": "5963494604"
 }
