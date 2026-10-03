@@ -202,7 +202,11 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
