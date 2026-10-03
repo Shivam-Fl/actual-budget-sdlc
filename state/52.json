@@ -292,5 +292,208 @@
       "The release-notes check stays out of CI. Its behaviour after this change is only as good as the wiring, and the wiring is a forbidden path — so this ticket can make the gate correct, not enforceable."
     ],
     "mode": "committed"
-  }
+  },
+  "approved_work_order": {
+    "issue": 52,
+    "version": 2,
+    "understanding": "The ticket bundles four findings from PR #49's review and QA. Two are not code changes and are dropped with reasons; the other two are real defects and both reproduce on current `main`.\n\n(1) SKIP ON A ONE-OFF. `SchedulesTable.tsx:193` gates the 'Skip next scheduled date' context-menu item on `status === 'completed'` alone, so it is offered for every non-completed schedule including one-offs. The click dispatches `schedule/skip-next-date` -> `skipNextDate` (schedules/app.ts:466) -> `setNextDate({advance: true})` -> `getNextDateAfter`, and the `newNextDate != null && newNextDate !== nextDate` guard at schedules/app.ts:243 drops the write. I reproduced the server half under vitest: for a one-off date condition `getNextDateAfter` returns `null`, so the guard blocks on the `!= null` half. This corrects QA's stated mechanism — QA wrote that it 'returns the same date'; it returns `null`. The user-visible symptom is exactly right; only the internal reason differs. `SchedulesTable` is the sole outlier: `SelectedTransactionsButton.tsx:147`, `useTransactionRowContextActions.ts:106` and `ScheduledTransactionMenuModal.tsx:61` all already gate on `scheduleIsRecurring(extractScheduleConds(...).date)`.\n\n(2) RELEASE-NOTES CHECK REFUSES EDIT-ONLY DIFFS. `bin/release-notes-check.mjs:123` destructures `{added, changed}` from `selectReleaseNotePaths`, but line 125 gates on `added.length === 0` while the validation loop on line 132 iterates `changed`. `added` only ever contains status `A` (util.mjs:153), so a diff that edits (M) or renames (R) an existing note is unrepresentable and the script exits 1. Reproduced end to end.\n\n(3) PR #49's missing `[AI]` prefix and filled-in body is PR metadata on an already-merged PR; no code change can correct it, and its durable fix needs `.claude/settings.json`, a forbidden path.\n\n(4) The 442-character release-note body is real and still present, but it is shipped changelog copy the reviewer explicitly deferred to a maintainer, and `validateFile` forbids newlines so the only lever is sentence choice. This ticket's own note is written at 123 characters.\n\nCHANGES FROM v1, addressing the two objections the plan reviewer raised.\n\nObjection 1 — AC-7 cited a Playwright suite that no CI job runs. Confirmed and conceded: `verify.e2e` prints empty, `.github/workflows/ci-verify.yml:245-254` exits 0 with 'E2E not configured - skipping' when it is empty, and `packages/desktop-client/vite.config.mts:406` collects only `src/**`, so `yarn test` never sees `e2e/**`. AC-7 is dropped outright. The Playwright cases stay in `tests[]` where they document intent without claiming CI proves them; the behaviour they cover is asserted in the browser by AC-1, AC-2 and AC-3 instead. Nothing in this plan depends on Playwright to gate.\n\nObjection 2 — qa_script and approach told QA to count six items in a due recurring row's menu. Confirmed and conceded: the table builds six items but hides two by status, so a due (non-completed) recurring row renders exactly five — Post transaction, Post transaction today, Skip next scheduled date, Complete, Delete. `useContextMenu.ts:28` filters on `!item.hidden` and `Menu.tsx:161` adds no header. Both places now name the five items explicitly, and the one-off count (four) was already right.",
+    "root_cause": "Two independent callers each picked the wrong side of a guard that was already correct somewhere else. `SchedulesTable` reimplemented the skip-eligibility test from scratch (`status === 'completed'`) instead of using the recurrence predicate the other three call sites use. `release-notes-check.mjs` destructured both lists from `selectReleaseNotePaths` and then tested the wrong one (`added`) against a loop that walks the other (`changed`).",
+    "approach": "Two caller-side fixes, each in one file, plus the coverage each needs. Deliberately not splitting for the maintainer: after dropping the two non-code findings, what remains is two small guards totalling four touched source files, under the six-file clubbing threshold in `.sdlc/config.yml`, and the same shape PRs #30 and #53 already shipped.\n\nFor the schedule bug the guard goes in the caller, matching the three sibling call sites and the reviewer's own diagnosis ('setNextDate itself is behaving correctly - it just has no caller-side guard'). For the release-notes bug the guard moves from `added` to `changed`, a superset, so every case the old gate accepted still passes and every case it rejected for the right reason is now validated for the right reason.\n\nInterface states for the only screen touched (the Schedules row context menu): the item set becomes a function of (status, recurrence) rather than status alone. Ideal (recurring, due) — unchanged; the menu shows Post transaction, Post transaction today, Skip next scheduled date, Complete, Delete. Empty — not a state this menu has. Loading — the menu exists only on a rendered row, so no change. Partial — a schedule whose `_conditions` has no date condition yields `date === null` (extractScheduleConds returns `null`, not undefined, for a missing condition), and `scheduleIsRecurring(null)` returns false, so Skip is hidden rather than offered-and-broken. Error — no new failure mode; the handler is unchanged. Primary action, destructive actions, keyboard and focus, labels and copy: all unchanged. Narrow widths: a fixed 200px popover, unaffected by item count.\n\nOn coverage: nothing here is verified by Playwright, because no CI job in this repository runs Playwright (the v1 objection). The menu-shape assertions therefore live in `acceptance[]` as `verify: \"browser\"` criteria against the demo budget, where both a one-off ('Internet bill') and a recurring ('Phone bills') schedule exist by default. The release-notes criteria are `verify: \"test\"` and are backed by a case CI genuinely collects: I confirmed `lage test --filter packages/ci-actions` picks up `bin/**/*.test.mjs` once the vitest `include` is widened, so `verify.unit: \"yarn test\"` runs them. The e2e cases remain in `tests[]` as executable documentation for the repo's own suite.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/schedules/SchedulesTable.tsx",
+        "action": "edit",
+        "change": "Gate the 'Skip next scheduled date' context-menu item on recurrence as well as status. Line 15 currently reads `import { getScheduledAmount } from '@actual-app/core/shared/schedules';` — change it to a named import of `extractScheduleConds`, `getScheduledAmount` and `scheduleIsRecurring` from the same module (keep the alphabetised order oxfmt/oxlint expect; leave the `import type { ScheduleStatuses }` line 16 and every other import alone). In `ScheduleRow`, immediately after `const status = statuses.get(schedule.id);`, add `const { date: dateCond } = extractScheduleConds(schedule._conditions);` and `const canSkip = scheduleIsRecurring(dateCond);`. Change the skip item's `hidden` on line 193 from `status === 'completed'` to `status === 'completed' || !canSkip`. Add a two-line comment above `canSkip` recording why: a one-off's date condition is a plain date with no next occurrence, so `getNextDateAfter` returns null and setNextDate's `newNextDate != null` guard drops the write — the click is a silent no-op. Change nothing else: no server change, and the 'complete' and 'restart' items keep their current `hidden` expressions.",
+        "why": "The one call site of the four that reimplemented the eligibility test instead of reusing the predicate the other three already use."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.mjs",
+        "action": "edit",
+        "change": "Gate on the list the validation loop actually walks. Line 123: `const { added, changed } = selectReleaseNotePaths(stdout, NOTES_DIR);` -> `const { changed } = selectReleaseNotePaths(stdout, NOTES_DIR);`. Line 125: `if (added.length === 0) {` -> `if (changed.length === 0) {`. Rewrite the message on lines 126-128 to exactly `No release note added or modified under ${NOTES_DIR}/. Add a *.md file describing your change, or edit an existing note.` — the old wording is now wrong, since an edit is a legitimate way to satisfy the gate. Extend the comment block above line 118 by one sentence recording that the emptiness guard must test `changed` (A, M, R) and not `added` (A only), because the loop below walks `changed`. Do not modify util.mjs and do not remove `added` from its return value: util.test.js:154 and :161 assert both keys, and knip's `exports` rule is off, so the retained-but-unused property is not flagged.",
+        "why": "The reported defect, reproduced verbatim. `changed` is a superset of `added`, so the gate widens while every negative case still fails for the right reason."
+      },
+      {
+        "path": "packages/ci-actions/vitest.config.mts",
+        "action": "edit",
+        "change": "Widen `test.include` on line 5 from `['src/**/*.test.(js|jsx|ts|tsx)']` to `['src/**/*.test.(js|jsx|ts|tsx)', 'bin/**/*.test.mjs']` so a test driving a bin script is collected. Nothing else changes. This is load-bearing, not cosmetic: I confirmed that without it `vitest --run bin/release-notes-check.test.mjs` exits 1 with 'No test files found', and with it `lage test --filter packages/ci-actions` collects the file — which is what makes the release-notes acceptance criteria legitimately `verify: \"test\"`.",
+        "why": "The new test must sit next to the script it drives; the include currently collects src/** only."
+      },
+      {
+        "path": "packages/desktop-client/e2e/page-models/schedule-edit-modal.ts",
+        "action": "edit",
+        "change": "Add a locator for the Repeats checkbox and a method to clear it. Declare `readonly repeatsCheckbox: Locator;` initialised to `locator.locator('#form_repeats')` — stable, because ScheduleEditForm.tsx:310 sets `id=\"form_repeats\"` on the Checkbox and line 316 pairs it with `<label htmlFor=\"form_repeats\">` reading 'Repeats', so `getByLabel('Repeats')` is the equivalent if the id ever moves. Add `async uncheckRepeats() { await this.repeatsCheckbox.uncheck(); }` with a comment recording what clearing it does: useScheduleEdit.ts:183-192 replaces the RecurConfig with `monthUtils.currentDay()` as a plain string, ScheduleEditModal.tsx:212-215 then derives `repeats` as false, and updateScheduleConditions writes that string as an `isapprox date` condition — which is exactly what makes the saved schedule a one-off. Touch nothing else in the file.",
+        "why": "Creating a one-off through the UI is otherwise unreachable from a test."
+      },
+      {
+        "path": "packages/desktop-client/e2e/page-models/schedules-page.ts",
+        "action": "edit",
+        "change": "Add two methods for reading a row menu's contents, reusing the locators `_performNthAction` already proves work: open with `getNthScheduleRow(index).getByTestId('actions').getByRole('button').click()` and scope to `this.page.getByRole('menu')` (the Menu container sets role=\"menu\" at component-library/src/Menu.tsx:161 and each item is a Button). Provide `nthScheduleMenuHasItem(index, name): Promise<boolean>` and `nthScheduleMenuItemNames(index): Promise<string[]>`, both reading the menu's buttons' accessible names and both dismissing afterwards with `await this.page.keyboard.press('Escape')` (the same dismissal the command-bar, help-menu and reports e2e tests use). Extract the two-line opener into a private `_openNthScheduleMenu(index)` that `_performNthAction` also calls; `_performNthAction`'s behaviour is otherwise unchanged.",
+        "why": "The bug is 'which items the menu offers', and no current page-model method can observe that."
+      },
+      {
+        "path": "upcoming-release-notes/hide-skip-next-date-on-one-off-schedules.md",
+        "action": "create",
+        "change": "Create with exactly: front matter `category: Bugfixes` and `authors: [Shivam-Fl]` on consecutive lines after the `---` opener, a blank line, then the single-line body `Stop the Schedules row menu offering Skip next scheduled date on a one-off schedule, where the click moved the date nowhere`, with no trailing full stop — matching desktop-data-folder-error.md and release-cut-prs.md. 123 characters, inside the 195 of the longest existing note. `validateFile` (release-notes-check.mjs:97-101) rejects any body containing a newline, so the body must stay on one line. `Bugfixes` is in categoryOrder (util.mjs:17-22) and `Shivam-Fl` passes `findNonPersonAuthors` (util.mjs:52-62).",
+        "why": "The release-notes gate expects a note; writing this one short applies finding 4's own recommendation to this ticket."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.test.mjs",
+        "action": "create",
+        "cases": [
+          "accepts a diff that only edits an existing valid note: exits 0 and prints 'Validated 1 release note(s)'",
+          "still refuses a diff that touches nothing under upcoming-release-notes: exits 1 with the '::error::No release note added or modified' line",
+          "validates an edited note, not just an added one: an M-only edit that sets authors to 'claude' exits 1 with the 'not bots or agents: claude' message — before the fix this exited 1 for the wrong reason and the note was never checked at all",
+          "still validates an added note: an added note with a two-line body exits 1 with 'body should contain exactly one line'",
+          "still validates an added note with a bot author, and one with an unknown category, each exiting 1 with its own message",
+          "every case drives the real script as a subprocess against a real temp git repo with a local bare origin, because the defect is which key the caller destructures and no unit test of selectReleaseNotePaths can observe it"
+        ]
+      },
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "cases": [
+          "the existing case 'reads an edited note as changed but not added' (line 161) is the invariant the bin's guard now rests on; leave its assertions intact and add a one-line comment above it naming bin/release-notes-check.mjs and stating that the emptiness guard there must read `changed`, not `added`"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/e2e/schedules.test.ts",
+        "action": "edit",
+        "cases": [
+          "hides 'Skip next scheduled date' on a one-off: add a schedule (Home Depot / HSBC / 25), call the new uncheckRepeats() before add(), locate the row by payee text rather than by index, open its actions menu, expect menu.getByRole('button', { name: 'Skip next scheduled date' }) to have count 0",
+          "still offers 'Skip next scheduled date' on a recurring schedule: add a second schedule leaving Repeats checked, open its menu, expect the Skip item visible",
+          "clicking Skip on the recurring schedule moves its Next date to a strictly later date than the one read before the click — assert 'later', never a fixed date",
+          "the one-off row keeps the rest of its menu: with its menu open, 'Post transaction', 'Post transaction today', 'Complete' and 'Delete' are all visible — four items, asserted by name rather than by counting the whole menu, because a due recurring row legitimately shows five"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "In the demo budget (setup screen -> 'Try the demo' -> Don't use a server) on http://localhost:3001/schedules, the actions menu of the one-off 'Internet bill' row offers Post transaction, Post transaction today, Complete and Delete, and does NOT offer 'Skip next scheduled date'.",
+        "how_to_verify": "The demo creates 'Internet bill' with a plain-string date condition (mocks/budget.ts:982-1000: `value: monthUtils.subDays(monthUtils.currentDay(), 1)` — a string, not a RecurConfig), which is what makes it one-off. Its next date is yesterday, so its status is Missed and the row is listed without expanding anything. Assert by item name, not by counting the menu.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "In the same demo budget, the actions menu of the recurring 'Phone bills' row still offers 'Skip next scheduled date', and clicking it moves that row's Next date to a date later than the one shown before the click, with no error and no toast.",
+        "how_to_verify": "'Phone bills' is created with `frequency: 'monthly'` from `currentDay()` (mocks/budget.ts:951-978), so it is recurring. Assert 'later than before' rather than a fixed date: a monthly rule started on the 31st lands on a different day depending on when QA runs.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "A completed schedule's actions menu still offers 'Restart' and still does NOT offer 'Skip next scheduled date' — existing completed-schedule behaviour is unchanged.",
+        "how_to_verify": "From the Schedules page, complete any row from its menu, click 'Show completed schedules', then open that row's menu. This AC also holds on main today, so it is a regression guard, not a fix.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-4",
+        "check": "The release-notes check exits 0 for a diff that only edits an existing valid note, instead of exiting 1 with 'No release note added'.",
+        "how_to_verify": "packages/ci-actions/bin/release-notes-check.test.mjs, case 'accepts a diff that only edits an existing valid note'. Collected by `yarn test` (lage -> @actual-app/ci-actions -> vitest) once the vitest include covers bin/**. Confirmed by hand before planning.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "The release-notes check still exits 1 when a PR touches nothing under upcoming-release-notes/, with an error message naming both adding and editing a note.",
+        "how_to_verify": "packages/ci-actions/bin/release-notes-check.test.mjs, case 'still refuses a diff that touches nothing under upcoming-release-notes'. Confirmed by hand against the patched script: exit 1 with '::error::No release note added or modified under upcoming-release-notes/.'",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "Loosening the gate does not stop the check validating notes: an added note with a multi-line body, an added note with a bot author, an added note with an unknown category, and an edited note whose authors list is rewritten to a bot name each still exit 1 with their own specific message.",
+        "how_to_verify": "The remaining four cases of packages/ci-actions/bin/release-notes-check.test.mjs. The edited-note one matters most: before this change an edit was rejected for the wrong reason and its contents were never validated at all.",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "Boot the app (yarn start), load http://localhost:3001, and choose 'Try the demo' on the setup screen. The demo is what makes both shapes available in one place: 'Phone bills' recurring, 'Internet bill' one-off.",
+      "Open Schedules. Confirm both rows are listed without expanding anything (neither is completed) and note that 'Wedding' and 'Utilities' are also present.",
+      "Open the actions menu on 'Internet bill'. 'Skip next scheduled date' must be ABSENT. The four items present must be exactly: Post transaction, Post transaction today, Complete, Delete.",
+      "Open the actions menu on 'Phone bills'. 'Skip next scheduled date' must be PRESENT. The five items present must be exactly: Post transaction, Post transaction today, Skip next scheduled date, Complete, Delete. (Five, not six — 'Restart' is hidden on any row that is not completed.)",
+      "Read 'Phone bills' Next date, click 'Skip next scheduled date', and confirm the date moved LATER than what you read, with no error and no toast. Do not assert a specific date.",
+      "Repeat step 4's open-and-read on 'Phone bills' after the skip, to confirm nothing else moved: the menu must still show those same five items.",
+      "Complete a schedule from its menu, click 'Show completed schedules', open that completed row's menu: 'Restart' must be PRESENT and 'Skip next scheduled date' ABSENT.",
+      "CI-script side: run `yarn test` and confirm packages/ci-actions/bin/release-notes-check.test.mjs is collected and passes (it fails today, on two of its cases, before the fix)."
+    ],
+    "risks": [
+      "The release-notes check is not wired to any workflow — `.github/actions/release-notes/check/action.yml` has zero callers and `gh pr checks 49` showed only ci-verify passing. This fixes a latent defect in the script and puts nothing new in CI; wiring it needs `.github/**`, a forbidden path. QA should not expect a failing or newly-passing check on this PR.",
+      "Moving the guard to `changed` also lets a rename-only diff satisfy the gate, since `R` is in `changed` but not `added`. Deliberate — a rename is a published changelog change and util.test.js:167-180 already treats `R` as changed-not-added — but it is a widening, not a pure bug fix.",
+      "`selectReleaseNotePaths` keeps returning `added` after this change although the bin no longer destructures it. It stays because util.test.js asserts it and knip's `exports` rule is off; a future knip tightening would flag it as dead.",
+      "The Schedules change removes an item from every one-off row's menu. Anyone who had learned to click Skip there was clicking a no-op, so nothing that worked is lost, but the item disappearing is a visible change to anyone who expected it.",
+      "`upcoming-release-notes/hide-skip-next-date-on-one-off-schedules.md` is a new tracked file where `validateFile` is strict about front matter, the one-line body, and human authors. 123 characters, well inside the 195 of the longest existing note.",
+      "No CI job in this repository runs Playwright (`verify.e2e` is empty and desktop-client's vitest collects only `src/**`), so the e2e cases in tests[] are executable documentation, not a gate. This is why no acceptance criterion depends on them and why AC-1..AC-3 are browser criteria instead."
+    ],
+    "out_of_scope": [
+      "Finding 1 — PR #49's missing `[AI]` prefix and filled-in body. PR #49 is merged, so no change in this repo corrects it, and the durable fix is out of reach: `scripts/agent-hooks/pr-template-blank.sh` is wired only to `mcp__github__create_pull_request` (.claude/settings.json:68-72) while the Bash PreToolUse matcher (:29-36) runs only `git-guard.sh`. The same finding has recurred on issues #28 and #38 and is still unfixed, which argues for a maintainer decision rather than another partial fix.",
+      "Finding 2 — the 442-character release-note body. Still present and still far longer than the rest, but not changed: shipped changelog copy, `validateFile` forbids newlines so the only lever is sentence choice, and the reviewer wrote 'Worth raising with the maintainer, not reworking here'. This ticket's own note is 123 chars.",
+      "Wiring `.github/actions/release-notes/check` into a CI workflow so the gate actually runs, and setting `verify.e2e` in `.sdlc/config.yml` so Playwright gates. Both are forbidden paths.",
+      "Completing a recurring schedule from the Schedules row menu. Offered there, hidden in the register (canBeCompleted inverts canBeSkipped), but unlike Skip it is not a silent no-op — it marks the whole schedule completed. A consistency difference, not this bug.",
+      "The 'Restart' action on a completed one-off. It writes the same date back, which is correct: a one-off has no later occurrence to restart onto.",
+      "Touching SelectedTransactionsButton.tsx, useTransactionRowContextActions.ts or ScheduledTransactionMenuModal.tsx. All three already gate on `scheduleIsRecurring`; the grep found no sibling caller left unguarded.",
+      "Changing `formatNotes` (util.mjs:238) to wrap or split note bodies. A changelog-rendering change affecting every published note, not this ticket's bug."
+    ],
+    "kind": "bug",
+    "confidence": 87,
+    "confidence_rationale": "Both defects were reproduced by me on current main, not taken from the reporter. The release-notes one end to end: a temp git repo with a local bare origin, a valid note committed then edited, the real script printing '::error::No release note added under upcoming-release-notes/.' and exiting 1 on a diff of exactly 'M upcoming-release-notes/seed.md'; the two-line guard change makes the same fixture print 'Validated 1 release note(s).' and exit 0, while four negative cases still exit 1 with the correct message. I also wrote the proposed bin test as a prototype, ran it under the widened vitest include (passes with the fix, fails 2 of 3 without it, so it actually pins the bug), and confirmed `lage test --filter packages/ci-actions` collects bin/**/*.test.mjs — which is what makes a verify:'test' criterion honest here. The schedule bug's server half was reproduced under vitest: getNextDateAfter returns null for a one-off date condition, so setNextDate's `newNextDate != null` guard drops the write. Deducted for: I did not run the app in a browser, so the UI half rests on reading SchedulesTable.tsx:187-196 plus QA's own report; and I did not execute Playwright, so the e2e selectors were verified by reading components, not by running the suite.",
+    "reproduced": true,
+    "evidence": [
+      "getNextDateAfter on a one-off, run under vitest against packages/loot-core/src/shared/schedules.ts: with `{op:'isapprox', field:'date', value:'2020-12-05'}` and afterDate '2020-12-05' it returned `null`; with the same condition carrying `{start:'2020-12-05', frequency:'weekly', patterns:[]}` it returned '2020-12-12'. scheduleIsRecurring returned false for the first and true for the second. QA reported 'returns the same date'; the value is null. Either way app.ts:243's guard drops the write, so the reported symptom stands and only the mechanism is corrected.",
+      "release-notes-check.mjs on an M-only diff: temp repo with a local bare origin, one valid Bugfixes note committed then rewritten. `git diff --name-status --diff-filter=AMR origin/base...HEAD -- upcoming-release-notes/` printed `M upcoming-release-notes/seed.md`; the script printed '::error::No release note added under upcoming-release-notes/.' and exited 1.",
+      "Same fixture with the proposed guard applied (reverted afterwards): printed 'Validated 1 release note(s). 🎉' and exited 0.",
+      "Four negative cases against the patched script, each on its own branch off a clean base, each exiting 1 with the right message: a diff touching no note; an added note with a two-line body ('body should contain exactly one line'); an added note with authors [claude] ('not bots or agents: claude'); an added note with category 'Nope'.",
+      "The proposed bin test, written and run as a prototype before planning: 3 tests pass with the fix applied; with the fix reverted, 2 of the 3 fail — the edit-only case reports 'No release note added' instead of 'Validated 1 release note(s)', and the edited-note case reports the same refusal instead of the bot-author error. So it fails for the right reason before the change. All prototype files, temp repos and the temporary patch were removed; `git status --porcelain` shows only the pre-existing untracked plan/.",
+      "`node .sdlc/bin/read-config.mjs verify.e2e` prints empty and `verify.unit` prints `yarn test`, which is why the e2e cases cannot back a `verify: \"test\"` criterion (objection 1). With the vitest include widened, `lage test --filter packages/ci-actions` collected bin/release-notes-check.test.mjs and ran it — which is what makes AC-4..AC-6 legitimately `verify: \"test\"`. Without the widening, `vitest --run bin/release-notes-check.test.mjs` exits 1 with 'No test files found'.",
+      "Menu item count, the v1 miscount (objection 2): SchedulesTable.tsx builds six items but `restart` is `hidden: status !== 'completed'` (line 187) and `skip` is `hidden: status === 'completed'` (line 193); useContextMenu.ts:28 filters on `!item.hidden` and Menu.tsx:161 adds no header. A due recurring row therefore renders five and a due one-off row four. Both qa_script and approach now name the items instead of counting them.",
+      "Sibling-caller grep: `scheduleIsRecurring` appears in SelectedTransactionsButton.tsx:147,156, useTransactionRowContextActions.ts:106,115 and ScheduledTransactionMenuModal.tsx:61,62, each calling it on `extractScheduleConds(s._conditions).date`. `grep -rn 'SchedulesTable' packages/` shows only schedules/index.tsx:114 passes a menu; ScheduleLink.tsx:140 passes `minimal`, which SchedulesTable.tsx:171 already turns into an empty item list.",
+      "PR-title finding: `gh pr view 49 --json title` returns a title with no `[AI]` prefix, and PR #49 is merged. The template guard is registered only under `mcp__github__create_pull_request` (.claude/settings.json:68-72). The same finding appears verbatim on issues #28 and #38.",
+      "Demo budget shapes, read from packages/loot-core/src/mocks/budget.ts: 'Phone bills' at line 951 carries `frequency: 'monthly'` from `monthUtils.currentDay()`; 'Internet bill' at line 982 carries `value: monthUtils.subDays(monthUtils.currentDay(), 1)`, a plain string. extractScheduleConds returns that string condition unchanged, and Condition.getValue() types it as 'date', so scheduleIsRecurring is false for it and true for the monthly one."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Guard inside `skipNextDate` / `setNextDate` on the server: throw when the date condition is not recurring, so every caller is protected at once.",
+        "rejected_because": "The existing `newNextDate != null && newNextDate !== nextDate` guard is correct for recur conditions that have genuinely run out of occurrences, and the server cannot distinguish 'one-off' from 'the last occurrence of a finite recur' without re-deriving a condition the caller already holds. Throwing would surface an error dialog where it currently degrades quietly, and the other three callers already filter."
+      },
+      {
+        "approach": "Gate the item on `schedule._date`: `typeof schedule._date === 'object' && schedule._date.frequency`, the test the table's own Recurring column uses at SchedulesTable.tsx:252-254.",
+        "rejected_because": "`_date` is the denormalised field; `scheduleIsRecurring(extractScheduleConds(schedule._conditions).date)` is what the other three call sites use and is the one check that runs `Condition.getValue()` and reads the condition's actual type. Using `_date` would leave four call sites on two different tests for one question, and the Recurring column's version has no null guard."
+      },
+      {
+        "approach": "Keep an acceptance criterion for the Playwright schedules suite, as AC-7 did in v1.",
+        "rejected_because": "This was the plan reviewer's first objection and it is correct: no CI job here runs Playwright, so a `verify: \"test\"` criterion citing it can only ever resolve to not_covered, and qa.md makes `verdict: pass` impossible when any AC is not_covered. Dropped rather than re-pointed, because there is nothing to re-point it at — the behaviour is genuinely observable in a browser against the demo budget."
+      },
+      {
+        "approach": "Add a unit test for SchedulesTable's menu-item construction instead of relying on browser QA.",
+        "rejected_because": "The component reads `usePayees`, `useAccounts` and a live query for statuses, so a unit test would need the redux store and a mocked query layer around a five-line boolean — and AGENTS.md asks for minimal mocking. The predicate that decides the branch, `scheduleIsRecurring`, is already covered; what is untested is the wiring, and a browser assertion on the real menu is the honest test of wiring."
+      },
+      {
+        "approach": "Cover the release-notes bug with a unit test of `selectReleaseNotePaths` alone.",
+        "rejected_because": "The parser is already correct and already tested (util.test.js:161 asserts M yields `{added: [], changed: [path]}`). The defect is the bin reading `added` where it means `changed`, which no test of the parser can observe. Confirmed by running the real script against a real fixture — that is the only level at which it reproduces."
+      },
+      {
+        "approach": "Extract the emptiness check into an exported helper in util.mjs so it can be unit-tested.",
+        "rejected_because": "An abstraction with one caller, and it still would not reach the code that is wrong: the bug is which key the caller destructures, not what a predicate returns. Driving the script as a subprocess against a temp git repo tests the thing that is actually broken, and I confirmed the prototype fails 2 of 3 cases without the fix."
+      },
+      {
+        "approach": "Split the ticket for the maintainer before planning (route_request scope_changed).",
+        "rejected_because": "Two of the four findings turn out to be non-code and are dropped, leaving two small guards in two unrelated subsystems — four touched source files, under the six-file clubbing threshold in `.sdlc/config.yml`. A split would cost a round-trip for two one-line changes."
+      }
+    ],
+    "assumptions": [
+      "The demo budget in `packages/loot-core/src/mocks/budget.ts` is unchanged on `main`: 'Internet bill' is created with a plain-string date condition (one-off, next date yesterday, status Missed) and 'Phone bills' with `frequency: 'monthly'` from `currentDay()` (recurring). Both read directly from that file at lines 951-1002.",
+      "`Shivam-Fl` remains the correct `authors` value for this repository's own release notes — it is on the `.sdlc/config.yml` allowlist and passes `findNonPersonAuthors`.",
+      "The e2e page-model methods added here keep working if someone later wires `verify.e2e` into CI; they are verified by reading the components (role=\"menu\" at component-library/src/Menu.tsx:161, `id=\"form_repeats\"` at ScheduleEditForm.tsx:310, the set-repeats reducer at useScheduleEdit.ts:183-192) but were not executed by me."
+    ],
+    "unknowns": [
+      "Whether `gh pr edit` can still correct PR #49's title and body after merge. GitHub permits editing both on a merged pull request, but no agent in this pipeline has a token that may write, so finding 1 stays dropped either way.",
+      "Whether a maintainer wants the shipped `fix-schedule-occurrence-consumption.md` note shortened after all. The reviewer named the severable clause but stopped short of asking for it, and the body is already on `main`."
+    ],
+    "residual_risks": [
+      "Neither defect was reproduced through the browser; both were reproduced against the code that produces them (getNextDateAfter under vitest, and the real check script as a subprocess against a real git fixture). The UI half of finding 1 rests on reading SchedulesTable.tsx:187-196 and QA's own report, not on a run I made. AC-1..AC-3 exist so that gap is closed by QA against the live app rather than assumed away.",
+      "The demo budget's 'Phone bills' occurrence can land on a different day depending on when QA runs (a monthly rule started on the 31st). AC-2 and qa_script step 5 are written as 'moves later' for that reason.",
+      "The release-notes check stays out of CI. Its behaviour after this change is only as good as the wiring, and the wiring is a forbidden path — so this ticket can make the gate correct, not enforceable."
+    ],
+    "mode": "committed"
+  },
+  "approved_too_high": false
 }
