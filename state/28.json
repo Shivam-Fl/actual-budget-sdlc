@@ -72,5 +72,239 @@
     "decided_at": "2026-10-03T01:52:37.584Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "debug"
+  "dispatched_stage": "debug",
+  "validated_work_order": {
+    "issue": 28,
+    "version": 1,
+    "mode": "proposal",
+    "kind": "bug",
+    "confidence": 84,
+    "reproduced": true,
+    "understanding": "Issue #28 is a catch-all of eight findings against the release-notes gate in PR #19 (merged, for #17): seven from the review, one from QA. Against the code that ships on main they fall into four groups, three of which are code defects. Two are real crashes on paths the gate must survive: validateFile renders a non-person author with a bare JSON.stringify, so a self-referential YAML anchor (`authors: &a [*a]`) throws TypeError out of the gate with exit 1, no ::error:: and no file name — precisely the failure mode the PR's AC-9 claimed to eliminate; and reportError reads upcoming-release-notes/README.md unconditionally and writes to process.env.GITHUB_STEP_SUMMARY unconditionally, so a PR that deletes the README dies with an uncaught ENOENT instead of the gate's own message. Same root cause, same function: reportError does unguarded I/O and throws rather than reporting. Two are honesty defects in the diff layer: SELECTED_STATUSES lists 'C' but the git invocation passes no copy-detection flag, so no C row is ever emitted and the two unit tests assert against an unreachable string; and the comment on -c core.quotePath=false implies git quoting is handled, which it is not — git double-quotes any path holding a quote, backslash or control character regardless of the flag, and the selector splits on tabs, so such a row is silently dropped and the branch reads as 'No release note added'. Two are not code defects and are recorded as such rather than 'fixed': the success message counts changed rather than added, which is the truthful count so the old AC-8 was wrong, and the missing [AI] PR-title prefix is a process lapse, one gh command, not a work order. The largest finding — that commit 3b7ff1a made four changes the work order did not describe — is no longer actionable now the PR is merged, since both its suggested remedies are impossible; its substantive residue is exactly the README sink, the quotePath overclaim and the unreachable C branch, all three fixed here.",
+    "root_cause": "Three distinct causes, one per defect.\n\n(1) Totality was claimed for findNonPersonAuthors but only delivered there. The function is total over YAML flow-sequence values and correctly returns a self-referential array as an offender; the call site at release-notes-check.mjs:77 then renders it with `typeof a === 'string' ? a : JSON.stringify(a)`, which throws on any structure with a cycle. An author denylist's whole job is to survive whatever a PR author writes into the front matter.\n\n(2) reportError treats its environment as guaranteed. The README is excluded from validation, so it is exactly the file a PR is most likely to delete, and it is read without a guard. GITHUB_STEP_SUMMARY is a runner-provided variable, always set inside Actions and absent on every local run, and it is passed to fs.createWriteStream without a guard. Both throw synchronously out of a function whose contract is 'print an error and exit 1'.\n\n(3) The diff layer parses a git output format that only git can read unambiguously, then documents the ambiguity away. Tab-separated --name-status requires git to quote any path it cannot emit raw; -c core.quotePath=false suppresses only the octal-escaping of non-ASCII bytes and leaves the quoting rule intact, so a path containing a quote or control character arrives as a quoted, backslash-escaped, tab-delimited row that selectReleaseNotePaths' split('\\t') shreds. Compounding it, SELECTED_STATUSES names a 'C' branch the invocation cannot produce, and its tests assert on it.",
+    "approach": "Four edits across two source files and one test file.\n\n1. A non-throwing author renderer. Add `describeAuthor(value)` to util.mjs beside sanitizeWorkflowCommandData: return the string unchanged for strings, otherwise JSON.stringify inside a try/catch, falling back to Object.prototype.toString.call(value). The `??` on the stringify result matters — JSON.stringify(undefined) returns undefined rather than throwing, and an offender rendering as the empty string would print a misleading 'authors must be...' message naming nothing. release-notes-check.mjs:77 becomes `nonPersonAuthors.map(describeAuthor)`.\n\n2. Guard both of reportError's writes. Read the README behind fs.existsSync and degrade a missing one to an empty notice; when GITHUB_STEP_SUMMARY is unset, print the error and the notice and exit 1 without writing a summary. Both preserve the existing exit-1-with-a-message contract. The step-summary guard is one line beyond the ticket's literal list — kept because it is the same defect on the adjacent line of the function already being edited.\n\n3. Make the copy branch honest by deleting it, not by enabling it. Verified that adding copy detection is actively wrong: with --find-copies-harder a byte-identical copy emits `C100` under the production --diff-filter=AMRC, `added` is derived from the status column alone, so added is empty and the gate would refuse a PR that legitimately copied a note with 'No release note added'. That same PR emits `A` and validates normally today. So 'C' comes out of SELECTED_STATUSES and --diff-filter, the copy test goes with it, and the comments crediting 'R and C' are corrected to rename-only. Rename detection needs no flag — diff.renames defaults on, confirmed: `git mv` yields R100 through the production invocation unchanged.\n\n4. Read paths with -z, and delete the quotePath flag rather than narrowing its comment. Append `-z` to the diff invocation, drop `-c core.quotePath=false` and the comment above it, and rewrite selectReleaseNotePaths to walk NUL-separated fields — each record is `status\\0path\\0`, a rename or copy record is `status\\0old\\0new\\0`, so the parser reads the status, consumes two path fields for R and C and one otherwise, and keeps the last consumed path. The '.md' and README filters move after the field walk so both lists are filtered identically.",
+    "files": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.mjs",
+        "action": "edit",
+        "change": "Three edits: (1) SELECTED_STATUSES becomes ['A','M','R'] with its comment replaced to say a rename is selected because HEAD holds the new path and that no copy status is listed because the invocation asks for no copy detection, so git reports a copy as an addition — already selected. (2) Add exported describeAuthor(value) after sanitizeWorkflowCommandData: string passthrough, otherwise JSON.stringify inside try/catch with Object.prototype.toString.call fallback, plus a doc comment on why (a YAML anchor can make a value self-referential and JSON.stringify throws on a cycle; the ?? covers values JSON.stringify renders as undefined). (3) Rewrite selectReleaseNotePaths to parse NUL-separated `git diff --name-status -z` output: walk fields with an index, skip empty fields, read status, consume two path fields for R/C and one otherwise, keep the last consumed path, then filter both added and changed by SELECTED_STATUSES.includes(status[0]) and by the .md/README test. added is derived from rows whose status is exactly 'A'. Doc comment rewritten to state the NUL contract and that both lists now share the filters. Nothing else in the file changes.",
+        "why": "Dropping 'C' removes a branch and two tests that assert against unreachable production input; -z is the only form in which git emits paths verbatim, so it fixes the quote/backslash/control-character drop instead of documenting it, and retiring quotePath deletes the overclaiming comment rather than rewording it."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.mjs",
+        "action": "edit",
+        "change": "Five edits: (1) import describeAuthor. (2) In reportError, replace the bare fs.readFileSync of README.md with a readmePath const behind fs.existsSync yielding '' when absent, and guard the summary write so an unset GITHUB_STEP_SUMMARY prints the error and notice and exits 1 instead of calling fs.createWriteStream; keep the sanitize-then-print order and exit-on-close behaviour. (3) Replace the author-rendering map with nonPersonAuthors.map(describeAuthor).join(', '), dropping the inline typeof ternary. (4) The git argument array becomes exactly 'diff','--name-status','-z','--diff-filter=AMR',`origin/${baseRef}...HEAD`,'--',`${NOTES_DIR}/`; delete the -c core.quotePath=false pair and its three-line comment, and replace the diff-filter comment (currently crediting 'R and C') with one explaining the rename-at-new-path rule and the exclusion of deletions and copies. (5) Nothing else changes: category checks, one-line-body check, existsSync guard, missing-baseRef guard and the final success message stay as they are.",
+        "why": "The two guards turn two synchronous throws inside a function whose contract is 'report and exit 1' into the gate's own message; describeAuthor closes the last path where a non-string author escapes as a stack trace; the -z switch makes the parsed path a real path rather than a quoted one."
+      },
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "change": "Three edits: (1) import describeAuthor and add a describeAuthor block covering string passthrough; int/float/null/true/empty map/nested list each rendered as their JSON form, byte-identical to the removed inline ternary; a self-referential array and a self-referential object both rendered without throwing; and undefined rendered as a non-empty string rather than ''. (2) Rewrite the selectReleaseNotePaths block so every fixture is NUL-separated, and delete the copy test outright so no C-row fixture remains in the file; keep the add, modify, rename, README/non-markdown/blank and ordering cases with existing expectations restated in NUL form, the ordering case keeping a D row to prove deletions are still filtered. (3) Replace the café test, whose name and premise ('once git is told not to quote it') no longer hold, with verbatim-path cases for a non-ASCII filename, a double quote, a literal tab and a newline, each asserted to select as both added and changed. The findNonPersonAuthors and sanitizeWorkflowCommandData blocks keep every existing case verbatim.",
+        "why": "A test asserting an unreachable input overstates coverage; a test whose name claims the flag fixed something it does not fix is the falsifiability gap. The self-referential cases make the call-site totality claim falsifiable rather than asserted."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "cases": [
+          "describeAuthor returns a plain author string unchanged",
+          "describeAuthor renders an int, a float, null and true as their JSON form, byte-identical to what the removed inline ternary produced",
+          "describeAuthor renders an empty map as {} and a nested list as [\"claude\"]",
+          "describeAuthor renders a self-referential array without throwing",
+          "describeAuthor renders a self-referential object without throwing",
+          "describeAuthor renders undefined as a non-empty string, not the empty string",
+          "selectReleaseNotePaths reads an added note as both added and changed",
+          "selectReleaseNotePaths reads an edited note as changed but not added",
+          "selectReleaseNotePaths validates the new path of a rename, not the old one",
+          "selectReleaseNotePaths does not count a rename as adding a note",
+          "selectReleaseNotePaths keeps git's reported order and separates added from the rest, filtering a deletion in the same input",
+          "selectReleaseNotePaths drops the README, non-markdown files and blank output",
+          "selectReleaseNotePaths selects a non-ASCII filename verbatim, with no quoting flag involved",
+          "selectReleaseNotePaths selects a filename containing a double quote verbatim",
+          "selectReleaseNotePaths selects a filename containing a literal tab verbatim",
+          "selectReleaseNotePaths selects a filename containing a newline verbatim"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "A note whose front matter is `authors: &a [*a]` produces a ::error:: line naming the offending file and exits 1, with no stack trace and no 'Converting circular structure to JSON' on stderr.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipe in qa_script step 3. Reproduced against main before the change: zero ::error:: lines, TypeError at release-notes-check.mjs:77."
+      },
+      {
+        "id": "AC-2",
+        "check": "A self-referential YAML map (`authors: &a [{k: *a}]`) also produces a ::error:: line and exits 1, not a stack trace — the map shape is a distinct code path from the list shape and must be falsifiable on its own.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipe in qa_script step 4. Also reproduced against main: same TypeError."
+      },
+      {
+        "id": "AC-3",
+        "check": "Deleting upcoming-release-notes/README.md and adding a note with an invalid category produces the gate's ::error:: line and exits 1, with no ENOENT stack trace.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipe in qa_script step 5. Reproduced against main: ::error:: line, then ENOENT out of reportError."
+      },
+      {
+        "id": "AC-4",
+        "check": "Deleting upcoming-release-notes/README.md and adding no note at all still produces '::error::No release note added' and exits 1 with no stack trace — the 'added.length === 0' path reaches reportError too, and is a different call site from AC-3.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipe in qa_script step 6."
+      },
+      {
+        "id": "AC-5",
+        "check": "Running the gate with GITHUB_STEP_SUMMARY unset produces the ::error:: line and exits 1 with no ERR_INVALID_ARG_TYPE stack trace.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipe in qa_script step 7 — the README must be present here or AC-3's ENOENT masks this throw. Reproduced against main once the README read was out of the way: TypeError [ERR_INVALID_ARG_TYPE] out of fs.createWriteStream."
+      },
+      {
+        "id": "AC-6",
+        "check": "A note committed as `upcoming-release-notes/has\\\"quote.md` is selected and validated: the gate prints 'Validated 1 release note(s).' and exits 0. Before this change the row arrives quoted and backslash-escaped, the selector drops it, and the gate prints '::error::No release note added'.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipe in qa_script step 8. Reproduced against main: 'No release note added', exit 1."
+      },
+      {
+        "id": "AC-7",
+        "check": "Notes whose filenames contain a literal tab and a literal newline are each selected and validated, exiting 0. Both are dropped under the tab-separated form.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipes in qa_script steps 9 and 10."
+      },
+      {
+        "id": "AC-8",
+        "check": "A note named `upcoming-release-notes/café-note.md` is selected and validated, exiting 0 — the behaviour the quotePath flag existed to provide, now provided by -z with the flag deleted.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipe in qa_script step 11."
+      },
+      {
+        "id": "AC-9",
+        "check": "A PR whose only release-note change is a byte-identical copy of an existing note is accepted: the gate prints 'Validated 1 release note(s).' and exits 0. This is the regression guard on the C decision — enabling copy detection instead of dropping 'C' would make this case emit C100 under the production --diff-filter=AMRC, leave added empty, and fail the branch with 'No release note added'.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipe in qa_script step 12. Both halves reproduced against main: no -C yields A and passes; adding --find-copies-harder yields C100."
+      },
+      {
+        "id": "AC-10",
+        "check": "A rename is still parsed and bound to its new path: adding a note and renaming seed.md in the same commit validates the new path and the added note together, printing 'Validated 2 release note(s).' and exiting 0. Separately, deleting a note alongside adding another does not pull the deleted path into validation, exiting 0 with only the added note counted.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipes in qa_script steps 13 and 14."
+      },
+      {
+        "id": "AC-11",
+        "check": "The success line reports the number of notes actually validated, not the number added: a branch that adds one note and modifies another prints 'Validated 2 release note(s).' This restates the old AC-8, whose expected string could not hold once modified notes are genuinely validated; the code at line 128 is unchanged and only the criterion is corrected.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipe in qa_script step 15."
+      },
+      {
+        "id": "AC-12",
+        "check": "The four rejection paths still reject with a ::error:: line and exit 1: an unknown category, an empty authors list, an authors list containing 'claude', and a two-line body.",
+        "verify": "test",
+        "how_to_verify": "Sandbox recipes in qa_script steps 16-19."
+      },
+      {
+        "id": "AC-13",
+        "check": "No fixture or test anywhere in the repository asserts on a C-prefixed git diff row, and no code path names a copy status: SELECTED_STATUSES reads ['A', 'M', 'R'] and --diff-filter reads AMR.",
+        "verify": "test",
+        "how_to_verify": "qa_script step 20."
+      },
+      {
+        "id": "AC-14",
+        "check": "The existing unit suite passes green and the release-notes file's case count rises above its current 23, losing exactly the one copy case and no other — every other case in findNonPersonAuthors and sanitizeWorkflowCommandData survives verbatim.",
+        "verify": "test",
+        "how_to_verify": "qa_script step 1. Baseline on main measured at 5 files / 54 tests with util.test.js contributing 23."
+      }
+    ],
+    "qa_script": [
+      "1. Unit suite. `yarn workspace @actual-app/ci-actions run test`. Baseline measured on main: 5 files / 54 tests green, util.test.js = 23. Expect green after the change with util.test.js's count higher than 23.",
+      "2. Build the sandbox once. `mkdir -p /tmp/rn28 && cd /tmp/rn28 && git init -q --bare origin.git && git clone -q origin.git work && cd work && mkdir -p upcoming-release-notes && printf 'See the docs.\\n' > upcoming-release-notes/README.md && printf -- '---\\ncategory: Maintenance\\nauthors: [Shivam-Fl]\\n---\\nseed\\n' > upcoming-release-notes/seed.md && git add -A && git -c user.email=a@b -c user.name=a commit -qm base && git branch -M base && git push -q origin base`. The base branch must NOT be named main — the repo's git guard blocks a push to main. Write every scratch file OUTSIDE the work tree; untracked files in it abort the later `git checkout` and silently invalidate the run. Every step branches off `base` and runs `BASE_REF=base GITHUB_STEP_SUMMARY=/tmp/rn28/s.md node <repo>/packages/ci-actions/bin/release-notes-check.mjs` from inside /tmp/rn28/work. Run step 1 first so a dependency failure is not mistaken for a gate failure.",
+      "3. AC-1. `git checkout -q -B qa1 base && printf -- '---\\ncategory: Bugfix\\nauthors: &a [*a]\\n---\\nselfref\\n' > upcoming-release-notes/qa-selfref.md && git add -A && git -c user.email=a@b -c user.name=a commit -qm qa1`. Expect exit 1, one ::error:: naming qa-selfref.md, and zero lines matching 'circular structure'.",
+      "4. AC-2. Same as step 3 with `authors: &a [{k: *a}]` on branch qa2. Expect the same, with no TypeError.",
+      "5. AC-3. `git checkout -q -B qa3 base && git rm -q upcoming-release-notes/README.md && printf -- '---\\ncategory: Nonsense\\nauthors: [Shivam-Fl]\\n---\\nbadcat\\n' > upcoming-release-notes/qa-badcat.md && git add -A && git -c user.email=a@b -c user.name=a commit -qm qa3`. Expect exit 1, the ::error:: about the category, and no 'ENOENT' anywhere in the output.",
+      "6. AC-4. `git checkout -q -B qa4 base && git rm -q upcoming-release-notes/README.md && git -c user.email=a@b -c user.name=a commit -qm qa4`. Expect '::error::No release note added' and exit 1 with no ENOENT.",
+      "7. AC-5. The README must be PRESENT here or AC-3's ENOENT masks this throw. `git checkout -q -B qa5 base && printf -- '---\\ncategory: Nonsense\\nauthors: [Shivam-Fl]\\n---\\nbad\\n' > upcoming-release-notes/qa-bad.md && git add -A && git -c user.email=a@b -c user.name=a commit -qm qa5`, then `env -u GITHUB_STEP_SUMMARY BASE_REF=base node <gate>`. Expect the ::error:: line and exit 1, no ERR_INVALID_ARG_TYPE.",
+      "8. AC-6. `git checkout -q -B qa6 base && printf -- '---\\ncategory: Maintenance\\nauthors: [Shivam-Fl]\\n---\\nquoted\\n' > 'upcoming-release-notes/has\"quote.md' && git add -A && git -c user.email=a@b -c user.name=a commit -qm qa6`. Expect 'Validated 1 release note(s).' and exit 0. Confirm the row with `git diff --name-status -z --diff-filter=AMR origin/base...HEAD -- upcoming-release-notes/ | cat -A` (expect an unquoted path) and, for contrast, the same command without -z (expect a quoted, escaped path).",
+      "9. AC-7a. Branch qa7: the same recipe with the filename built as `$(printf 'upcoming-release-notes/tab\\there.md')`. Expect 'Validated 1 release note(s).' and exit 0.",
+      "10. AC-7b. Branch qa8: filename `$(printf 'upcoming-release-notes/nl\\nname.md')`. Expect 'Validated 1 release note(s).' and exit 0.",
+      "11. AC-8. Branch qa9: filename `upcoming-release-notes/café-note.md`. Expect 'Validated 1 release note(s).' and exit 0.",
+      "12. AC-9. `git checkout -q -B qa10 base && cp upcoming-release-notes/seed.md upcoming-release-notes/qa-purecopy.md && git add -A && git -c user.email=a@b -c user.name=a commit -qm qa10`. Expect 'Validated 1 release note(s).' and exit 0. Confirm git emits `A` here with `git diff --name-status -z --diff-filter=AMR origin/base...HEAD -- upcoming-release-notes/ | cat -A`, and that adding --find-copies-harder to the same invocation turns it into C100 — which is why the C branch was dropped rather than enabled.",
+      "13. AC-10a. Branch qa11: `git mv upcoming-release-notes/seed.md upcoming-release-notes/moved.md` and add a valid qa-ok.md (category Maintenance, authors [Shivam-Fl], one-line body) in the same commit. Expect 'Validated 2 release note(s).' — moved.md and qa-ok.md — and exit 0. Note that a rename alone leaves `added` empty and the gate says 'No release note added'; that is the pre-existing 'a rename is not an addition' rule asserted by an existing unit test, deliberately left alone, not a regression.",
+      "14. AC-10b. Branch qa12: add a valid qa-ok.md and `git rm` seed.md in the same commit. Expect 'Validated 1 release note(s).' and exit 0 — the D row is filtered and seed.md is not validated.",
+      "15. AC-11. Branch qa13: add one valid note and edit seed.md's body in the same commit. Expect 'Validated 2 release note(s).', not 'Validated 1'.",
+      "16. AC-12a. Branch qa14 with `category: Nonsense`. Expect exit 1 and a ::error:: naming the category list.",
+      "17. AC-12b. Branch qa15 with `authors: []`. Expect exit 1 and 'empty authors list'.",
+      "18. AC-12c. Branch qa16 with `authors: [claude]`. Expect exit 1 and the 'must be GitHub usernames of people' line, with the rendered author present and not empty.",
+      "19. AC-12d. Branch qa17 with a two-line body. Expect exit 1 and 'body should contain exactly one line'.",
+      "20. AC-13. `grep -rn \"C100\\|'C'\\|\\\"C\\\"\" packages/ci-actions/src packages/ci-actions/bin`. Expect no hit naming a copy status; SELECTED_STATUSES should read ['A', 'M', 'R'] and the diff filter AMR.",
+      "21. Sanity: `git grep -n 'quotePath' packages/ci-actions` returns nothing, and `git grep -n 'split(.\\\\t.)' packages/ci-actions/src/release-notes/util.mjs` returns nothing."
+    ],
+    "residual_risks": [
+      "A branch that only renames a note is still rejected with 'No release note added', because added counts only A rows. This is pre-existing and covered by a deliberately passing unit test, so this plan leaves it; it is listed in unknowns as a separate decision, not a defect carried forward silently.",
+      "A filename holding a control character other than tab or newline now arrives at the error path as a real path. sanitizeWorkflowCommandData escapes CR and LF, so a newline cannot break the ::error:: annotation, but the raw path is still written into the log by other means. Verbatim parsing is strictly better than dropping the row, and no such filename is known to exist.",
+      "The gate still exits 1 on a stack trace if reportError's own write to GITHUB_STEP_SUMMARY fails (a full disk, for instance): the exit happens on the stream's 'close' event and there is no 'error' handler. Pre-existing, not on the ticket, and not reachable in Actions.",
+      "parseReleaseNotes in the same module still renders authors as `@${a}` with no guard, so a note with a self-referential anchor could reach the docs generator. Template interpolation of a circular array does not throw, so it degrades rather than crashes — but it is a second renderer this plan does not cover, and the gate is the only place that rejects such a note today.",
+      "The -z parser's handling of a malformed or truncated git record is defended only by the unit fixtures. QA should confirm the running gate still selects notes on a normal PR, since the failure mode of a parser bug here is a gate that refuses every PR rather than one that fails loudly."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Enable the copy branch with -C / --find-copies-harder, as the review's first suggestion for the unreachable C row offers.",
+        "rejected_because": "Verified to introduce a false failure rather than close a coverage gap. With copy detection on, a byte-identical copy emits C100 under --diff-filter=AMRC; added is derived from the status column alone, so added is empty and the gate refuses the PR with 'No release note added'. The same PR emits A and passes today. It also costs rename/copy detection across the whole diff for no security gain."
+      },
+      {
+        "approach": "Narrow the quotePath comment to what the flag actually fixes and leave the parser on tab-separated output, as the review's first suggestion for the quotePath finding offers.",
+        "rejected_because": "It documents the bug instead of removing it, and leaves a flag in the invocation whose stated purpose the repo has now got wrong twice. -z is a one-argument change to the invocation plus a rewrite of one small parser, and I verified it fixes quote, tab and newline filenames while retiring the flag outright."
+      },
+      {
+        "approach": "Make the check script testable by extracting validateFile and reportError, so each failure path gets a unit test instead of a sandbox recipe.",
+        "rejected_because": "The script is top-level and side-effecting by construction — it reads env, runs git and exits the process — and the previous PR already moved the pure logic into util.mjs for exactly this reason. Restructuring is a rewrite well beyond four findings, and the behaviours that matter (an uncaught throw reaching stderr, an exit code) are only observable end to end anyway."
+      },
+      {
+        "approach": "Wrap reportError's body in a try/catch, or install a process-level uncaughtException handler, to convert any throw in the reporting path into a clean exit 1.",
+        "rejected_because": "It hides the defect rather than fixing it: the gate would exit 1 with a correct code and a silently swallowed error, and the next unguarded I/O would be invisible instead of loudly failing a test. Two explicit guards say what they assume and why, and each is its own falsifiable criterion."
+      },
+      {
+        "approach": "Add a catch-all around the author list — JSON.stringify with a WeakSet-aware replacer, or render every offender as just its typeof.",
+        "rejected_because": "A replacer still walks the structure and still has to be reasoned about; typeof alone throws away the information the author needs to fix their note. The try/catch plus Object.prototype.toString fallback is three lines, terminates on every value I constructed (including bigint and symbol, which I also checked), and keeps the exact rendering every non-circular shape had before."
+      },
+      {
+        "approach": "Handle the self-referential case inside findNonPersonAuthors, returning a normalised string per offender instead of the raw value.",
+        "rejected_because": "findNonPersonAuthors is total and correct today, and its existing unit tests pin it to returning the raw offending values. Folding rendering into it would change a function with one caller and require all eleven existing cases rewritten, to fix a bug that is not in it."
+      },
+      {
+        "approach": "Leave the success message alone and write the old criterion as 'Validated 1 release note(s)' with the added-length recipe.",
+        "rejected_because": "That criterion is the thing that is wrong, not the code. changed.length is the count of notes the gate actually validated, which is what the sentence claims to report. This plan is the new work order, so the criterion is restated as the property (AC-11) rather than a number that shifts with the selection."
+      }
+    ],
+    "assumptions": [
+      "`git diff --name-status -z` output is stable across the git versions GitHub Actions runners ship. I exercised every record type on this machine's git and confirmed the documented layout; I did not test against a matrix of runner images. This is the main thing that would move the score downward.",
+      "diff.renames stays on by default for the runner's git, so R rows keep appearing without an explicit flag. Verified on this machine's git; a runner with diff.renames=false configured would emit A instead of R, which selects and validates identically.",
+      "Nobody imports selectReleaseNotePaths outside packages/ci-actions. Enumerated by grep across the repo: the only importers are the check script, the unit tests, and — for the two untouched exports — the docs generator.",
+      "GITHUB_STEP_SUMMARY being unset is not a production failure mode, so AC-5 is a local-run and robustness criterion rather than a CI-blocking one. GitHub always sets it for a step.",
+      "The QA finding and the review's README-ENOENT finding are the same defect reported twice, so one guard satisfies both.",
+      "The review's evidence about commit 3b7ff1a describes the merge commit's contents. That commit is not in this checkout, so I verified every runtime claim against the code on main, which is what this plan changes."
+    ],
+    "unknowns": [
+      "Whether the maintainer would rather the C branch be dropped (my choice) or the whole rename/copy story removed from the gate's stated scope. If the gate's contract is meant to be 'a branch must ADD a note', then R in SELECTED_STATUSES is also noise and the comments should say so plainly.",
+      "Whether a release note filename containing a quote, tab or newline is considered impossible by policy — which would make the quotePath finding a non-issue and -z over-engineering — or merely rare.",
+      "Whether upstream wants the gate runnable with no GITHUB_STEP_SUMMARY at all, or whether that variable should be treated as required and the local-run crash left as-is.",
+      "Whether the gate is expected to reject a branch that only renames a note. This is existing, deliberately tested behaviour and I left it alone, but the unreachable-C finding touches the same code."
+    ],
+    "debate_summary": "There was no debate. plan/critique.json is `{}` — the critic stage produced no findings at all, so I had nothing to judge, dismiss, or fold in. I judged the proposal directly and independently reproduced every runtime claim it makes rather than accepting its evidence section: all six load-bearing reproductions held (the self-referential list and map both throw TypeError at line 77 with zero ::error:: lines; the deleted README throws ENOENT on both reportError call sites; GITHUB_STEP_SUMMARY unset throws ERR_INVALID_ARG_TYPE once the README read is out of the way; a quote in a filename is dropped as 'No release note added'; the production invocation emits A for a byte-identical copy while --find-copies-harder emits C100; -z emits both the café and quote paths verbatim). I also ran the proposed NUL parser against fifteen inputs and describeAuthor against twelve values and confirmed every non-circular shape renders byte-identically to the inline ternary it replaces.\n\nWhere I corrected the proposal: (a) I rephrased the 'added' derivation to require status exactly 'A' rather than leaving it to the implementer, because my first pass at the parser mistakenly used a startsWith-style filter and put M rows into `added` — the proposal's text was right and my throwaway prototype was wrong, but the work order now states it unambiguously. (b) I tightened AC-14, whose original wording asserted a precise case-count arithmetic that does not reconcile with the test list; it now requires the count to rise above 23 with exactly the copy case removed, which is the falsifiable property. (c) AC-5's recipe needed a correction the proposal did not have: with the README deleted, AC-3's ENOENT fires first and masks the step-summary throw, so step 7 must keep the README present — I hit that confound myself and it is now written into the qa script. (d) I added a sandbox hygiene note (scratch files must live outside the work tree, or untracked files abort the later checkout and silently invalidate the run) after my own runs were invalidated that way.\n\nWhere I kept the proposal's judgement calls and why I think they are right: dropping 'C' rather than enabling copy detection is the load-bearing decision, and I verified the reviewer's own first suggestion is actively wrong — with --find-copies-harder a legitimate copy emits C100, `added` goes empty, and the gate refuses a PR that passes today. Taking -z over merely narrowing the comment is likewise correct: the flag's comment is wrong today, and -z retires the flag rather than documenting around it. I disagree with the reviewer on both of these and side with the proposer.\n\nThe honest caveat: I have no critique to weigh against any of this, so the only counterweight to the proposer is my own reproduction. It held on everything I checked, but 'the proposal's author verified it themselves and I verified it again' is weaker evidence than a genuine adversarial pass, and the proposal's own rationale concedes the same thing. The GITHUB_STEP_SUMMARY guard is scope the proposer chose and I kept it — it is the same defect on the adjacent line, but a reviewer is entitled to disagree, and AC-5 goes away with it.",
+    "confidence_rationale": "Every runtime claim in the proposal reproduced for me independently, in a clean sandbox repo with a controllable origin, not taken on the proposer's word: the self-referential list and self-referential map both throw TypeError at line 77 with zero ::error:: lines; the deleted README throws ENOENT out of reportError on both its call sites; GITHUB_STEP_SUMMARY unset throws ERR_INVALID_ARG_TYPE once the README read is out of the way; a quote in a filename emits a quoted, backslash-escaped row that the gate drops as 'No release note added'; the production invocation emits A for a byte-identical copy while --find-copies-harder emits C100, so enabling copy detection really would empty `added` and fail the PR. I also ran the proposed NUL parser against fifteen inputs and describeAuthor against twelve values, and confirmed every non-circular shape renders byte-identically to the inline ternary it replaces. The call graph, the docs-generator exclusion and the 5-file/54-test baseline (util.test.js = 23) all check out. What holds this under 90: the -z output format was exercised on this machine's git, not on the runner images Actions actually ships; the scope call on GITHUB_STEP_SUMMARY is one the maintainer may reverse, and if they do, AC-5 goes with it; and the ticket bundles eight findings whose disposition (three not-code-defects) is a judgement I agree with but cannot prove. A maintainer who wants rename support dropped entirely would change the shape of item 3.",
+    "evidence": [
+      "AC-1 reproduced against main: front matter `authors: &a [*a]` with a one-line body produced zero ::error:: lines and `TypeError: Converting circular structure to JSON` at JSON.stringify, called from release-notes-check.mjs:77:53 inside Array.map inside validateFile, exit 1.",
+      "AC-2 reproduced against main independently: `authors: &a [{k: *a}]` throws the same TypeError at the same line, confirming the map shape is a distinct path that the list case does not cover.",
+      "AC-3 reproduced against main: with README deleted and a note carrying `category: Nonsense`, the ::error:: category line, then `Error: ENOENT: no such file or directory, open 'upcoming-release-notes/README.md'` at release-notes-check.mjs:34:21 inside reportError, exit 1.",
+      "AC-5 reproduced against main only once the README read was out of the way: with the README present and an invalid category, `env -u GITHUB_STEP_SUMMARY` gives `TypeError [ERR_INVALID_ARG_TYPE]` from node:internal/fs/streams validatePath, exit 1. My first attempt at this was invalid — deleting the README let AC-3's ENOENT fire first and mask it; the qa script now keeps the README present for this step.",
+      "AC-9 verified both halves against main with the production filter: a byte-identical copy under `--diff-filter=AMRC` emits `A^@upcoming-release-notes/qa-purecopy.md^@` and the gate passes with 'Validated 1 release note(s).'; adding --find-copies-harder to the same tree emits `C100^@...seed.md^@...qa-purecopy.md`. Since added is derived from the status column alone, copy detection would empty added and fail the PR. Also confirmed the R branch is reachable today with no flag: `git mv` yields R100 through the unchanged production invocation.",
+      "AC-6 reproduced end to end against main: a note committed as `upcoming-release-notes/has\\\"quote.md` gives exit 1 with 'No release note added', and the raw row is `A^I\"upcoming-release-notes/has\\\"quote.md\"$` — quoted and backslash-escaped, so the tab-split selector drops it.",
+      "The -z fix verified on every shape: `--name-status -z` with no quotePath override emits `A^@upcoming-release-notes/has\"quote.md^@` — the café path likewise arrives unescaped. Rename records are three NUL-separated fields: `R100^@...seed.md^@...moved.md^@`.",
+      "The proposed selectReleaseNotePaths prototype run against fifteen inputs: add, modify, rename (binds new path, not added), delete, an unreachable C row, README, non-markdown, blank, quote, tab, newline, non-ASCII, a record with no trailing NUL, and multi-record output with and without a trailing NUL. All fifteen produce the intended result; the empty-field-skipping is what handles the no-trailing-NUL cases.",
+      "The proposed describeAuthor run over twelve values: string, int, float, null, true, empty map and nested list all render byte-identically to the old inline ternary; undefined, both self-referential shapes, bigint and symbol all render non-empty without throwing.",
+      "Callers enumerated: selectReleaseNotePaths, findNonPersonAuthors and sanitizeWorkflowCommandData each have exactly one production caller (release-notes-check.mjs) plus util.test.js. The docs generator imports only parseReleaseNotes and formatNotes, both untouched, so the -z input-contract change has no second consumer. The script itself is invoked only from .github/actions/release-notes/check/action.yml, which sets BASE_REF and nothing else.",
+      "Baseline measured: `yarn workspace @actual-app/ci-actions run test` is green on main at 5 files / 54 tests, with util.test.js contributing 23 — matching the proposal's claim.",
+      "Findings 1, 3 and 6 are not code defects and were checked for that claim rather than assumed. PR #19 is merged and issue #17 closed, so the work order 3b7ff1a was reviewed against can no longer be amended and the commit can no longer be split — both of finding 1's own remedies are impossible, and its four sub-items are exactly the README sink, the quotePath flag, the AMRC filter and the selectReleaseNotePaths extraction, all covered here."
+    ]
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-03T02:10:33.362Z",
+  "validated_ac_changes": []
 }
