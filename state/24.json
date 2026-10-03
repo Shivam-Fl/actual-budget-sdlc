@@ -330,7 +330,8 @@
         "detail": "The web test's new case repeats the same six-line runQuery(...) call three times to run one query against three handles, where a three-line local query(db, pattern) helper would say the same thing — and the electron test written in the same PR already uses exactly that helper shape. The asymmetry is the only thing that makes the new web case 40 lines longer than its electron twin; at 3am the reader of index.test.ts has to re-read three near-identical blocks to confirm they differ only in the handle.\n\n`packages/loot-core/src/platform/server/sqlite/index.test.ts:305`\n\nEvidence: index.test.ts:334-345, 348-359, 362-373 are three verbatim blocks differing only in db1/db2, wrapping the identical \"SELECT id FROM textstrings where REGEXP('(?<handle', string)\" with null params. index.electron.test.ts:52-58 defines `const query = (db, pattern) => runQuery(db, `SELECT id FROM textstrings where REGEXP('${pattern}', string)`, [], true);` and every call site is one line. The web copy cannot lift that helper verbatim because it passes null params rather than [] — noted in the electron file's own comment at line 50 — but it can define the same shape with null.\n\nFix: Optional. Add a local `const query = (db, pattern) => runQuery(db, `SELECT id FROM textstrings where REGEXP('${pattern}', string)`, null, true);` in the new case and call it three times, mirroring index.electron.test.ts. Not required for correctness and not worth a re-push on its own; the readability gain is real but modest."
       }
     ],
-    "pr": "27"
+    "pr": "27",
+    "filed": 29
   },
   "qa": {
     "verdict": "pass",
