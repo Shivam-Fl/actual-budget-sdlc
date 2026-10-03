@@ -728,23 +728,54 @@
     "qa": [
       {
         "id": "BUG-2",
-        "severity": "minor",
-        "area": "loot-core schedule posting message handler",
-        "title": "schedule/post-transaction is not idempotent — posting the same occurrence twice creates two transactions on the same date",
-        "expected": "Posting one occurrence twice (double-click, or two clients racing) leaves exactly one transaction for that occurrence.",
-        "actual": "Two concurrent schedule/post-transaction messages for the same schedule id and the same occurrence date create two transactions, both dated on that occurrence. Reproduced on every run of T-10.",
+        "severity": "major",
+        "area": "register — 'Post transaction today'",
+        "title": "'Post transaction today' on a later row silently discharges the earlier unpaid occurrence",
+        "expected": "Choosing 'Post transaction today' from the 10/17 row creates one transaction dated today and changes nothing else. The 10/03 occurrence — still owed, and the one actually due — stays listed and payable.",
+        "actual": "The 10/03 occurrence is consumed as well. After the action the register lists 10/31, 10/24, 10/17 and 10/10 as Upcoming and 10/03 has become a posted transaction. A user who means to pay a future occurrence early silently gives up one they were already owed, and it cannot be posted from the register afterwards.",
         "repro": [
-          "Open the preview build and start a fresh local budget.",
-          "Create an on-budget account and a weekly +100.00 schedule starting today, with the upcoming window at 30 days.",
-          "Issue two schedule/post-transaction messages with the same schedule id and the same future occurrence date, concurrently.",
-          "Query the schedule's transactions: there are two, both on that occurrence date."
+          "Open the app with no server and start a fresh budget.",
+          "Add an on-budget account named Checking.",
+          "On Schedules, set 'Change upcoming length' to 1 month.",
+          "Add a schedule named Paycheck, payee Employer, account Checking, amount 100 (use 'Make positive'), frequency Weeks, with 'Automatically add transaction' ticked.",
+          "Open the Checking register: 10/03 is Due, 10/10/10/17/10/24/10/31 are Upcoming.",
+          "Select the 10/17 Upcoming row and choose 'Post transaction today'.",
+          "Observe 10/03 is no longer a preview — it is now a posted transaction dated today."
         ],
         "evidence": [
-          "T-10-double-post.png",
-          "test-results/schedules-hostile-T-10-pos-2bea6-ansactions-on-the-same-date-chromium/trace.zip",
-          "test-results/schedules-hostile-T-10-pos-2bea6-ansactions-on-the-same-date-chromium/test-failed-1.png"
+          "qa-evidence/T-6-post-today-side-effect.png",
+          "qa-evidence/T-6-register.json",
+          "qa-evidence/test-results/occurrence-posting-T-6-Pos-df1f0-er-unpaid-occurrence-listed-chromium/trace.zip",
+          "qa-evidence/test-results/occurrence-posting-T-6-Pos-df1f0-er-unpaid-occurrence-listed-chromium/video.webm"
         ],
-        "suspected_cause": "postTransactionForSchedule() calls addTransactions() unconditionally; there is no check for an existing transaction carrying the same schedule_occurrence stamp. Judged pre-existing on the source, not on a run: the parent commit's postTransactionForSchedule (packages/loot-core/src/server/schedules/app.ts at 7d50968) has the same unconditional addTransactions and no guard, so double-posting a row produced two transactions before this PR too. This PR does not make it worse — after the first post next_date has already moved to the occurrence, so the second call's advance is a no-op.",
+        "suspected_cause": "Two things unchanged by this PR combine. (1) In postTransactionForSchedule, `today` still stamps schedule_occurrence with schedule.next_date rather than the occurrence the user acted on — the diff leaves `const occurrence = today ? schedule.next_date : (date ?? schedule.next_date)` exactly as the comment describes, because paying today is meant to discharge next_date early. (2) computeSchedulePreviewTransactions keeps the pre-existing `dates.shift()` that fires when status === 'paid'; that status is computed by getHasTransactionsQuery from next_date alone, so the head is dropped even though the occurrence the user named was a later one. The PR's new unpaidDates filter then cannot restore it, because the transaction carrying the 10/03 stamp has already been written. Fixing it means either stamping the occurrence the user selected on the `today` path too, or having the shift account for which occurrence was actually paid.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      },
+      {
+        "id": "BUG-3",
+        "severity": "major",
+        "area": "register — 'Skip next scheduled date'",
+        "title": "'Skip next scheduled date' skips the earliest occurrence, not the row the user selected",
+        "expected": "Choosing 'Skip next scheduled date' from the 10/17 row drops 10/17 from the register and leaves the earlier, still-unpaid 10/03 occurrence alone.",
+        "actual": "The action advances next_date unconditionally, so it skips 10/03 — the occurrence the user never named — and leaves 10/17 listed. The register still shows 10/31, 10/24, 10/17 and 10/10 as Upcoming, with next_date moved from 2026-10-03 to 2026-10-10. The menu reads 'Skip next scheduled date' and is offered on every preview row, so a user selecting a specific row is given no indication that a different one is what gets skipped.",
+        "repro": [
+          "Open the app with no server and start a fresh budget.",
+          "Add an on-budget account named Checking.",
+          "On Schedules, set 'Change upcoming length' to 1 month.",
+          "Add a schedule named Paycheck, payee Employer, account Checking, amount 100, frequency Weeks, with 'Automatically add transaction' ticked.",
+          "Open the Checking register: 10/03 is Due, 10/10/10/17/10/24/10/31 are Upcoming.",
+          "Select the 10/17 Upcoming row and choose 'Skip next scheduled date'.",
+          "Observe 10/17 is still listed and 10/03 has been dropped instead."
+        ],
+        "evidence": [
+          "qa-evidence/T-11-skip-from-later-row.png",
+          "qa-evidence/T-11-register-after-skip.json",
+          "qa-evidence/T-11-schedule-after-skip.json",
+          "qa-evidence/test-results/edge-cases-T-11-Skip-next--805ae-s-the-row-the-user-acted-on-chromium/trace.zip",
+          "qa-evidence/test-results/edge-cases-T-11-Skip-next--805ae-s-the-row-the-user-acted-on-chromium/video.webm"
+        ],
+        "suspected_cause": "onScheduleAction's 'skip' branch parses the preview id with parsePreviewId but then discards the date, sending a bare `{ id: scheduleId }` — it did the same before this PR, only with `id.split('/')[1]`. skipNextDate({ id }) is byte-for-byte unchanged on this head and calls setNextDate({ id, advance: true }), which advances next_date unconditionally. Threading the parsed date through, the way the 'post-transaction' branch now does, would let the handler skip the occurrence that was actually selected. Left alone here: it is outside this PR's scope and the same fix shape as BUG-2's.",
         "introduced_by_pr": false,
         "reproducible": "always"
       }
