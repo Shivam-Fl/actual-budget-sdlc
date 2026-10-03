@@ -6,11 +6,19 @@ import { ConfigurationPage } from './page-models/configuration-page';
 /**
  * Console output Radix emits when `Dialog.Content` has no title/description
  * backing its `aria-labelledby` / `aria-describedby`. Both alternatives are
- * anchored to Radix's own wording, so unrelated app output that merely mentions
- * an attribute name does not fail the test.
+ * transcribed from `@radix-ui/react-dialog@1.1.15`
+ * (dist/index.mjs:288 and :304) and each `.` below stands for a backtick, so
+ * unrelated app output that merely mentions an attribute name does not fail the
+ * test:
+ *
+ *   `DialogContent` requires a `DialogTitle` for the component to be accessible
+ *   for screen reader users. […]
+ *
+ *   Warning: Missing `Description` or `aria-describedby={undefined}` for
+ *   {DialogContent}.
  */
 const dialogAccessibilityWarning =
-  /DialogContent requires a .DialogTitle|Missing .Description. or .aria-describedby/;
+  /DialogContent. requires a .DialogTitle|Missing .Description. or .aria-describedby/;
 
 /** How long to let the console channel drain when no dialog warning arrives. */
 const CONSOLE_SETTLE_MS = 1000;
@@ -57,7 +65,7 @@ test.describe('Command bar', () => {
     // Attach the listener after the budget has loaded so we only capture what
     // the palette open itself produces.
     const messages: string[] = [];
-    let settleMatch: (() => void) | undefined;
+    let settleMatch: () => void;
     const firstDialogWarning = new Promise<void>(resolve => {
       settleMatch = resolve;
     });
@@ -66,7 +74,7 @@ test.describe('Command bar', () => {
       const text = message.text();
       if (!dialogAccessibilityWarning.test(text)) return;
       messages.push(text);
-      settleMatch?.();
+      settleMatch();
     });
 
     await page.keyboard.press('ControlOrMeta+k');
