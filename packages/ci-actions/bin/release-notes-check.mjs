@@ -7,6 +7,9 @@ import matter from 'gray-matter';
 import {
   categoryAutocorrections,
   categoryOrder,
+  findNonPersonAuthors,
+  sanitizeWorkflowCommandData,
+  selectReleaseNotePaths,
 } from '../src/release-notes/util.mjs';
 
 const execFile = promisify(childProcess.execFile);
@@ -22,13 +25,17 @@ if (!baseRef) {
 }
 
 function reportError(message) {
-  console.log(`::error::${message}`);
+  console.log(`::error::${sanitizeWorkflowCommandData(message)}`);
 
-  process.stdout.write('::notice::');
-  fs.createReadStream(`${NOTES_DIR}/README.md`).pipe(process.stdout);
+  // The README is a tracked file any PR author can rewrite, and it is excluded
+  // from validation below, so its bytes are never checked. Escaping the whole
+  // file collapses it onto this single notice line: piping it raw would let a
+  // PR put live `::add-mask::` or `::notice::` lines in this job's log.
+  const readme = fs.readFileSync(`${NOTES_DIR}/README.md`, 'utf-8');
+  console.log(`::notice::${sanitizeWorkflowCommandData(readme)}`);
 
-  fs.createReadStream(`${NOTES_DIR}/README.md`)
-    .pipe(fs.createWriteStream(process.env.GITHUB_STEP_SUMMARY))
+  fs.createWriteStream(process.env.GITHUB_STEP_SUMMARY)
+    .end(readme)
     .on('close', () => {
       process.exit(1);
     });
@@ -59,6 +66,19 @@ function validateFile(path) {
     reportError(`Release note ${path} authors should be a list.`);
     return false;
   }
+  if (data.authors.length === 0) {
+    reportError(`Release note ${path} has an empty authors list.`);
+    return false;
+  }
+  const nonPersonAuthors = findNonPersonAuthors(data.authors);
+  if (nonPersonAuthors.length > 0) {
+    reportError(
+      `Release note ${path} authors must be GitHub usernames of people, not bots or agents: ${nonPersonAuthors
+        .map(a => (typeof a === 'string' ? a : JSON.stringify(a)))
+        .join(', ')}.`,
+    );
+    return false;
+  }
 
   const trimmedContent = content.trim();
   if (!trimmedContent || trimmedContent.includes('\n')) {
@@ -72,18 +92,21 @@ function validateFile(path) {
 void (async () => {
   await execFile('git', ['fetch', 'origin', baseRef]);
   const { stdout } = await execFile('git', [
+    // Without this git octal-escapes any non-ASCII byte in a path and wraps it
+    // in quotes, so a note whose filename is not pure ASCII silently fails the
+    // `.md` test below and reads as "No release note added".
+    '-c',
+    'core.quotePath=false',
     'diff',
-    '--name-only',
-    '--diff-filter=A',
+    '--name-status',
+    // R and C matter as much as M: a note can be renamed or copied to a fresh
+    // filename and reach readers with a bot in its authors list either way.
+    '--diff-filter=AMRC',
     `origin/${baseRef}...HEAD`,
     '--',
     `${NOTES_DIR}/`,
   ]);
-  const added = stdout
-    .split('\n')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .filter(p => p.endsWith('.md') && p !== `${NOTES_DIR}/README.md`);
+  const { added, changed } = selectReleaseNotePaths(stdout, NOTES_DIR);
 
   if (added.length === 0) {
     reportError(
@@ -92,7 +115,7 @@ void (async () => {
     return;
   }
 
-  for (const path of added) {
+  for (const path of changed) {
     if (!fs.existsSync(path)) {
       reportError(`Release note ${path} was added but does not exist on HEAD.`);
       return;
@@ -102,5 +125,5 @@ void (async () => {
     }
   }
 
-  console.log(`Validated ${added.length} release note(s). \u{1f389}`);
+  console.log(`Validated ${changed.length} release note(s). \u{1f389}`);
 })();

@@ -252,9 +252,11 @@ describe('Web sqlite', () => {
       );
     }
 
-    // Patterns used by no other case in this file, and the dedupe set below is
-    // scoped to this database handle, so the count starts from an unreported
-    // pattern regardless of which tests ran before this one.
+    // Patterns used by no other case in this file, so the count starts from an
+    // unreported pattern. That each is reported exactly once is a statement
+    // about this handle's rows, not about the lifetime of the dedupe set — the
+    // Set lives in the closure createRegexp returns in ./index.ts, and the test
+    // below is what pins that lifetime.
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => null);
     const invalidRegexLogs = () =>
       consoleSpy.mock.calls.filter(
@@ -293,6 +295,71 @@ describe('Web sqlite', () => {
         true,
       ).length,
     ).toBe(300);
+    expect(invalidRegexLogs()).toBe(2);
+
+    consoleSpy.mockRestore();
+  });
+
+  it('should report an unparseable pattern once per database handle, not once per process', async () => {
+    // The assertion above cannot tell a Set scoped to createRegexp()'s closure
+    // from one at module scope: every pattern it uses is unique to this file,
+    // so both implementations report the same number of lines. Two handles
+    // reporting the same pattern is what separates them — a process-wide Set
+    // silences the second handle and the count stays at 1.
+    const seed = db => {
+      execQuery(db, initSQL);
+      for (const id of ['1', '2', '3']) {
+        runQuery(
+          db,
+          `INSERT INTO textstrings (id, string) VALUES ('id${id}', '#mortgage note')`,
+        );
+      }
+    };
+
+    const db1 = await openDatabase();
+    seed(db1);
+    const db2 = await openDatabase();
+    seed(db2);
+
+    // A pattern used by no other case in this file, so the count starts from
+    // zero regardless of which tests ran before this one.
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => null);
+    const invalidRegexLogs = () =>
+      consoleSpy.mock.calls.filter(
+        call => call[0] === 'invalid regexp in sqlite REGEXP',
+      ).length;
+
+    expect(
+      runQuery(
+        db1,
+        "SELECT id FROM textstrings where REGEXP('(?<handle', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
+    expect(invalidRegexLogs()).toBe(1);
+
+    // The same pattern over a second handle in the same process is reported
+    // again: the dedupe set belongs to the handle, not the process.
+    expect(
+      runQuery(
+        db2,
+        "SELECT id FROM textstrings where REGEXP('(?<handle', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
+    expect(invalidRegexLogs()).toBe(2);
+
+    // And each handle still dedupes on its own afterwards.
+    expect(
+      runQuery(
+        db1,
+        "SELECT id FROM textstrings where REGEXP('(?<handle', string)",
+        null,
+        true,
+      ),
+    ).toEqual([]);
     expect(invalidRegexLogs()).toBe(2);
 
     consoleSpy.mockRestore();
