@@ -79,7 +79,7 @@
         ],
         "kind": "bug",
         "risk": "Money and date arithmetic. This changes what next_date means for two user-facing actions and which occurrence a written transaction is stamped with. Stamping the wrong occurrence un-pays an occurrence the user already paid; skipping the wrong occurrence silently drops money they were owed. The three pre-existing release notes for scheduled-transaction posting describe behaviour this change must not contradict — re-read them before deciding the fix shape.",
-        "issue": null
+        "issue": 43
       },
       {
         "title": "Upcoming rows stop disappearing when schedule data refreshes",
@@ -125,6 +125,7 @@
     "deferred": []
   },
   "children": [
-    42
+    42,
+    43
   ]
 }
