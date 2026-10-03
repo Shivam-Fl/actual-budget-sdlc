@@ -396,5 +396,30 @@
       }
     ],
     "pr": "60"
-  }
+  },
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 1,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6",
+      "AC-7",
+      "AC-8",
+      "AC-9"
+    ],
+    "sha": "ee72ac4d545e99d19af9bd66aae188c5c73db343",
+    "run_id": "37156532156",
+    "work_order_version": 1,
+    "at": "2026-10-03T22:50:57.668Z"
+  },
+  "qa_open_bugs": [
+    {
+      "id": "BUG-1",
+      "title": "Dialog-warning probe exercises only one of the two filter alternatives, so it cannot catch a break in the arm dbcdcee actually shipped broken"
+    }
+  ]
 }
