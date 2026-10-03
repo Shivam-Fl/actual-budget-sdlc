@@ -47,5 +47,7 @@
     "gates": {},
     "councils": {},
     "decided_at": "2026-10-03T10:54:16.839Z"
-  }
+  },
+  "stopped_at": null,
+  "dispatched_stage": "maintainer"
 }
