@@ -16,6 +16,7 @@ import {
   indexPostedScheduleTransactions,
   isCustomUpcomingLength,
   isScheduleOccurrencePosted,
+  matchPostedScheduleOccurrences,
   UPCOMING_LENGTH_PRESET_LABELS,
   UPCOMING_LENGTH_PRESET_OPTIONS,
   UPCOMING_LENGTH_PRESET_VALUES,
@@ -24,6 +25,7 @@ import type {
   PostedScheduleTransaction,
   ScheduleOccurrenceMatchInput,
   ScheduleStatuses,
+  ScheduleStatusType,
 } from './schedules';
 
 describe('schedules', () => {
@@ -514,6 +516,7 @@ describe('schedules', () => {
       schedule: ScheduleEntity,
       statuses: ScheduleStatuses,
       posted?: PostedScheduleTransaction[],
+      upcomingLength = '30-day',
     ) {
       const postedTransactionsBySchedule = new Map();
       if (posted) {
@@ -529,7 +532,7 @@ describe('schedules', () => {
       return computeSchedulePreviewTransactions(
         [schedule],
         statuses,
-        '30-day',
+        upcomingLength,
         undefined,
         postedTransactionsBySchedule,
       )
@@ -679,6 +682,410 @@ describe('schedules', () => {
         OCCURRENCES[2],
         OCCURRENCES[3],
         OCCURRENCES[4],
+      ]);
+    });
+
+    // `makeSchedule` above uses `posts_transaction: true` with `op: 'is'`, and
+    // both of those make `getScheduleOccurrenceMatchStartDate` return the
+    // occurrence date exactly. The match window therefore cannot overlap and
+    // the shipped suite never reached the 2-day lookback that causes the bug.
+    // These cases are driven through the schedule shape a person creates by
+    // hand: recurring, posting nothing itself, matching its date with
+    // `isapprox`.
+    function makeManualRecurringSchedule({
+      frequency,
+      interval = 1,
+    }: {
+      frequency: 'daily' | 'weekly';
+      interval?: number;
+    }): ScheduleEntity {
+      return makeSchedule({
+        posts_transaction: false,
+        _conditions: [
+          {
+            field: 'date',
+            op: 'isapprox',
+            value: {
+              start: '2017-01-02',
+              frequency,
+              interval,
+              patterns: [],
+            },
+          },
+        ],
+      });
+    }
+
+    // The app's default upcoming length, which is what the register shows. A
+    // schedule whose `next_date` is 2017-01-02 while `currentDay()` is
+    // 2017-01-01 previews seven days of it, 2017-01-02 through 2017-01-08.
+    const DEFAULT_UPCOMING_LENGTH = '7-day';
+
+    // A daily schedule is the densest case: occurrences one day apart, and a
+    // 2-day lookback wide enough that one transaction's window covers three of
+    // them.
+    const DAILY_OCCURRENCES = [
+      '2017-01-02',
+      '2017-01-03',
+      '2017-01-04',
+      '2017-01-05',
+      '2017-01-06',
+      '2017-01-07',
+      '2017-01-08',
+    ];
+
+    const EVERY_OTHER_DAY_OCCURRENCES = [
+      '2017-01-02',
+      '2017-01-04',
+      '2017-01-06',
+      '2017-01-08',
+    ];
+
+    function manualPreviewDates(
+      schedule: ScheduleEntity,
+      status: ScheduleStatusType,
+      posted?: PostedScheduleTransaction[],
+      upcomingLength = DEFAULT_UPCOMING_LENGTH,
+    ) {
+      return previewDates(
+        schedule,
+        new Map([[schedule.id, status]]),
+        posted,
+        upcomingLength,
+      );
+    }
+
+    function manualPayment(
+      schedule: ScheduleEntity,
+      date: string,
+    ): PostedScheduleTransaction {
+      return { schedule: schedule.id, date, schedule_occurrence: null };
+    }
+
+    it('a daily manual schedule with one payment on next_date drops exactly that row', () => {
+      const schedule = makeManualRecurringSchedule({ frequency: 'daily' });
+
+      expect(manualPreviewDates(schedule, 'due')).toEqual(DAILY_OCCURRENCES);
+      expect(
+        manualPreviewDates(schedule, 'due', [
+          manualPayment(schedule, '2017-01-02'),
+        ]),
+      ).toEqual([
+        '2017-01-03',
+        '2017-01-04',
+        '2017-01-05',
+        '2017-01-06',
+        '2017-01-07',
+        '2017-01-08',
+      ]);
+    });
+
+    it('a daily manual schedule with one payment on a later occurrence drops that occurrence and next_date', () => {
+      // Two rows, and both are nameable: next_date goes to the schedule's own
+      // Paid status, the occurrence to the payment it was actually dated for.
+      const schedule = makeManualRecurringSchedule({ frequency: 'daily' });
+
+      expect(
+        manualPreviewDates(schedule, 'paid', [
+          manualPayment(schedule, '2017-01-06'),
+        ]),
+      ).toEqual([
+        '2017-01-03',
+        '2017-01-04',
+        '2017-01-05',
+        '2017-01-07',
+        '2017-01-08',
+      ]);
+    });
+
+    it('drops exactly one row on a daily manual schedule when the status is due', () => {
+      // The counterpart of the case above with no coarse claim to reconcile:
+      // `paidByStatusDate` is undefined, so the head stays listed.
+      const schedule = makeManualRecurringSchedule({ frequency: 'daily' });
+
+      expect(
+        manualPreviewDates(schedule, 'due', [
+          manualPayment(schedule, '2017-01-06'),
+        ]),
+      ).toEqual([
+        '2017-01-02',
+        '2017-01-03',
+        '2017-01-04',
+        '2017-01-05',
+        '2017-01-07',
+        '2017-01-08',
+      ]);
+    });
+
+    it('two payments on a daily manual schedule drop exactly three rows', () => {
+      const schedule = makeManualRecurringSchedule({ frequency: 'daily' });
+
+      expect(
+        manualPreviewDates(schedule, 'paid', [
+          manualPayment(schedule, '2017-01-04'),
+          manualPayment(schedule, '2017-01-06'),
+        ]),
+      ).toEqual(['2017-01-03', '2017-01-05', '2017-01-07', '2017-01-08']);
+    });
+
+    it('holds the same one-row rule on an every-other-day manual schedule', () => {
+      const schedule = makeManualRecurringSchedule({
+        frequency: 'daily',
+        interval: 2,
+      });
+
+      expect(manualPreviewDates(schedule, 'due')).toEqual(
+        EVERY_OTHER_DAY_OCCURRENCES,
+      );
+
+      expect(
+        manualPreviewDates(schedule, 'due', [
+          manualPayment(schedule, '2017-01-02'),
+        ]),
+      ).toEqual(['2017-01-04', '2017-01-06', '2017-01-08']);
+
+      expect(
+        manualPreviewDates(schedule, 'paid', [
+          manualPayment(schedule, '2017-01-06'),
+        ]),
+      ).toEqual(['2017-01-04', '2017-01-08']);
+    });
+
+    it('never drops an occurrence no transaction can be named for', () => {
+      // The invariant, swept over every occurrence date, both statuses and
+      // single and double payments: no occurrence disappears unless a distinct
+      // transaction can be named for it (or it is the head the status shift
+      // consumed, which no transaction is asked to explain).
+      const schedule = makeManualRecurringSchedule({ frequency: 'daily' });
+
+      function removedOccurrences(
+        status: ScheduleStatusType,
+        paymentDates: string[],
+      ) {
+        const preview = manualPreviewDates(
+          schedule,
+          status,
+          paymentDates.map(date => manualPayment(schedule, date)),
+        );
+        return DAILY_OCCURRENCES.filter(date => !preview.includes(date));
+      }
+
+      function eachRemovedHasItsOwnTransaction(
+        removed: string[],
+        transactions: PostedScheduleTransaction[],
+        isShiftedHead: (date: string) => boolean,
+      ) {
+        function assign(
+          occurrences: string[],
+          available: PostedScheduleTransaction[],
+        ): boolean {
+          if (occurrences.length === 0) {
+            return true;
+          }
+          const [occurrence, ...rest] = occurrences;
+          return available.some(
+            (tx, index) =>
+              tx.date >=
+                getScheduleOccurrenceMatchStartDate(schedule, occurrence) &&
+              tx.date <= occurrence &&
+              assign(
+                rest,
+                available.filter((_, i) => i !== index),
+              ),
+          );
+        }
+
+        return assign(
+          removed.filter(date => !isShiftedHead(date)),
+          transactions,
+        );
+      }
+
+      for (const status of ['due', 'paid'] as const) {
+        for (const first of DAILY_OCCURRENCES) {
+          for (const second of ['', ...DAILY_OCCURRENCES]) {
+            if (second && second <= first) {
+              continue;
+            }
+
+            const paymentDates = second ? [first, second] : [first];
+            const removed = removedOccurrences(status, paymentDates);
+
+            // The bound: one row per payment, plus the shift when paid.
+            expect(removed.length).toBeLessThanOrEqual(
+              paymentDates.length + (status === 'paid' ? 1 : 0),
+            );
+            // And the property behind it, asserted independently of how the
+            // matcher gets there: a system of distinct representatives exists.
+            expect(
+              eachRemovedHasItsOwnTransaction(
+                removed,
+                paymentDates.map(date => manualPayment(schedule, date)),
+                date => status === 'paid' && date === schedule.next_date,
+              ),
+            ).toBe(true);
+          }
+        }
+      }
+
+      // Spot checks with exact sets, so the bound alone cannot carry the case.
+      expect(removedOccurrences('due', ['2017-01-02'])).toEqual(['2017-01-02']);
+      expect(removedOccurrences('paid', ['2017-01-04'])).toEqual([
+        '2017-01-02',
+        '2017-01-04',
+      ]);
+      expect(removedOccurrences('paid', ['2017-01-04', '2017-01-06'])).toEqual([
+        '2017-01-02',
+        '2017-01-04',
+        '2017-01-06',
+      ]);
+    });
+
+    it('an early payment still discharges the occurrence it was made for', () => {
+      // A payment made on the Saturday before the following Monday: it cannot
+      // be spent on the head, whose window ends 2017-01-02, so it is free to
+      // discharge the Monday it was made for.
+      const schedule = makeManualRecurringSchedule({ frequency: 'weekly' });
+      const paymentDate = '2017-01-07';
+
+      expect(
+        getScheduleOccurrenceMatchStartDate(schedule, OCCURRENCES[0]),
+      ).toBe('2016-12-31');
+      expect(paymentDate > OCCURRENCES[0]).toBe(true);
+
+      expect(
+        previewDates(schedule, new Map([[schedule.id, 'paid']]), [
+          manualPayment(schedule, paymentDate),
+        ]),
+      ).toEqual(['2017-01-16', '2017-01-23', '2017-01-30']);
+    });
+
+    it('derives the paid status from the query rather than asserting it', () => {
+      // A literal 'paid' with no query evidence would let the case pass by
+      // spending the payment on the head. The status query is what the rule
+      // actually runs, so the fixture transaction is checked against it here.
+      const schedule = makeManualRecurringSchedule({ frequency: 'weekly' });
+      const [{ $or: perSchedule }] = getHasTransactionsQuery([
+        schedule,
+      ]).serialize().filterExpressions as [
+        { $or: Array<{ $and: { $or: unknown[] } }> },
+      ];
+      const [, fallback] = perSchedule[0].$and.$or as [
+        unknown,
+        { $and: [{ schedule_occurrence: null }, { date: { $gte: string } }] },
+      ];
+
+      expect(fallback.$and[1].date.$gte).toBe('2016-12-31');
+      expect('2017-01-07' >= fallback.$and[1].date.$gte).toBe(true);
+
+      expect(
+        previewDates(schedule, new Map([[schedule.id, 'paid']]), [
+          manualPayment(schedule, '2017-01-07'),
+        ]),
+      ).toEqual(['2017-01-16', '2017-01-23', '2017-01-30']);
+    });
+
+    it('a transaction too early to be linked discharges nothing', () => {
+      // Two different fixtures on purpose. Three days early is outside the
+      // linking rule's own window, so the status the rule produces is 'due' and
+      // nothing moves — the browser-observable boundary. Forcing 'paid' models
+      // a status query reporting paid for an unrelated reason, which is the
+      // matcher-level boundary: the head goes to the shift, and the Monday the
+      // payment was three days early for stays listed, because the lookback is
+      // two days.
+      const schedule = makeManualRecurringSchedule({ frequency: 'weekly' });
+
+      expect(
+        previewDates(schedule, new Map([[schedule.id, 'due']]), [
+          manualPayment(schedule, '2017-01-06'),
+        ]),
+      ).toEqual(OCCURRENCES);
+
+      expect(
+        previewDates(schedule, new Map([[schedule.id, 'paid']]), [
+          manualPayment(schedule, '2017-01-06'),
+        ]),
+      ).toEqual(['2017-01-09', '2017-01-16', '2017-01-23', '2017-01-30']);
+    });
+
+    it.each([
+      ['op is', false],
+      ['auto-posted', true],
+    ])('a schedule with %s is unaffected', (name, postsTransaction) => {
+      // Both shapes collapse the window to the occurrence date, so the
+      // one-to-one rule is a no-op for them and today's behaviour must
+      // stand. `custom_upcoming_length` widens the window to three
+      // occurrences: D, D+7 and D+14.
+      const schedule = makeSchedule({
+        next_date: '2017-01-01',
+        custom_upcoming_length: '14',
+        posts_transaction: postsTransaction,
+        _conditions: [
+          {
+            field: 'date',
+            op: 'is',
+            value: { start: '2017-01-01', frequency: 'weekly', patterns: [] },
+          },
+        ],
+      });
+
+      expect(manualPreviewDates(schedule, 'due')).toEqual([
+        '2017-01-01',
+        '2017-01-08',
+        '2017-01-15',
+      ]);
+
+      expect(
+        manualPreviewDates(schedule, 'paid', [
+          manualPayment(schedule, '2017-01-08'),
+        ]),
+      ).toEqual(['2017-01-15']);
+
+      expect(
+        manualPreviewDates(schedule, 'paid', [
+          manualPayment(schedule, '2017-01-07'),
+        ]),
+      ).toEqual(['2017-01-08', '2017-01-15']);
+    });
+
+    it('the head still drops when the status is paid and nothing can explain it', () => {
+      // The shift is not the bug. It is `getHasTransactionsQuery`'s wider
+      // fallback that the two-sided match deliberately does not reproduce, and
+      // it must not be narrowed away to tidy the overlap up.
+      const schedule = makeSchedule();
+
+      expect(
+        previewDates(schedule, new Map([[schedule.id, 'paid']]), []),
+      ).toEqual(OCCURRENCES.slice(1));
+
+      expect(
+        previewDates(schedule, new Map([[schedule.id, 'paid']]), [
+          manualPayment(schedule, '2017-02-15'),
+        ]),
+      ).toEqual(OCCURRENCES.slice(1));
+    });
+
+    it('the matcher does not mutate its inputs', () => {
+      const schedule = makeManualRecurringSchedule({ frequency: 'daily' });
+      const occurrenceDates = Object.freeze([
+        '2017-01-04',
+        '2017-01-02',
+      ]) as unknown as string[];
+      const postedTransactions = Object.freeze([
+        { schedule: 'sched-1', date: '2017-01-04' },
+      ]) as PostedScheduleTransaction[];
+
+      expect(
+        matchPostedScheduleOccurrences({
+          schedule,
+          scheduleId: 'sched-1',
+          occurrenceDates,
+          postedTransactions,
+        }),
+      ).toEqual(new Set(['2017-01-04']));
+      expect(occurrenceDates).toEqual(['2017-01-04', '2017-01-02']);
+      expect(postedTransactions).toEqual([
+        { schedule: 'sched-1', date: '2017-01-04' },
       ]);
     });
   });
