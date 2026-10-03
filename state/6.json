@@ -603,5 +603,28 @@
       }
     ],
     "pr": "15"
-  }
+  },
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 1,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6",
+      "AC-7"
+    ],
+    "sha": "2da2a51a98012418c4729347252f1e7cfffcf4fe",
+    "run_id": "37092825457",
+    "work_order_version": 1,
+    "at": "2026-10-03T04:44:49.914Z"
+  },
+  "qa_open_bugs": [
+    {
+      "id": "BUG-1",
+      "title": "Posting a later occurrence silently consumes every earlier unpaid occurrence, and those payments become unpostable"
+    }
+  ]
 }
