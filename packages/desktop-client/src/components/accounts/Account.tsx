@@ -21,6 +21,7 @@ import type { Query } from '@actual-app/core/shared/query';
 import {
   makeAsNonChildTransactions,
   makeChild,
+  parsePreviewId,
   ungroupTransaction,
   ungroupTransactions,
 } from '@actual-app/core/shared/transactions';
@@ -1558,29 +1559,34 @@ class AccountInternal extends PureComponent<
     name: 'skip' | 'post-transaction' | 'post-transaction-today' | 'complete',
     ids: TransactionEntity['id'][],
   ) => {
-    const scheduleIds = ids.map(id => id.split('/')[1]);
+    const schedules = ids.map(id => parsePreviewId(id));
 
     switch (name) {
       case 'post-transaction':
-        for (const id of scheduleIds) {
-          await send('schedule/post-transaction', { id });
+        for (const { scheduleId, date } of schedules) {
+          await send('schedule/post-transaction', { id: scheduleId, date });
         }
         void this.refetchTransactions();
         break;
       case 'post-transaction-today':
-        for (const id of scheduleIds) {
-          await send('schedule/post-transaction', { id, today: true });
+        for (const { scheduleId } of schedules) {
+          await send('schedule/post-transaction', {
+            id: scheduleId,
+            today: true,
+          });
         }
         void this.refetchTransactions();
         break;
       case 'skip':
-        for (const id of scheduleIds) {
-          await send('schedule/skip-next-date', { id });
+        for (const { scheduleId } of schedules) {
+          await send('schedule/skip-next-date', { id: scheduleId });
         }
         break;
       case 'complete':
-        for (const id of scheduleIds) {
-          await send('schedule/update', { schedule: { id, completed: true } });
+        for (const { scheduleId } of schedules) {
+          await send('schedule/update', {
+            schedule: { id: scheduleId, completed: true },
+          });
         }
         break;
       default:

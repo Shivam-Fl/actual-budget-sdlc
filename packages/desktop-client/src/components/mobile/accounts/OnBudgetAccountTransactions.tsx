@@ -3,7 +3,10 @@ import { useTranslation } from 'react-i18next';
 
 import { send } from '@actual-app/core/platform/client/connection';
 import type { Query } from '@actual-app/core/shared/query';
-import { isPreviewId } from '@actual-app/core/shared/transactions';
+import {
+  isPreviewId,
+  parsePreviewId,
+} from '@actual-app/core/shared/transactions';
 import type {
   ScheduleEntity,
   TransactionEntity,
@@ -86,9 +89,10 @@ function TransactionListWithPreviews() {
               options: {
                 transactionId: transaction.id,
                 onPost: async (transactionId, today = false) => {
-                  const parts = transactionId.split('/');
+                  const { scheduleId, date } = parsePreviewId(transactionId);
                   await send('schedule/post-transaction', {
-                    id: parts[1],
+                    id: scheduleId,
+                    date,
                     today,
                   });
                   dispatch(
