@@ -335,5 +335,6 @@
   "work_order_version": 1,
   "work_order_posted_at": "2026-10-03T20:19:06.177Z",
   "work_order_from": "plan",
-  "work_order_comment": "5973110526"
+  "work_order_comment": "5973110526",
+  "implemented_version": 1
 }
