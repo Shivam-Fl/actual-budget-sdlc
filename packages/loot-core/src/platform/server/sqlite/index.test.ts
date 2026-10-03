@@ -1,4 +1,6 @@
 // @ts-strict-ignore
+import type { Database } from '@jlongster/sql.js';
+
 import { patchFetchForSqlJS } from '#mocks/util';
 
 import {
@@ -23,6 +25,17 @@ CREATE TABLE textstrings (id TEXT PRIMARY KEY, string TEXT);
 `;
 
 describe('Web sqlite', () => {
+  // Teardown lives here rather than at the tail of a test body: an assertion
+  // failing above it would skip the cleanup and leave the handle open. Mirrors
+  // ./index.electron.test.ts.
+  const handles: Database[] = [];
+
+  afterEach(() => {
+    for (const handle of handles.splice(0)) {
+      closeDatabase(handle);
+    }
+  });
+
   it('should rollback transactions', async () => {
     const db = await openDatabase();
     execQuery(db, initSQL);
@@ -324,8 +337,10 @@ describe('Web sqlite', () => {
     };
 
     const db1 = await openDatabase();
+    handles.push(db1);
     seed(db1);
     const db2 = await openDatabase();
+    handles.push(db2);
     seed(db2);
 
     // A pattern used by no other case in this file, so the count starts from
@@ -359,8 +374,6 @@ describe('Web sqlite', () => {
     expect(invalidRegexLogs()).toBe(2);
 
     consoleSpy.mockRestore();
-    closeDatabase(db1);
-    closeDatabase(db2);
   });
 
   it('should still match a valid regex that does match, and not throw on one that does not', async () => {
