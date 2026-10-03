@@ -280,7 +280,16 @@
   ],
   "on_complete": "merge",
   "artifacts": {},
-  "failure_history": [],
+  "failure_history": [
+    {
+      "stage": "qa",
+      "error_signature": "904939a3c68f34fe",
+      "error_type": "unknown",
+      "attempt": 2,
+      "at": "2026-10-03T10:34:12.222Z",
+      "digest": "The qa stage failed and no known error pattern matched. The raw output is below."
+    }
+  ],
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-03T04:10:13.343Z",
