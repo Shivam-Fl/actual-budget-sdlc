@@ -612,7 +612,31 @@
         "detail": "Over-engineering check, clean: parsePreviewId is a justified extraction, not speculative generality. It replaces isPreviewId plus four open-coded split('/') sites (Account.tsx and the four mobile handlers) with one function returning a typed descriptor, and isPreviewId is now expressible as its base case. It is on the work order's files[], adds no options or configuration, and the one thing that could have been over-built — the parts[2] existence check for a non-preview id — is two branches rather than a discriminator.\n\n`packages/loot-core/src/shared/transactions.ts`\n\nEvidence: The work order names this file and the change explicitly. I looked for the usual over-engineering signatures — unused parameters, unrequested configuration, a second caller needing the return value — and found none: the two call-site shapes (bare schedule id, preview/<id>/<date>) are both used, and no caller needs a third."
       }
     ],
-    "pr": "15"
+    "pr": "15",
+    "qa": [
+      {
+        "id": "BUG-2",
+        "severity": "minor",
+        "area": "loot-core schedule posting message handler",
+        "title": "schedule/post-transaction is not idempotent — posting the same occurrence twice creates two transactions on the same date",
+        "expected": "Posting one occurrence twice (double-click, or two clients racing) leaves exactly one transaction for that occurrence.",
+        "actual": "Two concurrent schedule/post-transaction messages for the same schedule id and the same occurrence date create two transactions, both dated on that occurrence. Reproduced on every run of T-10.",
+        "repro": [
+          "Open the preview build and start a fresh local budget.",
+          "Create an on-budget account and a weekly +100.00 schedule starting today, with the upcoming window at 30 days.",
+          "Issue two schedule/post-transaction messages with the same schedule id and the same future occurrence date, concurrently.",
+          "Query the schedule's transactions: there are two, both on that occurrence date."
+        ],
+        "evidence": [
+          "T-10-double-post.png",
+          "test-results/schedules-hostile-T-10-pos-2bea6-ansactions-on-the-same-date-chromium/trace.zip",
+          "test-results/schedules-hostile-T-10-pos-2bea6-ansactions-on-the-same-date-chromium/test-failed-1.png"
+        ],
+        "suspected_cause": "postTransactionForSchedule() calls addTransactions() unconditionally; there is no check for an existing transaction carrying the same schedule_occurrence stamp. Judged pre-existing on the source, not on a run: the parent commit's postTransactionForSchedule (packages/loot-core/src/server/schedules/app.ts at 7d50968) has the same unconditional addTransactions and no guard, so double-posting a row produced two transactions before this PR too. This PR does not make it worse — after the first post next_date has already moved to the occurrence, so the second call's advance is a no-op.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "fail",
