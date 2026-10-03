@@ -230,41 +230,41 @@ export async function setNextDate({
 
   const { date: dateCond } = extractScheduleConds(conditions);
 
-  const { data: nextDate } = await aqlQuery(
+  const { data: currentNextDate } = await aqlQuery(
     q('schedules').filter({ id }).calculate('next_date'),
   );
 
-  // Only do this if a date condition exists
-  if (dateCond) {
-    const newNextDate = advance
-      ? getNextDateAfter(dateCond, nextDate)
-      : getNextDate(dateCond, new Date());
+  // Only derive one if a date condition exists
+  const newNextDate = dateCond
+    ? advance
+      ? getNextDateAfter(dateCond, currentNextDate)
+      : getNextDate(dateCond, new Date())
+    : null;
 
-    if (newNextDate != null && newNextDate !== nextDate) {
-      // Our `update` functon requires the id of the item and we don't
-      // have it, so we need to query it
-      const nd = await db.first<
-        Pick<db.DbScheduleNextDate, 'id' | 'base_next_date_ts'>
-      >(
-        'SELECT id, base_next_date_ts FROM schedules_next_date WHERE schedule_id = ?',
-        [id],
-      );
+  if (newNextDate != null && newNextDate !== currentNextDate) {
+    // Our `update` functon requires the id of the item and we don't
+    // have it, so we need to query it
+    const nd = await db.first<
+      Pick<db.DbScheduleNextDate, 'id' | 'base_next_date_ts'>
+    >(
+      'SELECT id, base_next_date_ts FROM schedules_next_date WHERE schedule_id = ?',
+      [id],
+    );
 
-      await db.update(
-        'schedules_next_date',
-        reset
-          ? {
-              id: nd.id,
-              base_next_date: toDateRepr(newNextDate),
-              base_next_date_ts: Date.now(),
-            }
-          : {
-              id: nd.id,
-              local_next_date: toDateRepr(newNextDate),
-              local_next_date_ts: nd.base_next_date_ts,
-            },
-      );
-    }
+    await db.update(
+      'schedules_next_date',
+      reset
+        ? {
+            id: nd.id,
+            base_next_date: toDateRepr(newNextDate),
+            base_next_date_ts: Date.now(),
+          }
+        : {
+            id: nd.id,
+            local_next_date: toDateRepr(newNextDate),
+            local_next_date_ts: nd.base_next_date_ts,
+          },
+    );
   }
 }
 
@@ -549,9 +549,11 @@ function onApplySync(oldValues, newValues) {
 
 async function postTransactionForSchedule({
   id,
+  date,
   today,
 }: {
   id: string;
+  date?: string;
   today?: boolean;
 }) {
   const { data } = await aqlQuery(q('schedules').filter({ id }).select('*'));
@@ -560,16 +562,50 @@ async function postTransactionForSchedule({
     return;
   }
 
+  // The occurrence this post discharges. Posting from the register can select a
+  // LATER occurrence than the one `next_date` sits on, and that has to be the
+  // one recorded — `next_date` here is simply the earliest one still owed.
+  // `today` is the exception: it pays `next_date` early and leaves that
+  // occurrence pending, so it discharges `next_date` whatever `date` says.
+  const occurrence = today ? schedule.next_date : (date ?? schedule.next_date);
+
+  // Consuming an occurrence is idempotent: the stamp below IS the identity the
+  // whole per-occurrence model rests on, so a second message for an occurrence
+  // that is already posted must not write again. A double-clicked menu item, or
+  // a message redelivered because the first reply was lost, would otherwise
+  // leave two transactions stamped for one occurrence.
+  //
+  // This is safe without a lock because the handler is registered as
+  // `mutator(undoable(...))`, and `runHandler` routes every marked handler
+  // through `runMutator`, which is `sequential(_runMutator)` — two dispatches
+  // cannot interleave, so the second check always sees the first write.
+  //
+  // Deliberately not applied to `today`, which discharges `next_date` early
+  // and can legitimately be invoked more than once.
+  if (!today) {
+    const {
+      data: [alreadyPosted],
+    } = await aqlQuery(
+      q('transactions')
+        .filter({ schedule: schedule.id, schedule_occurrence: occurrence })
+        .select('id'),
+    );
+
+    if (alreadyPosted != null) {
+      return;
+    }
+  }
+
   const transaction = {
     payee: schedule._payee,
     account: schedule._account,
     amount: getScheduledAmount(schedule._amount),
-    date: today ? currentDay() : schedule.next_date,
+    date: today ? currentDay() : (date ?? schedule.next_date),
     schedule: schedule.id,
     // Records WHICH occurrence this discharges. The date above is the user's to
     // edit; this is not, and matching on it is what keeps a re-dated payment
     // from un-paying the occurrence it was posted for.
-    schedule_occurrence: schedule.next_date,
+    schedule_occurrence: occurrence,
     cleared: false,
   };
 
