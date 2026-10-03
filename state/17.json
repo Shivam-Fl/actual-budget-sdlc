@@ -733,68 +733,25 @@
     "qa": [
       {
         "id": "BUG-3",
-        "severity": "major",
-        "area": "gate:file selection",
-        "title": "The gate only inspects ADDED release notes, so editing an existing note to credit a bot passes",
-        "expected": "A branch that changes a note's authors to 'claude' is caught by the gate whose job is to keep bots out of the changelog.",
-        "actual": "The gate selects with 'git diff --name-only --diff-filter=A origin/$BASE_REF...HEAD -- upcoming-release-notes/', so only newly added files are validated. Seeding a note on the base, editing it to authors: [claude] and adding one valid note in the same branch gives exit 0 and 'Validated 1 release note(s). 🎉'. A branch whose only release-note change is an edit gets '::error::No release note added under upcoming-release-notes/' — also a miss, reported as an unrelated complaint. Confirmed pre-existing: the identical scenario at 4ebaf1e is also exit 0. Found while testing this PR because this PR's own two note corrections are modifications, which is why the AC-6 recipe has to plant a temporary added note to get the gate to look at anything.",
-        "repro": [
-          "On the base commit, commit upcoming-release-notes/qa-preexisting.md with authors: [Shivam-Fl].",
-          "On a branch, change that file to authors: [claude] and add upcoming-release-notes/qa-brandnew.md with authors: [Shivam-Fl].",
-          "Run: BASE_REF=main GITHUB_STEP_SUMMARY=/tmp/s.md node packages/ci-actions/bin/release-notes-check.mjs",
-          "Observe exit 0 and 'Validated 1 release note(s). 🎉' — the edited note was never read.",
-          "Repeat on 4ebaf1e: identical result, so the blind spot predates this PR."
-        ],
-        "suspected_cause": "--diff-filter=A is an unrelated change to what the gate was asked to police. Include modifications (--diff-filter=AM, or drop the filter and tolerate deletions) so an edit cannot launder a bot author past the check.",
-        "introduced_by_pr": false,
-        "reproducible": "always",
-        "evidence": [
-          "qa-evidence/gate/edit-plus-add.txt",
-          "qa-evidence/gate/BASE-edit-plus-add.txt",
-          "qa-evidence/gate/edit-existing.txt"
-        ]
-      },
-      {
-        "id": "BUG-4",
+        "title": "Release-notes gate crashes with an uncaught ENOENT stack trace when upcoming-release-notes/README.md is missing",
         "severity": "minor",
-        "area": "gate:reportError",
-        "title": "Front-matter values are interpolated into ::error:: unsanitised, letting a PR author forge workflow commands in the log",
-        "expected": "A front-matter value cannot emit ::error::, ::notice:: or ::add-mask:: workflow commands of its own. A hostile PR should not be able to add a mask for GITHUB_TOKEN, forge an annotation, or hide text from a reviewer reading the run log.",
-        "actual": "An author value of 'innocent\\n::add-mask::GITHUB_TOKEN\\n::notice::looks-legit[bot]' is written straight into the ::error:: line, and the gate emits '::add-mask::GITHUB_TOKEN' and '::notice::looks-legit[bot]' as live commands. A payload without a [bot] suffix is not even flagged — it exits 0 and is published (inject-newline.txt). The class is pre-existing and provable at the base commit: category rides the same channel (BASE-category-injection.txt). What this PR adds is a second sink into it — before the change, no author value was ever interpolated into reportError, only path and category.",
+        "area": "packages/ci-actions/bin/release-notes-check.mjs",
+        "expected": "When reportError runs it should print its ::error:: line, write the step summary and exit 1. A missing upcoming-release-notes/README.md should not turn that into an uncaught exception with a stack trace.",
+        "actual": "The ::error:: line is printed and the exit code is 1, but the run then dies with 'Error: ENOENT: no such file or directory, open upcoming-release-notes/README.md' thrown from fs.readFileSync inside reportError, printing a stack trace through validateFile and the async IIFE. The log shows an unhandled crash rather than the gate's own message plus its README pointer.",
         "repro": [
-          "Add upcoming-release-notes/qa-inject.md whose authors list contains the single value 'innocent\\n::add-mask::GITHUB_TOKEN\\n::notice::looks-legit[bot]'.",
-          "Run: BASE_REF=main GITHUB_STEP_SUMMARY=/tmp/s.md node packages/ci-actions/bin/release-notes-check.mjs",
-          "Read the raw log: '::add-mask::GITHUB_TOKEN' and '::notice::looks-legit[bot]' appear as their own lines.",
-          "At base commit 4ebaf1e, put the same payload in category instead: identical injection."
+          "Check out the branch and run `yarn workspace @actual-app/ci-actions test` to confirm the suite is green - this is a runtime path no test reaches.",
+          "Create a sandbox with a controllable origin (a private bare repo) containing a base branch, as AC-11's recipe describes.",
+          "On a branch off the current HEAD run `git rm upcoming-release-notes/README.md` and add any release note that fails validation, for example upcoming-release-notes/qa-noreadme.md with front matter `category: Bugfix` / `authors: [claude]` and a one-line body, then commit.",
+          "Run `BASE_REF=main GITHUB_STEP_SUMMARY=/tmp/rn-summary.md node packages/ci-actions/bin/release-notes-check.mjs`.",
+          "Observe the ::error:: line, then the ENOENT stack trace, then exit_code=1."
         ],
-        "suspected_cause": "reportError interpolates user-controlled front-matter into a GitHub Actions workflow-command line with no newline stripping. Strip CR/LF (and escape '%', ';' and ':' as the workflow-command format requires) before interpolating, in reportError itself so both sinks are covered.",
-        "introduced_by_pr": false,
-        "reproducible": "always",
         "evidence": [
-          "qa-evidence/gate/log-injection.txt",
-          "qa-evidence/gate/BASE-category-injection.txt",
-          "qa-evidence/gate/inject-newline.txt"
-        ]
-      },
-      {
-        "id": "BUG-5",
-        "severity": "trivial",
-        "area": "gate:front matter",
-        "title": "An unquoted [bot] author inside a YAML flow sequence dies in js-yaml, so the gate's own message is never reached",
-        "expected": "Someone writing authors: [dependabot[bot]] — the obvious first attempt at crediting a bot — gets the actionable 'not bots or agents' message, or at least a readable front-matter parse error naming the file.",
-        "actual": "gray-matter throws 'YAMLException: missed comma between flow collection entries' with a js-yaml loader stack trace and exit 1. The gate never runs, so the new check's message — the entire point of this PR — never appears. Quoting the value ('authors: [\"dependabot[bot]\"]') makes it work and the check then fires correctly (bot-suffix.txt). Pre-existing and untouched by this PR, but it sits squarely on the input class this change exists to catch.",
-        "repro": [
-          "Add upcoming-release-notes/qa-unquoted.md with front matter 'category: Bugfix' and 'authors: [dependabot[bot]]'.",
-          "Run: BASE_REF=main GITHUB_STEP_SUMMARY=/tmp/s.md node packages/ci-actions/bin/release-notes-check.mjs",
-          "Observe the YAMLException stack trace and exit 1; no ::error:: annotation naming the file.",
-          "Quote the value and re-run: the ::error:: message appears as intended."
+          "qa-evidence/T-21-readme-deleted.txt",
+          "qa-evidence/T-23-baseline-readme-deleted.txt"
         ],
-        "suspected_cause": "Front-matter parsing is unguarded, so a malformed file aborts the whole run instead of becoming one reportError line among the per-file results. Wrapping the parse in the same try/catch the per-file loop already uses would turn this into a named, actionable failure.",
+        "suspected_cause": "This PR rewrote reportError's README handling from a piped createReadStream to `fs.readFileSync(`${NOTES_DIR}/README.md`, 'utf-8')`. Neither version guards the file's absence, and the PR's own tests never exercise reportError - the script is top-level and side-effecting, which is why all its logic was pushed into util.mjs. I confirmed it is not a regression: the unpatched gate at origin/main dies identically, with an unhandled ReadStream 'error' event, when driven into reportError by a bad category. A one-line guard around the read would cover both the old and new form.",
         "introduced_by_pr": false,
-        "reproducible": "always",
-        "evidence": [
-          "qa-evidence/gate/unquoted-bot.txt"
-        ]
+        "reproducible": "always"
       }
     ]
   },
