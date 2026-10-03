@@ -242,5 +242,176 @@
   },
   "validated_from": "plan",
   "validated_at": "2026-10-03T09:44:48.238Z",
-  "validated_ac_changes": []
+  "validated_ac_changes": [],
+  "approved_work_order": {
+    "issue": 35,
+    "version": 1,
+    "kind": "chore",
+    "reproduced": true,
+    "confidence": 90,
+    "confidence_rationale": "Every finding was reproduced on main by running the suites (vitest 5.0.0, the version in yarn.lock), and the planned change was prototyped end to end before writing this: it typechecks, lints clean, and three separate mutants of the teardown were each shown to turn the suite red. The only judgement left is comment wording.",
+    "understanding": "Issue #29 shipped in PR #34 a test-hygiene fix across the two sqlite backends: teardown moved from the tail of a test body into an afterEach. The review of that PR raised six findings about the result, and I reproduced all six against main before planning anything.\n\nFindings 1 and 4 attack the electron file (index.electron.test.ts). Its afterEach does two things — vi.restoreAllMocks() and handle.close() in a loop — but only the first is observable, by expect(vi.isMockFunction(console.log)).toBe(false) in the following test. I deleted handle.close() from the loop and the suite stayed green (2 passed | 1 expected fail), so the close half is asserted by nothing. Separately, it.fails passes on ANY failure in the body, so the deliberate guard proves nothing about teardown: replacing its expect('never called').toBe('called') with throw new Error('setup exploded') left the suite identically green. The comment above the guard overstates its role.\n\nFindings 2 and 6 are the same defect in the web file (index.test.ts:361): consoleSpy.mockRestore() / closeDatabase(db1) / closeDatabase(db2) are still the last three statements of the it body — byte-for-byte the shape PR #34 deleted from the electron file one file away. Any assertion above them failing skips all three. Those two closeDatabase calls are new in PR #34, so hoisting them is this ticket's own scope.\n\nFindings 3 and 5 are about the isMockFunction assertion's fragility. Nothing pins declaration order (vitest.config.ts sets no sequence option), and running the observing test alone with -t skips the guard, leaving the assertion true for the wrong reason. I confirmed both: -t gives 1 passed | 2 skipped, and the assertion passes.\n\nThe root problem is structural: the only proof of the teardown is a cross-test assertion, and a cross-test invariant cannot survive filtering or reordering. No comment can fix that. The fix is to stop relying on it.",
+    "root_cause": "The teardown is proved only by a cross-test assertion — the isMockFunction check in whichever test happens to run after the deliberate-failure guard. That leaves three gaps. (a) The handle.close() half of the afterEach has no observer at all, so it can be deleted and the suite stays green. (b) it.fails passes on any error, so the guard cannot distinguish the deliberate failure from a broken setup and proves nothing about teardown. (c) A cross-test invariant is vacuous whenever the preceding test does not run — under -t filtering, reordering, or shuffle — which is exactly what the isMockFunction assertion does. The web file additionally never received the afterEach at all; its cleanup is still inline at the tail of the test body, so a failing assertion skips it.",
+    "approach": "Give the teardown an observer that does not depend on test order, and hoist the web file's cleanup to match the electron file's convention.\n\nIn index.electron.test.ts, extract the afterEach body into a named `teardown` function registered via afterEach(teardown), then add one new test at the END of the describe that calls teardown() directly and asserts both of its effects — that the handles array drains, that console.log is no longer a mock, and that the handle reports open === false (better-sqlite3 exposes .open; verified true before close, false after). Because the test drives teardown itself rather than observing a previous test's aftermath, it cannot be made vacuous by -t filtering, reordering, or shuffle.\n\nOrdering is load-bearing: the new test must come AFTER the it.fails guard and after the test that observes the guard's aftermath. I verified this the hard way — with the new test placed between them, deleting the afterEach(teardown) registration entirely still left the suite green, because the new test's own manual teardown() call had already cleaned up the guard's leak and restored the mock before the observing test looked. With the new test last, that same mutant turns the suite red.\n\nKeep the existing it.fails guard and the isMockFunction assertion: the guard is what proves cleanup runs after an assertion fails, which is the scenario the ticket exists for. Narrow their comments to state what is true — that the guard establishes the leak scenario rather than verifying teardown, and that the isMockFunction assertion is vacuous when the guard does not run — and point at the new test as the thing that actually proves the teardown.\n\nIn index.test.ts, add a describe-level `handles` array and an afterEach that closes every handle in it, push the two handles in the 'should report an unparseable pattern once per database handle' case, and delete the two inline closeDatabase calls. That case's consoleSpy.mockRestore() stays where it is: it is local to the case and pre-existing, and hoisting it is not needed for the defect being fixed.\n\nI prototyped this exact change, mutation-tested it, then reverted the tree; the prototype is green, typechecks and lints clean, and each of the three mutants dies.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+        "action": "edit",
+        "change": "Replace the inline afterEach callback (currently lines 29-34) with a named function `teardown()` containing the same two statements — vi.restoreAllMocks() then the handles.splice(0) loop calling handle.close() — and register it with `afterEach(teardown)` where the old afterEach stood. Append one new test as the LAST test inside `describe('Native sqlite REGEXP guard', ...)`, after the existing 'reports an unparseable pattern...' test and NOT between the it.fails guard and that test: open a handle with openDatabase(':memory:'), push it into `handles`, install vi.spyOn(console, 'log').mockImplementation(() => null), call teardown(), then assert expect(handles).toHaveLength(0), expect(vi.isMockFunction(console.log)).toBe(false), and expect(db.open).toBe(false). Name it 'closes every handle it collected and restores the console'. Extend the comment above the it.fails guard with a paragraph stating that it.fails passes on ANY failure in the body, so the guard only establishes the leak scenario and does not verify teardown, and that the new final test is what proves the teardown because it calls teardown() directly and so stays falsifiable under -t filtering and reordering. Extend the comment above the isMockFunction assertion to say it is also vacuous when the guard has not run — under -t filtering or reordering nothing has mocked console.log yet — and that this is why it is not the only assertion on the teardown, pointing at the new final test.",
+        "why": "Findings 1, 3, 4 and 5. handle.close() currently has no observer, it.fails cannot verify anything, and the one assertion that does observe the teardown goes vacuous whenever the guard does not run. This is the change that makes all three teardown mutants fail the suite."
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "change": "Add `import type { Database } from '@jlongster/sql.js';` as its own import group directly after the `// @ts-strict-ignore` line and before the existing `#mocks/util` import (the type comes from @jlongster/sql.js, not better-sqlite3 — this is the sql.js backend). Immediately inside `describe('Web sqlite', () => {`, add `const handles: Database[] = [];` and an `afterEach(() => { for (const handle of handles.splice(0)) { closeDatabase(handle); } });`. In the 'should report an unparseable pattern once per database handle, not once per process' case, add `handles.push(db1);` after `const db1 = await openDatabase();` and `handles.push(db2);` after `const db2 = await openDatabase();`, and delete the two trailing `closeDatabase(db1);` / `closeDatabase(db2);` statements at the end of that case (currently lines 362-363). Leave that case's `consoleSpy.mockRestore();` in place, and change nothing else in the file.",
+        "why": "Findings 2 and 6. These two closeDatabase calls are new in PR #34 and are still the last statements of the it body, so any assertion above them failing skips the cleanup — the same defect the electron file's afterEach was written to remove, one file away in the same PR."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+        "action": "edit",
+        "cases": [
+          "closes every handle it collected and restores the console — new test: asserts handles drains to 0, console.log is no longer a mock, and db.open === false after teardown()",
+          "closes every handle it collected and restores the console — mutation: deleting handle.close() from teardown must turn this red",
+          "closes every handle it collected and restores the console — mutation: deleting vi.restoreAllMocks() from teardown must turn this red",
+          "file-level mutation: deleting the afterEach(teardown) registration must turn the suite red (this is why the new test must come last)",
+          "robustness: this test passes when run alone via -t 'closes every handle it collected', and the whole file passes under --sequence.shuffle --sequence.seed=42",
+          "existing it.fails guard 'leaves nothing behind when an assertion fails mid-test' still reports 1 expected fail",
+          "existing 'reports an unparseable pattern once per database handle, not once per process' assertions and counts unchanged"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "cases": [
+          "all 9 existing cases in 'Web sqlite' still pass, including 'should report an unparseable pattern once per database handle, not once per process' with its invalidRegexLogs counts 1/2/2/2/3 unchanged",
+          "the target case's two handles are now closed by the describe-level afterEach rather than by inline statements at the tail of the body",
+          "no assertion in the target case depends on its handles still being open after the case body ends"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "Deleting `handle.close();` from the electron file's teardown turns `yarn workspace @actual-app/core test:node` red (currently it stays green).",
+        "how_to_verify": "Run `yarn workspace @actual-app/core vitest --run src/platform/server/sqlite/index.electron.test.ts` on main: 2 passed | 1 expected fail. Apply the change, then delete that one line and re-run: expect a failure mentioning `expected true to be false`.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "Deleting `vi.restoreAllMocks();` from the electron file's teardown turns the same suite red.",
+        "how_to_verify": "Same command as AC-1, deleting the restoreAllMocks line instead. Expect a failure.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "Deleting the `afterEach(teardown)` registration from the electron file turns the suite red — this is what fails if the new test is placed before the observing test instead of last.",
+        "how_to_verify": "Same command as AC-1, removing the registration line. I verified this mutant is green when the new test is placed second and red when it is placed last, so confirm the ordering explicitly.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "The electron file's teardown proof is not vacuous: the new test passes when run alone under `-t 'closes every handle it collected'`, and the whole file passes under `--sequence.shuffle --sequence.seed=42`.",
+        "how_to_verify": "Run `yarn workspace @actual-app/core vitest --run -t 'closes every handle it collected' src/platform/server/sqlite/index.electron.test.ts` (expect 1 passed | 2 skipped) and `yarn workspace @actual-app/core vitest --run --sequence.shuffle --sequence.seed=42 src/platform/server/sqlite/index.electron.test.ts` (expect 2 passed | 1 expected fail). This is the check findings 3 and 5 asked for and that no comment alone can satisfy.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "The web file's cleanup for 'should report an unparseable pattern once per database handle' runs even when an assertion in that case fails, because it is no longer at the tail of the test body.",
+        "how_to_verify": "Confirm by reading: no `closeDatabase` call remains inside any `it` body in packages/loot-core/src/platform/server/sqlite/index.test.ts, and the case pushes both handles into the describe-level `handles` array. Then `yarn workspace @actual-app/core vitest --run --config vitest.web.config.ts src/platform/server/sqlite/index.test.ts` → 9 passed.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "`yarn typecheck` and `yarn lint` pass from the repo root, and the two sqlite suites are green together: node 2 passed | 1 expected fail, web 9 passed.",
+        "how_to_verify": "Run `yarn typecheck`, `yarn lint`, then both vitest invocations above. Note the web file needs the `@jlongster/sql.js` Database type import or typecheck fails with TS2304 — I hit that while prototyping.",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "This ticket changes only two test files; there is no product-code change and no browser-visible surface. Do not start the app looking for a difference — there is none.",
+      "From the repo root: `yarn workspace @actual-app/core vitest --run src/platform/server/sqlite/index.electron.test.ts` → expect 2 passed | 1 expected fail (3).",
+      "From the repo root: `yarn workspace @actual-app/core vitest --run --config vitest.web.config.ts src/platform/server/sqlite/index.test.ts` → expect 9 passed.",
+      "AC-1: delete the `handle.close();` line from the electron file's teardown, re-run the node suite, confirm RED, restore the line.",
+      "AC-2: delete the `vi.restoreAllMocks();` line instead, re-run, confirm RED, restore.",
+      "AC-3: delete the `afterEach(teardown)` registration, re-run, confirm RED, restore. This is the check most likely to be fooled — if the new test was placed before the observing test rather than after it, this mutant stays green.",
+      "AC-4: run with `-t 'closes every handle it collected'` (expect 1 passed | 2 skipped), then `--sequence.shuffle --sequence.seed=42` (expect 2 passed | 1 expected fail).",
+      "AC-6: `yarn typecheck` and `yarn lint` from the repo root, both clean.",
+      "Then `git diff` — confirm nothing outside the two test files changed, and that no product source file was touched."
+    ],
+    "risks": [
+      "Test-only change: no product code, no runtime behaviour, no API surface. The blast radius is the two sqlite test files and CI time.",
+      "The new electron test depends on better-sqlite3's Database.open getter (true when open, false after close). Verified against the pinned better-sqlite3 ^13.0.3 in this checkout. If a future major drops it, this test fails loudly rather than silently passing.",
+      "`expect(db.open).toBe(false)` would also pass if openDatabase returned a handle that was never open. It cannot here — the same file's other tests query through handles from the same call — but it is a weaker signal than the count assertions it sits beside.",
+      "Adding a named `teardown` function inside the describe means the arrow-function afterEach is no longer inline. No behavioural change; the function body is byte-identical to what it replaced.",
+      "Touches nothing in forbidden_paths: no .sdlc/**, no .github/**, no docs, no CLAUDE.md/AGENTS.md, no Dockerfile. No host outside env.api_allowlist is contacted — both suites run entirely offline against in-memory databases.",
+      "The web file is `// @ts-strict-ignore` and imports Database from '@jlongster/sql.js'. Importing it from 'better-sqlite3' would typecheck (both are structurally similar) and silently mis-type the array; the import specifier matters here."
+    ],
+    "out_of_scope": [
+      "Retrofitting the other eight cases in index.test.ts to push their handles into the new array. They have always leaked and PR #34's work order already excluded them; retrofitting them is a separate change that would ship on its own. This ticket fixes only the two closeDatabase calls PR #34 introduced.",
+      "Hoisting the pre-existing `consoleSpy.mockRestore();` calls in the other cases. They are not new in this diff and are not the defect being fixed.",
+      "Pinning test order in packages/loot-core/vitest.config.ts (setting `sequence.shuffle: false`, for instance). Finding 3's fix suggests it as an alternative to documenting the order dependency, but the config already runs in order by default and pinning it would be a repo-wide behaviour change for one file's assertion. The new test removes the need for it.",
+      "Making the web file's afterEach falsifiable the way the electron one now is. sql.js exposes no closed-state observable — I checked @jlongster/sql.js's types for an `open`/`closed` getter and there is none — so there is nothing to assert against there. See residual_risks.",
+      "Any change to product code. Nothing in this ticket touches src behaviour; the sqlite REGEXP dedupe Set and the backends themselves are untouched."
+    ],
+    "residual_risks": [
+      "The web file's afterEach is NOT falsifiable in the way the electron one now is. Deleting `closeDatabase(handle)` from it leaves the web suite green — I verified this. So findings 2 and 6 are fixed structurally (cleanup is no longer skipped when an assertion fails) but not proved the way finding 1 is. sql.js exposes no closed-state observable to assert against. This is a real, accepted gap, not an oversight.",
+      "The it.fails guard remains inherently unable to verify that the deliberate assertion is what failed — vitest's it.fails passes on any error. The change makes the guard no longer the sole proof, and its comment now says so, but the guard's own semantics are unfixable from inside the test.",
+      "The isMockFunction assertion is still order-dependent and still vacuous under -t filtering when the guard does not run. It is now one of two assertions on the teardown rather than the only one, which is the most that can be done without a repo-wide order pin.",
+      "These are test-hygiene findings about test hygiene. The assertions they protect are worth keeping, but a future refactor could delete the new test and the suite would go quiet — the protection is the test's existence, not a meta-check that the test exists."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Assert `db.open === false` on the guard's handle from the following test, keeping a module-scoped `guardHandle` variable — the reviewer's own first suggestion for finding 1.",
+        "rejected_because": "It trades vacuity for order-fragility, which is strictly worse. I built it and measured it: the observing test fails when run alone under -t (guardHandle is undefined, so `undefined === false` is false) and fails under --sequence.shuffle. It converts a silently-passing assertion into a spuriously-failing one, so an ordinary `vitest -t` on that one test would break. The self-contained test that calls teardown() directly has no such failure mode — it passes alone, under shuffle, and under filtering."
+      },
+      {
+        "approach": "Drop the it.fails guard entirely and keep only the isMockFunction assertion, per the reviewer's second option for finding 4.",
+        "rejected_because": "The guard is the only thing that exercises cleanup-after-a-failed-assertion, which is the exact scenario issue #29 was filed about. Removing it would delete the coverage while keeping an assertion that is vacuous without a preceding failure to observe."
+      },
+      {
+        "approach": "Push a handle whose close() flips a module-scoped flag the observing test reads (the reviewer's second suggestion for finding 1).",
+        "rejected_because": "It needs the same cross-test ordering as the guard, so it inherits findings 3 and 5 unchanged. better-sqlite3's real `.open` is a genuine observable rather than a test-only flag, so using it inside a self-contained test gives a stronger signal with no extra machinery."
+      },
+      {
+        "approach": "Fix only the web file (findings 2 and 6) and defer the electron file's falsifiability problems to a separate ticket.",
+        "rejected_because": "Findings 1, 3, 4 and 5 are all the same underlying defect — proof that lives in a cross-test assertion — and they are one coherent fix in one file. Splitting would send the same reviewer back to the same file twice and leave the guard's comment claiming something untrue in the meantime."
+      },
+      {
+        "approach": "Retrofitted all nine cases in index.test.ts to the new handles array while the file was open.",
+        "rejected_because": "It widens the diff into eight cases PR #34 deliberately left alone and already documented as out of scope. The test for scope is whether it would ship on its own if this ticket did not exist — this would. Flagged in out_of_scope so a human can say 'do those too' without the implementer wandering."
+      },
+      {
+        "approach": "Leave the prototypes applied and hand the diff to the implementer as-is.",
+        "rejected_because": "The planner does not write code. I built the prototype only to verify the plan is executable and that the three mutants die, then reverted the tree so the implementer writes it against this work order rather than against a diff they did not reason about."
+      }
+    ],
+    "assumptions": [
+      "vitest 5.0.0 is the version CI runs (matches yarn.lock; I used it for every reproduction).",
+      "`yarn workspace @actual-app/core vitest --run <path>` is an acceptable way to run a single test file in this repo; the package's own `test` script goes through lage and runs everything.",
+      "better-sqlite3's `.open` getter is part of its supported surface for the pinned ^13.0.3, not an internal detail. Verified behaviourally in this checkout, not just in its types.",
+      "The electron test file's `import type { Database } from 'better-sqlite3'` stays accurate — I did not change which backend that file exercises."
+    ],
+    "unknowns": [
+      "Whether anyone runs these two files with `--sequence.shuffle` in CI today. vitest.config.ts sets no `sequence` option, so the default is in-order. I made the new test correct under shuffle regardless, but if some outer harness enables it the older cross-test assertion in the same file is the thing that would break.",
+      "Whether the pre-existing `consoleSpy.mockRestore()` calls in the other eight web cases ever cause cross-test bleed today. Out of scope here, but if someone reports flaky output in that file, this is the first thing to look at."
+    ],
+    "evidence": [
+      "Baseline on main: `yarn workspace @actual-app/core vitest --run src/platform/server/sqlite/index.electron.test.ts` → Test Files 1 passed, Tests 1 passed | 1 expected fail (2).",
+      "Finding 1 reproduced: deleted `handle.close();` from the afterEach loop → still 'Test Files 1 passed (1) / Tests 1 passed | 1 expected fail (2)'. The close half is asserted by nothing.",
+      "Finding 4 reproduced: replaced the guard's `expect('never called').toBe('called')` with `throw new Error('setup exploded')` → identical green result, '1 passed | 1 expected fail (2)'. it.fails passes on any failure.",
+      "Finding 5 reproduced: `vitest --run -t 'unparseable pattern' src/platform/server/sqlite/index.electron.test.ts` → '1 passed | 1 skipped (2)'. The guard is skipped and the isMockFunction assertion is true for the wrong reason.",
+      "better-sqlite3 observability confirmed directly: `new S(':memory:').open` → true; after `.close()` → false.",
+      "Prototype applied and measured: all three mutants of the final design turn the electron suite red — delete handle.close() → 1 failed; delete vi.restoreAllMocks() → 2 failed; delete afterEach(teardown) → 1 failed. Unmutated baseline stays 2 passed | 1 expected fail.",
+      "An earlier arrangement of the prototype placed the new test second; deleting the afterEach(teardown) registration then left the suite GREEN. That is why the work order makes the new test's position load-bearing, and it is a defect I found by testing rather than by reasoning.",
+      "Robustness of the final design measured: new test alone under -t → 1 passed | 2 skipped; whole file under --sequence.shuffle --sequence.seed=42 → 2 passed | 1 expected fail.",
+      "Web file prototype: adding the describe-level handles array and afterEach, pushing both handles, and deleting the two inline closeDatabase calls → 9 passed under vitest.web.config.ts.",
+      "Gap recorded honestly: deleting `closeDatabase(handle)` from the web afterEach leaves the web suite green (9 passed) — sql.js exposes no closed-state observable. Confirmed by grepping @jlongster/sql.js's type definitions for an open/closed getter: none.",
+      "`yarn typecheck` from the root initially failed with `src/platform/server/sqlite/index.test.ts(26,18): error TS2304: Cannot find name 'Database'` on the prototype; adding the `@jlongster/sql.js` type import fixed it. Final run: all 10 packages typecheck success. `yarn lint`: all matched files use the correct format, 2525 files.",
+      "Tree restored: `git status --short` shows only the untracked plan/ directory; both test files are back to their committed state."
+    ],
+    "mode": "committed"
+  },
+  "approved_too_high": false
 }
