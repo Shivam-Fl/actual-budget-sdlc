@@ -23,14 +23,35 @@ const dialogAccessibilityWarning =
 /** How long to let the console channel drain when no dialog warning arrives. */
 const CONSOLE_SETTLE_MS = 1000;
 
+type DialogWarningProbe = { channel: 'error' | 'warn'; message: string };
+
 /**
- * The verbatim description-warning string `dialogAccessibilityWarning` matches
- * one of its alternatives against. Emitted from the page by the probe below so
- * every run re-proves that the channel delivers and the filter still matches the
- * transcribed wording.
+ * The verbatim strings `dialogAccessibilityWarning` matches its alternatives
+ * against — one per alternative, transcribed from `@radix-ui/react-dialog@1.1.15`.
+ * The title message is the first line of Radix's three-paragraph title warning;
+ * the rest of that warning is developer-facing prose the filter never reaches.
+ * `channel` records the console method Radix emits each on — the title warning
+ * goes to `console.error`, the description warning to `console.warn` — because
+ * `watchDialogWarnings` only collects console types `error` and `warning`, and
+ * driving both through one method would leave the other's channel untested.
+ *
+ * These are held as literals rather than read out of the installed package, so
+ * they can rot if a patch release rewords either message. They are emitted from
+ * the page by the probe below so every run re-proves that both channels deliver
+ * and the filter still matches the transcribed wording.
  */
-const DIALOG_WARNING_PROBE =
-  'Warning: Missing `Description` or `aria-describedby={undefined}` for {DialogContent}.';
+const DIALOG_WARNING_PROBES: DialogWarningProbe[] = [
+  {
+    channel: 'error',
+    message:
+      '`DialogContent` requires a `DialogTitle` for the component to be accessible for screen reader users.',
+  },
+  {
+    channel: 'warn',
+    message:
+      'Warning: Missing `Description` or `aria-describedby={undefined}` for {DialogContent}.',
+  },
+];
 
 /** Text of the element a dialog's `aria-labelledby` / `aria-describedby` points at. */
 function referredText(
@@ -108,20 +129,42 @@ test.describe('Command bar', () => {
     // position correct rather than merely lucky.
     expect(messages).toEqual([]);
 
+    // Every alternative in the filter needs its own probe, or the arm nobody
+    // probes is a blind spot: an edit that breaks it leaves this test green
+    // while the doc comment above claims otherwise. The naive split is correct
+    // for this flat alternation and would need revisiting if the pattern ever
+    // gained a group or an escaped `|`.
+    for (const alternative of dialogAccessibilityWarning.source.split('|')) {
+      expect(
+        DIALOG_WARNING_PROBES.some(({ message }) =>
+          new RegExp(alternative).test(message),
+        ),
+        `no DIALOG_WARNING_PROBES entry matches the dialogAccessibilityWarning alternative /${alternative}/`,
+      ).toBe(true);
+    }
+
     // The probe has to stay after the assertion above: it matches the same
     // pattern, so emitted first it would poison the buffer it is meant to be
-    // independent of. It proves the console channel delivers into a collector
+    // independent of. It proves both console channels deliver into a collector
     // inside the timeout and that the filter still matches the transcribed Radix
     // wording — so a channel that stops delivering, or an edit that breaks the
-    // match, turns this test red on every run. It does NOT prove Radix's
-    // current build emits this exact string.
+    // match, turns this test red on every run. Both sides are sorted because CDP
+    // does not guarantee the order of two console events, and equality rather
+    // than `includes` so the collector is proven to hold each message once. It
+    // does NOT prove Radix's current build emits these exact strings.
     const probe = watchDialogWarnings(page);
-    await page.evaluate(warning => {
-      console.warn(warning);
-    }, DIALOG_WARNING_PROBE);
+    await page.evaluate(probes => {
+      for (const { channel, message } of probes) {
+        if (channel === 'error') {
+          console.error(message);
+        } else {
+          console.warn(message);
+        }
+      }
+    }, DIALOG_WARNING_PROBES);
     await expect
-      .poll(() => [...probe.messages], { timeout: CONSOLE_SETTLE_MS })
-      .toEqual([DIALOG_WARNING_PROBE]);
+      .poll(() => [...probe.messages].sort(), { timeout: CONSOLE_SETTLE_MS })
+      .toEqual(DIALOG_WARNING_PROBES.map(({ message }) => message).sort());
 
     // The dialog keeps its accessible name, but assert the ids resolve to real
     // elements too: Playwright falls back to `aria-label` when
