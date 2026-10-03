@@ -359,5 +359,26 @@
       }
     ],
     "pr": "32"
-  }
+  },
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 0,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6",
+      "AC-7",
+      "AC-8",
+      "AC-9",
+      "AC-10"
+    ],
+    "sha": "d1cbb0ffa31292c98f2a309478eb3a3d22d1ffdb",
+    "run_id": "37100851133",
+    "work_order_version": 1,
+    "at": "2026-10-03T06:22:40.927Z"
+  },
+  "qa_open_bugs": []
 }
