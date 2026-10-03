@@ -5,9 +5,16 @@ import MockDate from 'mockdate';
 import { aqlQuery } from '#server/aql';
 import * as db from '#server/db';
 import { loadMappings } from '#server/db/mappings';
+import { toDateRepr } from '#server/models';
 import { runHandler } from '#server/mutators';
 import { loadRules, updateRule } from '#server/transactions/transaction-rules';
-import { dayFromDate, parseDate } from '#shared/months';
+import {
+  addDays,
+  currentDay,
+  dayFromDate,
+  parseDate,
+  subDays,
+} from '#shared/months';
 import { q } from '#shared/query';
 import {
   computeSchedulePreviewTransactions,
@@ -1300,6 +1307,26 @@ describe('schedule app', () => {
       expect(await getPreviewDates(id)).not.toContain(OCCURRENCES[2]);
     });
 
+    it('stamps the occurrence that was posted, so it reads paid afterwards', async () => {
+      // The occurrence stamp is what the "has transactions" matcher keys on.
+      // Posting a LATER occurrence also moves next_date onto it, so the stamp
+      // has to name the occurrence that was paid rather than the next_date the
+      // schedule happened to be sitting on beforehand — otherwise the paid
+      // occurrence reads due and its preview row comes back.
+      const id = await createWeeklySchedule();
+
+      await post(id, { date: OCCURRENCES[2] });
+
+      const { data } = await aqlQuery(
+        q('transactions')
+          .filter({ schedule: id })
+          .select(['schedule_occurrence']),
+      );
+
+      expect(data[0].schedule_occurrence).toBe(OCCURRENCES[2]);
+      expect((await getSchedule(id)).next_date).toBe(OCCURRENCES[2]);
+    });
+
     it('posts on next_date and leaves it alone when no date is given', async () => {
       // The Schedules page and auto-posting both send a bare id.
       const id = await createWeeklySchedule();
@@ -1388,6 +1415,227 @@ describe('schedule app', () => {
       expect(preview).not.toContain(TARGET);
       // The occurrences after it are still previewed.
       expect(preview.length).toBeGreaterThan(0);
+    });
+  });
+
+  // Which schedule OCCURRENCE a transaction was posted for, as opposed to the
+  // date it happens to carry. The date is the user's to edit; the occurrence is
+  // not, and every matcher below has to key on the latter.
+  describe('occurrence stamp', () => {
+    // `currentDay()` is pinned to 2017-01-01 under test, so the occurrence a
+    // schedule is sitting on is the one before it.
+    const NEXT_DATE = '2016-12-02';
+
+    async function createRecurringSchedule({
+      postsTransaction = false,
+    }: { postsTransaction?: boolean } = {}) {
+      MockDate.set(new Date(2016, 11, 31, 12));
+      schedulesApp.startServices();
+
+      const accountId = await db.insertAccount({
+        name: 'Checking',
+        offbudget: 0,
+        closed: 0,
+      });
+
+      const id = await createSchedule({
+        schedule: { posts_transaction: postsTransaction },
+        conditions: [
+          { op: 'is', field: 'account', value: accountId },
+          { op: 'is', field: 'amount', value: -10000 },
+          {
+            op: 'is',
+            field: 'date',
+            value: { start: NEXT_DATE, frequency: 'monthly', patterns: [] },
+          },
+        ],
+      });
+
+      const nextDateRow = await db.first<{ id: string }>(
+        'SELECT id FROM schedules_next_date WHERE schedule_id = ?',
+        [id],
+      );
+      await db.update('schedules_next_date', {
+        id: nextDateRow.id,
+        local_next_date: toDateRepr(NEXT_DATE),
+        local_next_date_ts: Date.now(),
+        base_next_date: toDateRepr(NEXT_DATE),
+        base_next_date_ts: Date.now(),
+      });
+
+      return { accountId, id };
+    }
+
+    async function readSchedule(scheduleId: string) {
+      const {
+        data: [schedule],
+      } = await aqlQuery(q('schedules').filter({ id: scheduleId }).select('*'));
+      return schedule;
+    }
+
+    async function postTransaction(scheduleId: string, today?: boolean) {
+      await runHandler(schedulesApp.handlers['schedule/post-transaction'], {
+        id: scheduleId,
+        today,
+      });
+    }
+
+    async function readPostedTransaction(scheduleId: string) {
+      const {
+        data: [transaction],
+      } = await aqlQuery(
+        q('transactions')
+          .filter({ schedule: scheduleId })
+          .select(['id', 'schedule', 'date', 'schedule_occurrence']),
+      );
+      return transaction;
+    }
+
+    async function updatePostedTransaction(
+      scheduleId: string,
+      fields: { date?: string; schedule_occurrence?: string },
+    ) {
+      const { id } = await readPostedTransaction(scheduleId);
+      await db.update('transactions', {
+        id,
+        ...fields,
+        ...(fields.date && { date: toDateRepr(fields.date) }),
+        ...(fields.schedule_occurrence && {
+          schedule_occurrence: toDateRepr(fields.schedule_occurrence),
+        }),
+      });
+    }
+
+    // What `getHasTransactionsQuery` says about the schedule: zero rows means
+    // the occurrence reads as un-paid, which is what regenerates the forecast
+    // row and flips the Schedules page back to "Due".
+    async function readMatches(scheduleId: string) {
+      const { data } = await aqlQuery(
+        getHasTransactionsQuery([await readSchedule(scheduleId)]),
+      );
+      return data.filter(Boolean);
+    }
+
+    it('stamps the occurrence when posting a schedule', async () => {
+      try {
+        const { id } = await createRecurringSchedule();
+
+        await postTransaction(id);
+
+        expect(await readPostedTransaction(id)).toMatchObject({
+          schedule: id,
+          date: NEXT_DATE,
+          schedule_occurrence: NEXT_DATE,
+        });
+      } finally {
+        await schedulesApp.stopServices();
+      }
+    });
+
+    it('stamps the occurrence, not the date, when posting today', async () => {
+      try {
+        // next_date is yesterday and "today" is 2017-01-01, so the two differ.
+        const { id } = await createRecurringSchedule();
+
+        await postTransaction(id, true);
+
+        expect(await readPostedTransaction(id)).toMatchObject({
+          date: currentDay(),
+          schedule_occurrence: NEXT_DATE,
+        });
+      } finally {
+        await schedulesApp.stopServices();
+      }
+    });
+
+    it('still pays the occurrence after the payment is re-dated 7 days early', async () => {
+      try {
+        const { id } = await createRecurringSchedule();
+        await postTransaction(id);
+
+        expect(await readMatches(id)).toHaveLength(1);
+
+        // The reported bug: the user moves the payment to an earlier day and
+        // the schedule comes back as an un-posted forecast row.
+        await updatePostedTransaction(id, { date: subDays(NEXT_DATE, 7) });
+
+        expect(await readMatches(id)).toHaveLength(1);
+      } finally {
+        await schedulesApp.stopServices();
+      }
+    });
+
+    it('does not pay the current occurrence for a payment stamped for the previous one', async () => {
+      try {
+        const { id } = await createRecurringSchedule();
+        await postTransaction(id);
+
+        // Re-stamped for the previous occurrence AND dated late, inside any
+        // plausible grace, so this cannot pass vacuously.
+        await updatePostedTransaction(id, {
+          schedule_occurrence: subDays(NEXT_DATE, 1),
+          date: subDays(NEXT_DATE, 4),
+        });
+
+        expect(await readMatches(id)).toHaveLength(0);
+      } finally {
+        await schedulesApp.stopServices();
+      }
+    });
+
+    it('still pays the occurrence for a payment dated after it', async () => {
+      // The guard against over-correcting: an upper bound on the date would
+      // break every payment made a few days late.
+      try {
+        const { id } = await createRecurringSchedule();
+        await postTransaction(id);
+
+        await updatePostedTransaction(id, { date: addDays(NEXT_DATE, 8) });
+
+        expect(await readMatches(id)).toHaveLength(1);
+
+        await advanceSchedulesService(true);
+
+        expect((await readSchedule(id)).next_date).toBe('2017-01-02');
+      } finally {
+        await schedulesApp.stopServices();
+      }
+    });
+
+    it('keeps matching unstamped transactions by the unchanged date bound', async () => {
+      // Every budget that already exists has transactions with no stamp.
+      try {
+        const { accountId, id } = await createRecurringSchedule();
+
+        await db.insertTransaction({
+          account: accountId,
+          amount: -10000,
+          date: NEXT_DATE,
+          schedule: id,
+        });
+
+        expect(await readMatches(id)).toHaveLength(1);
+      } finally {
+        await schedulesApp.stopServices();
+      }
+    });
+
+    it('settles next_date instead of advancing without bound', async () => {
+      // If the fallback branch ever compiled to OR, every schedule-linked
+      // transaction would match every occurrence and this would never settle.
+      try {
+        const { id } = await createRecurringSchedule({
+          postsTransaction: true,
+        });
+        await postTransaction(id);
+
+        await advanceSchedulesService(true);
+
+        expect((await readSchedule(id)).next_date).toBe('2017-01-02');
+      } finally {
+        MockDate.reset();
+        await schedulesApp.stopServices();
+      }
     });
   });
 });

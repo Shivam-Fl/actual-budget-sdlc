@@ -620,6 +620,19 @@ async function postTransactionForSchedule({
     amount: getScheduledAmount(schedule._amount),
     date: today ? currentDay() : (date ?? schedule.next_date),
     schedule: schedule.id,
+    // Records WHICH occurrence this discharges. The date above is the user's to
+    // edit; this is not, and matching on it is what keeps a re-dated payment
+    // from un-paying the occurrence it was posted for.
+    //
+    // It is the occurrence the caller selected, not `next_date` as read here:
+    // posting from the register can discharge a LATER occurrence, and the
+    // advance below then moves `next_date` onto it — so a stamp taken before
+    // that advance would name the stale occurrence and leave the paid one
+    // looking due. `today` is the exception: it pays `next_date` early and
+    // leaves that occurrence pending, so it is still the one discharged.
+    schedule_occurrence: today
+      ? schedule.next_date
+      : (date ?? schedule.next_date),
     cleared: false,
   };
 
