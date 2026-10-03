@@ -6,6 +6,7 @@ import * as db from '#server/db';
 import { loadMappings } from '#server/db/mappings';
 import { toDateRepr } from '#server/models';
 import { runHandler } from '#server/mutators';
+import { mergeTransactions } from '#server/transactions/merge';
 import { loadRules, updateRule } from '#server/transactions/transaction-rules';
 import { addDays, currentDay, subDays } from '#shared/months';
 import { q } from '#shared/query';
@@ -1340,6 +1341,47 @@ describe('schedule app', () => {
           schedule: id,
         });
 
+        expect(await readMatches(id)).toHaveLength(1);
+      } finally {
+        await schedulesApp.stopServices();
+      }
+    });
+
+    it('stays paid after the posted transaction is merged with an earlier duplicate', async () => {
+      // The user posts an occurrence, then tidies the register by merging the
+      // payment with an identical one they dated weeks earlier. Before the
+      // stamp travelled with the schedule link, the survivor kept the link but
+      // lost the identity, matched neither branch of getHasTransactionsQuery,
+      // and the occurrence flipped back to "Due" with its forecast row.
+      try {
+        const { accountId, id } = await createRecurringSchedule();
+        await postTransaction(id);
+
+        expect(await readMatches(id)).toHaveLength(1);
+
+        // Same account and the SAME amount — validForMergeExplanation rejects
+        // a mismatch. A plain 'YYYY-MM-DD' string: toDateRepr is for the db
+        // update path only and throws `Invalid date` on an insert.
+        const duplicateId = await db.insertTransaction({
+          account: accountId,
+          amount: -10000,
+          date: subDays(NEXT_DATE, 21),
+          category: null,
+        });
+
+        const { id: postedId } = await readPostedTransaction(id);
+        const keptId = await mergeTransactions([
+          { id: postedId },
+          { id: duplicateId },
+        ]);
+
+        expect(await db.getTransaction(keptId)).toMatchObject({
+          schedule: id,
+          schedule_occurrence: NEXT_DATE,
+        });
+
+        // Asserted through readMatches, not a raw SELECT: the dropped row is
+        // tombstoned rather than physically deleted.
         expect(await readMatches(id)).toHaveLength(1);
       } finally {
         await schedulesApp.stopServices();
