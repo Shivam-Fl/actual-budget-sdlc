@@ -220,7 +220,17 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/schedules/SchedulesTable.tsx",
+    "packages/ci-actions/bin/release-notes-check.mjs",
+    "packages/ci-actions/vitest.config.mts",
+    "packages/desktop-client/e2e/page-models/schedule-edit-modal.ts",
+    "packages/desktop-client/e2e/page-models/schedules-page.ts",
+    "upcoming-release-notes/hide-skip-next-date-on-one-off-schedules.md",
+    "packages/ci-actions/bin/release-notes-check.test.mjs",
+    "packages/ci-actions/src/release-notes/util.test.js",
+    "packages/desktop-client/e2e/schedules.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
