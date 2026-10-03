@@ -115,5 +115,8 @@
       "diagnosis": "GitHub's GraphQL API was down when the plan gate checked the split criteria. check-split-criteria.mjs:24 reads the issue body with `gh issue view 58 --json body`, and the call came back HTTP 503 \"No server is currently available to service your request\" from api.github.com/graphql, which gh rethrows as a non-zero exit and .sdlc/bin/lib/actions.js:103 rejects on. Nothing in this repository is wrong: the planner itself finished successfully (num_turns 37, subtype success, is_error false), wrote an",
       "run": "37155921289"
     }
-  ]
+  ],
+  "retry_after": "2026-10-03T22:20:46.024Z",
+  "retry_stage": "plan",
+  "parked_at": "2026-10-03T22:00:46.411Z"
 }
