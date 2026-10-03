@@ -354,7 +354,7 @@
     "decided_at": "2026-10-02T21:33:54.860Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "root-cause",
+  "dispatched_stage": "plan",
   "validated_from": "root-cause",
   "validated_at": "2026-10-03T03:17:31.566Z",
   "validated_ac_changes": [
