@@ -198,5 +198,132 @@
   },
   "validated_from": "plan",
   "validated_at": "2026-10-03T12:38:26.747Z",
-  "validated_ac_changes": []
+  "validated_ac_changes": [],
+  "approved_work_order": {
+    "issue": 47,
+    "version": 1,
+    "kind": "chore",
+    "reproduced": true,
+    "understanding": "Issue #47 bundles five non-blocking review findings from PR #40, all in the two loot-core sqlite test files. I reproduced the three load-bearing ones by mutation on the current default branch (head is c1d1cb4, the PR itself), and both prescribed fixes kill their mutant: (A) the web file's new describe-level afterEach closes handles but never restores mocks, so a failing assertion in 'should report an unparseable pattern once per database handle, not once per process' (index.test.ts:323) skips its trailing consoleSpy.mockRestore() and leaves console.log mocked for the rest of the file — I forced a mid-test failure, appended an observer, and got isMock=true; adding vi.restoreAllMocks() as the afterEach's first statement flipped the same experiment to isMock=false. Nothing else would have caught it: the web config (vitest.web.config.ts) declares no setupFiles, and setup.ts's afterEach does not restore mocks either, so the web suite has zero automatic restoration. (C) the electron test 'closes every handle it collected and restores the console' (index.electron.test.ts:140) pushes exactly one handle, so a teardown that closes one handle and leaks the rest is green — I mutated the loop to close only handles[0] and the whole suite still reported 2 passed | 1 expected fail; pushing a second handle and asserting db2.open turned the same mutant red (expected true to be false) while the unmutated suite stayed green. (B) I also confirmed the residual limit: with afterEach(teardown) deleted, running only that test under -t gives 1 passed | 2 skipped, so the mutant survives filtering; the reviewer flagged this as needing no fix and I agree, so it is deferred, not implemented. (D) and (E) are comment-level and verified by reading: the electron file does restate the last-test argument in four places, and the web comment claiming a mirror of the electron teardown is true of only half of it until A lands. Findings A and E are the same one-line change seen from two sides, as the route note said. This is test-only work: no product code, no UI, no browser-visible surface at all.",
+    "root_cause": "The web afterEach added by PR #40 hoisted only the closeDatabase loop, leaving the mock restore in the test body where a failing assertion skips it. The electron teardown() does both halves (vi.restoreAllMocks() plus the close loop); the web one only did one, and the comment claiming it 'Mirrors ./index.electron.test.ts' overstated the resemblance. Separately, the electron test named 'closes every handle it collected' never had a second handle to leak, so the word 'every' was unfalsified — the existing observer test's two handles are only checked with expect(handles).toHaveLength(0), which handles.splice(0) satisfies whether or not close() ran on each.",
+    "approach": "Two edits, both confined to test files. In index.test.ts, add vi.restoreAllMocks() as the first statement of the describe-level afterEach so it matches teardown() in the electron file, and correct the comment above `const handles` to describe both halves (this is finding A and finding E together — the one line makes the mirror claim true). In index.electron.test.ts, give 'closes every handle it collected and restores the console' a second handle and assert it closed, so the teardown's loop is actually exercised rather than assumed; then compress the two forward references to the last-test argument to one line each, keeping the full explanation at that test. Findings A, C, D, E are implemented; B is deferred to out_of_scope with its reason. No test case is added or removed in either file — the change makes two existing cases falsifiable, and both suites must stay at their current counts (web 9 passed, electron 2 passed | 1 expected fail).",
+    "files": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "change": "In describe('Web sqlite'), add `vi.restoreAllMocks();` as the first statement of the existing afterEach at lines 32-36, above the `for (const handle of handles.splice(0))` loop. This closes the mock half of the teardown so it matches teardown() in ./index.electron.test.ts, and is the fix for both finding A and finding E. Rewrite the three-line comment above `const handles` (lines 28-30), which currently reads 'Teardown lives here rather than at the tail of a test body: an assertion failing above it would skip the cleanup and leave the handle open. Mirrors ./index.electron.test.ts.' — after this change it skips both a handle and a mocked console.log, so say so, and state that the mirror now covers both halves. Leave the trailing consoleSpy.mockRestore() at line 376 in place: it becomes redundant-but-harmless and removing it is not asked for. Add no test case.",
+        "why": "Finding A. Verified: a forced mid-test failure left vi.isMockFunction(console.log) true for the next test, and this one line flipped the same experiment to false. The web config declares no setupFiles and setup.ts's afterEach does not call vi.restoreAllMocks(), so nothing else restores mocks in this file."
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+        "action": "edit",
+        "change": "Two changes. (1) In it('closes every handle it collected and restores the console') at line 140: immediately after `handles.push(db);` add `const db2 = openDatabase(':memory:');` and `handles.push(db2);`, and immediately after `expect(db.open).toBe(false);` add `expect(db2.open).toBe(false);`. This is finding C. (2) Compress the two forward references to the last-test argument to a single line each: the three lines at 50-52 ('The last test in this describe is what actually proves the teardown: it calls teardown() itself, so it stays falsifiable under -t filtering and reordering.') and the two lines at 67-68 ('That is why it is not the only assertion on the teardown; the last test in this describe covers what this cannot.'). This is finding D. Keep the full explanation in place at lines 131-139 and the naming rationale at lines 29-31 — those two are distinct claims, not restatements. Change no assertion other than the added db2 one, leave the teardown() body and the afterEach(teardown) registration untouched.",
+        "why": "Findings C and D. C verified: mutating the teardown loop to close only handles[0] left the suite green (2 passed | 1 expected fail); with the second handle and its assertion the same mutant went red with 'expected true to be false', and the unmutated suite stayed green."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "cases": [
+          "the existing 9 cases in describe('Web sqlite') still pass with vi.restoreAllMocks() in the afterEach — in particular 'should report an unparseable pattern once per database handle, not once per process', whose body installs its own consoleSpy and whose counts (1, 2, 2, 3, 3) must be unchanged",
+          "the afterEach restores mocks even when a test body dies partway: forcing the first assertion of that case to fail leaves vi.isMockFunction(console.log) false in a later test (this is the mutation check behind AC-1, not a committed test case — do not commit the forced failure or the observer)"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+        "action": "edit",
+        "cases": [
+          "closes every handle it collected and restores the console — now pushes two handles and asserts both db.open and db2.open are false, so it fails against a teardown that closes only the first (this is the mutation check behind AC-2; do not commit the mutant)",
+          "the it.fails guard 'leaves nothing behind when an assertion fails mid-test' and 'reports an unparseable pattern once per database handle, not once per process' are unchanged — the file stays at 2 passed | 1 expected fail"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "The web afterEach restores mocks, so a forced mid-test failure in 'should report an unparseable pattern once per database handle, not once per process' no longer leaves vi.isMockFunction(console.log) true for the next test.",
+        "verify": "test",
+        "how_to_verify": "Run `yarn workspace @actual-app/core run test:web src/platform/server/sqlite/index.test.ts` — 9 passed. Then reproduce the mutation check: change that case's first `expect(query(db1, '(?<handle')).toEqual([])` to `.toEqual(['FORCE FAIL'])`, append a final test `it('OBSERVER', () => { console.error('OBSERVER isMock=' + vi.isMockFunction(console.log)); })`, run again, and expect 'OBSERVER isMock=false'. Revert both edits afterwards."
+      },
+      {
+        "id": "AC-2",
+        "check": "The electron test 'closes every handle it collected and restores the console' exercises a two-handle teardown: it turns red against a teardown that closes only handles[0], and the name is no longer unfalsified.",
+        "verify": "test",
+        "how_to_verify": "Run `yarn workspace @actual-app/core run test:node src/platform/server/sqlite/index.electron.test.ts` — 2 passed | 1 expected fail. Then the mutation check: replace the teardown loop with `if (handles.length) { handles[0].close(); } handles.splice(0);`, run again, and expect 1 failed with 'expected true to be false'. Restore the loop afterwards."
+      },
+      {
+        "id": "AC-3",
+        "check": "The electron file states the 'the last test in this describe is what proves the teardown' point once, at that test; the two forward references to it are one line each.",
+        "verify": "test",
+        "how_to_verify": "Read packages/loot-core/src/platform/server/sqlite/index.electron.test.ts: the lines before it.fails and the lines before the observer test each point at the last test in a single line, and the full rationale survives above line 140. Then re-run the electron suite (2 passed | 1 expected fail) to confirm the comment edits moved no code."
+      },
+      {
+        "id": "AC-4",
+        "check": "The web file's comment on its afterEach is true of the electron teardown it cites — it names both halves, so the mirror claim is no longer overstated.",
+        "verify": "test",
+        "how_to_verify": "Read the comment above `const handles` in packages/loot-core/src/platform/server/sqlite/index.test.ts against teardown() at index.electron.test.ts:32-37; both must describe restoring mocks and closing handles. Confirmed by AC-1's mutation run, which is what makes the mirror real."
+      },
+      {
+        "id": "AC-5",
+        "check": "Both suites pass at their current counts after the change: 9 passed in the web suite, 2 passed | 1 expected fail in the electron suite, with no case added or removed.",
+        "verify": "test",
+        "how_to_verify": "`yarn workspace @actual-app/core run test:web src/platform/server/sqlite/index.test.ts` then `yarn workspace @actual-app/core run test:node src/platform/server/sqlite/index.electron.test.ts`. Note the web file is excluded from the default node config and only runs under vitest.web.config.ts."
+      }
+    ],
+    "qa_script": [
+      "There is no browser surface for this ticket: both files changed are vitest test files and no product code is touched, so no screen, route or API differs. Verify with `yarn workspace @actual-app/core run test:web src/platform/server/sqlite/index.test.ts` (expect 9 passed) and `yarn workspace @actual-app/core run test:node src/platform/server/sqlite/index.electron.test.ts` (expect 2 passed | 1 expected fail).",
+      "Confirm the diff touches only those two files — `git diff --stat` should show two changed test files and nothing under packages/loot-core/src/platform/server/sqlite/index.ts.",
+      "Run the AC-2 mutation check to prove the new assertion is load-bearing rather than decorative: break teardown()'s loop into a close-one version, confirm the suite goes red, restore.",
+      "Run the AC-1 mutation check on the web side: force a mid-test failure and confirm console.log is restored for the following test, then revert the forced failure and the observer."
+    ],
+    "risks": [
+      "The only real hazard is the one the route note named: silently weakening an assertion. AC-2 exists to catch exactly that, and the reviewer should check that the added db2 assertion is present rather than merely that the suite is green.",
+      "The web suite is excluded from the default loot-core node vitest config (vitest.config.ts lists it under exclude) and only runs under vitest.web.config.ts. An implementer or reviewer running bare `vitest` will not exercise half of this change.",
+      "The web config declares no setupFiles, and packages/loot-core/src/mocks/setup.ts's afterEach does not call vi.restoreAllMocks() either. That is why the leak was invisible, and it means the same leak shape elsewhere in the web suite would not be caught by a global setting.",
+      "A reviewer might read the now-redundant consoleSpy.mockRestore() at index.test.ts:376 as dead code to delete. The reviewer explicitly said it may stay; removing it is out of scope.",
+      "No path in forbidden_paths is touched, and no new host is contacted — this diff reaches nothing outside the test runner.",
+      "The two mutation experiments in how_to_verify and qa_script edit files under src/. Whoever runs them must revert; a committed forced failure or observer test would turn the suite red."
+    ],
+    "out_of_scope": [
+      "Finding B — the residual limit that AC-3's proof rests on the order-dependent assertion at index.electron.test.ts:69 rather than the self-contained test. Confirmed: with afterEach(teardown) deleted, running only 'closes every handle it collected' gives 1 passed | 2 skipped, so that mutant survives -t filtering. Not fixed here because the reviewer's own verdict was that none is required, and the only fix it names — a counter incremented by teardown and read by the observing test — reintroduces the cross-test coupling PR #40 removed. Closing gap (c) for the registration would mean asserting on the registration rather than on its aftermath, which is a design change to this file, not a follow-up.",
+      "The electron file's comment at lines 23-26 cites ../connection/index.api.test.ts:6-8 as its precedent, but that file's afterEach is `vi.restoreAllMocks()` alone, with no handles — so the citation points at a precedent neither file matches. Finding E raised this in its evidence but prescribed no change to it, and finding D's compression does not cover it. It is a one-line citation correction if wanted; saying so rather than doing it silently.",
+      "Adding vi.restoreAllMocks() to the other web-suite file (src/platform/server/fs/index.test.ts) or hoisting a shared teardown helper across both sqlite test files. The two use different backends (closeDatabase vs handle.close()) under different vitest configs, and neither the issue nor any finding asks for it.",
+      "Restoring the mock in the web test body as well as the afterEach. The reviewer said the body-level mockRestore() can stay and becomes redundant-but-harmless; leaving it keeps the diff to one line."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Fix finding B too, with a module-scope counter that teardown() increments and the observing test reads.",
+        "rejected_because": "It is the fix the reviewer considered and declined: it re-creates the cross-test coupling PR #40 exists to remove, and the reviewer's evidence shows the mutant survives filtering today precisely because the new test is self-contained. Adopting it would trade a real gain (a registration-proof) for the property the file was rewritten to have."
+      },
+      {
+        "approach": "Replace the handles array with a single module-level handle that afterEach closes.",
+        "rejected_because": "The observer test opens two handles (db1, db2) and the array is what makes that possible; a single handle would delete the case rather than strengthen it, and AC-2's two-handle assertion depends on the array existing."
+      },
+      {
+        "approach": "Extract one shared teardown helper imported by both sqlite test files.",
+        "rejected_because": "The two cannot share it: the electron file closes with handle.close() on a better-sqlite3 handle, the web file with closeDatabase() on an sql.js handle, and they run under different vitest configs (vitest.config.ts vs vitest.web.config.ts, the latter with no setupFiles). The duplication is real but it is two lines of differing code, not a reusable abstraction."
+      },
+      {
+        "approach": "Skip finding D as pure taste and leave the four comment blocks.",
+        "rejected_because": "The route note names the two taste calls as the planner's to settle, and the reviewer's own evidence (60 comment lines against 73 of code, with lines 50-52 and 131-134 restating one proposition) supports the compression. The risk is nil — no assertion moves — so leaving the known redundancy would be a decision to leave a reviewer's finding unanswered."
+      }
+    ],
+    "assumptions": [
+      "The default branch is still at c1d1cb4 (PR #40), which is what I ran every experiment against; no later round has already fixed any of the five findings.",
+      "index.test.ts is the file the web config runs — the include list names exactly two files, and the electron file is the default config's concern.",
+      "'the last two files' in the issue body map to index.test.ts (web) and index.electron.test.ts (electron), as each finding's own quoted path confirms."
+    ],
+    "unknowns": [
+      "Whether the reviewer wants the electron file's ../connection/index.api.test.ts:6-8 citation corrected as part of this (recorded in out_of_scope rather than done, since no finding prescribed it).",
+      "Whether the sql.js-backed fs suite has the same mock-leak shape; finding A's mechanism is general, but this ticket is scoped to the two sqlite files and I did not survey it."
+    ],
+    "residual_risks": [
+      "Finding B's gap stays open: deleting afterEach(teardown) and running the file under -t still passes. AC-3's evidence is therefore weaker than a reader might assume, exactly as the reviewer warned. Deferred deliberately — see out_of_scope.",
+      "vi.restoreAllMocks() in the web afterEach restores every spy, not just console.log. Nothing in the current suite installs a spy meant to outlive its own test (grep for spyOn in index.test.ts returns six sites, each restoring at the tail of its own body), but a future case that installs a module-scope spy would be undone by this. The electron teardown already accepts that trade."
+    ],
+    "confidence": 90,
+    "confidence_rationale": "Findings A, B and C were reproduced by mutation on the current branch and both prescribed fixes were run green and red in both directions: AC-1's line flipped isMock=true to false, and AC-2's second handle turned a surviving close-one mutant red while leaving the unmutated suite green. D and E are verified by reading the exact lines and carry no risk, so the residual uncertainty is only whether the reviewer would have compressed the comments differently — the one place my judgement substitutes for theirs."
+  },
+  "approved_too_high": false
 }
