@@ -302,7 +302,8 @@
         "detail": "The PR title does not carry the `[AI]` prefix that .github/agents/pr-and-commit-rules.md makes mandatory.\n\n`PR #50:1`\n\nEvidence: gh pr view 50 --json title returns \"fix: Follow-ups from #35: 5 from the review\". The rules file states \"ALL pull request titles MUST be prefixed with `[AI]` — you have to apply it yourself\". The single commit on the branch does carry it (\"[AI] Make the sqlite teardown observer mock restoring\"), so the omission is in the title only. Noting for completeness that every recent PR (37, 39, 40, 49) shares this shape, so this is a pipeline-wide habit rather than something specific to this branch — which is also why it is minor and not blocking.\n\nFix: Rename the PR to \"[AI] fix: Follow-ups from #35: 5 from the review\". Title only; no code changes."
       }
     ],
-    "pr": "50"
+    "pr": "50",
+    "filed": 51
   },
   "qa": {
     "verdict": "pass",
