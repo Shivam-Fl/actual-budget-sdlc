@@ -746,8 +746,8 @@
     ]
   },
   "qa": {
-    "verdict": "fail",
-    "introduced_bugs": 1,
+    "verdict": "pass",
+    "introduced_bugs": 0,
     "ac_ids": [
       "AC-1",
       "AC-2",
@@ -755,17 +755,14 @@
       "AC-4",
       "AC-5",
       "AC-6",
-      "AC-7"
+      "AC-7",
+      "AC-8",
+      "AC-9"
     ],
-    "sha": "2da2a51a98012418c4729347252f1e7cfffcf4fe",
-    "run_id": "37092825457",
-    "work_order_version": 1,
-    "at": "2026-10-03T04:44:49.914Z"
+    "sha": "3bd31119e8326d574c1c47c1ef1d31d12430399c",
+    "run_id": "37108615539",
+    "work_order_version": 2,
+    "at": "2026-10-03T10:05:23.880Z"
   },
-  "qa_open_bugs": [
-    {
-      "id": "BUG-1",
-      "title": "Posting a later occurrence silently consumes every earlier unpaid occurrence, and those payments become unpostable"
-    }
-  ]
+  "qa_open_bugs": []
 }
