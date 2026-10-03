@@ -86,6 +86,234 @@
   "stopped_at": null,
   "dispatched_stage": "plan",
   "validated_from": "plan",
-  "validated_at": "2026-10-03T11:08:34.441Z",
-  "validated_ac_changes": []
+  "validated_at": "2026-10-03T12:33:22.765Z",
+  "validated_ac_changes": [],
+  "validated_work_order": {
+    "issue": 38,
+    "version": 3,
+    "understanding": "One invariant underlies everything here: a `schedule_occurrence` stamp only means anything next to the `schedule` link it was minted for, so a row must never be linked to one schedule and stamped for another. The mechanism is `conform()` (server/aql/schema-helpers.ts:88) — it drops `undefined` and writes an explicit `null`, so a caller sending only `{ id, schedule }` leaves the stamp untouched.\n\nI re-derived every load-bearing claim against the tree, because the critique was empty and the proposal's evidence had nothing to attack it.\n\nCONFIRMED, and it is the reported bug. `useTransactionBatchActions.ts:436` builds `ids.map(id => ({ id, schedule: null }))` and nothing else. Because `batchUpdateTransactions` (transactions/index.ts:129-137) re-reads each changed row in full before transfer logic runs, and `convertForUpdate` (schema-helpers.ts:187-195) calls `conform` with NO options so `skipNull` is false, a dropped key never reaches `update()`'s `Object.keys(params)` loop (db/index.ts:210-211) and the column KEEPS its old value. Unlink therefore clears the link and strands the stamp. The insert/update asymmetry the last review demanded is real and I confirmed both halves: `convertForInsert` (schema-helpers.ts:184) passes `{ skipNull: true }` so `undefined` falls back to the column default, while the update path preserves. A relink that omits the field moves the link and leaves the stamp behind.\n\nCONFIRMED by grep: `schedule_occurrence` has zero non-test render sites across desktop-client and component-library, and `schedule` is absent from TransactionList.tsx. No browser step can read the stamp, so every criterion that touches it is `verify: \"test\"`.\n\nCONFIRMED: `addTransfer` (transfer.ts:61-86) writes the schedule TWICE — the mirror insert override at :79 and a second write onto the MAIN leg at :85 — while deriving the stamp zero times, so a `runRules` relink strands it on both legs. I checked the proposal's hedge on reachability rather than accepting it: `getActionFields()` (RuleEditor.tsx:443-454) has no `schedule` field, so no rule the UI can author sets one, and `runRules` skips other schedules' rules when the transaction is already linked. The hedge is correct — Fix 2 is justified by the invariant, not by an observed user bug.\n\nONE GAP THE PROPOSAL MISSED, and it falsifies its central claim. The proposal states the write sites are \"exactly six\" and excludes the seventh by saying \"FindSchedules writes a schedule-discovery link server-side, not a transaction link, so it is excluded.\" That reasoning is wrong. `find-schedules.ts:29` only filters candidates (`schedule: null`) while MATCHING; it never writes. The actual link write is in the client component `DiscoverSchedules.tsx:184-189`, which the proposal never examined, and it sends `updated: transactions.map(t => ({ id: t.id, schedule: scheduleId }))` with the stamp omitted. It is reachable with a stale stamp: the matcher selects exactly the `schedule: null` rows, which is precisely the state the unlink defect produces (link gone, stamp surviving). The corrupt state this order exists to stop flows straight into a new wrong pairing. That makes seven write sites, not six.\n\nEverything else in the proposal I checked held: the two honesty fixes (transfer.ts:133-136's unreachable partial-update hazard, transfer.test.ts:361's payload no production caller constructs), and merge.ts, which writes both fields from one source (scheduleSource) and so cannot desync.",
+    "root_cause": "`schedule` and `schedule_occurrence` are written independently on every path that does not already pick them off one source, and `conform()` makes the two write paths disagree about what an omitted field means. On an UPDATE, a dropped key is never written (`convertForUpdate` passes no options, so `skipNull` is false, and `update()` only emits messages for `Object.keys(params)`), so `{ id, schedule }` alone PRESERVES the stamp; on an INSERT the same omission falls back to the column default NULL. Seven production call sites send the link without the stamp. `addTransfer` (transfer.ts:61-86) is the server-side instance: it writes the schedule to two legs and derives the occurrence zero times.",
+    "approach": "One behavioural fix extended to the seventh write site the proposal missed, one server-side hardening, two honesty fixes. No new dependency, no new abstraction.\n\nFix 1 — every production link/unlink write carries the stamp. Add `schedule_occurrence: null` alongside `schedule` at all SEVEN sites: useTransactionBatchActions.ts onBatchUnlinkSchedule (~436), ScheduleLink.tsx onSelect (line 52 — this is the LINK write; onBatchLinkSchedule in the hook only opens this modal), ScheduleEditModal.tsx onLinkTransactions/onUnlinkTransactions (~183/~193), MobileScheduleEditPage.tsx the same pair (~141/~151), and DiscoverSchedules.tsx onCreate (~184). DiscoverSchedules is the addition to the proposal: it links pattern-matched transactions to a brand-new schedule, and its matcher selects `schedule: null` rows — exactly the state the unlink defect leaves behind — so it is the one place a stale stamp is guaranteed to survive into a fresh link. Mobile TransactionList routes through the shared hook and is not a separate site; I checked rather than assumed.\n\nI keep the proposal's rejection of the server-side alternative and agree with it: `batchUpdateTransactions` re-reads each changed row in full at index.ts:129-137, so it cannot distinguish an intentional stamp from an omitted one, and a 'clear the stamp when the link changes' rule would be new inference on a hot path working around callers that were simply never written to send the field.\n\nFix 2 — addTransfer derives the occurrence once, with the insert/update asymmetry stated explicitly. Next to the existing matchedSchedule (transfer.ts:73): `const matchedOccurrence = matchedSchedule === transaction.schedule ? transaction.schedule_occurrence : undefined;`. Use it in BOTH writes, differently on purpose:\n- Mirror insert (:75-80): the field goes in the OVERRIDE object alongside `schedule: matchedSchedule` — after the `...transferTransaction` spread, NOT in the literal at :61-70, which already carries `schedule_occurrence: transaction.schedule_occurrence` and would otherwise win. Value `matchedOccurrence`: `convertForInsert` calls conform with `{ skipNull: true }`, so `undefined` is dropped and the column falls back to DEFAULT NULL. Undefined and null are equivalent here.\n- Main-leg update (:82-86): `...(matchedSchedule ? { schedule: matchedSchedule, schedule_occurrence: matchedOccurrence ?? null } : {})`. This MUST be an explicit `?? null`. `convertForUpdate` calls conform with NO options, so a dropped key is never written and the column PRESERVES its old stamp rather than being cleared. A `runRules` relink then leaves both legs linked to the new schedule with no stamp.\n\nFix 3 — reword the comment at transfer.ts:133-136. The real contract is that the field is written verbatim because the batch path always supplies the full row (index.ts:129-137), so `?? null` and verbatim agree in production. The current text invents a partial-update hazard no production caller can produce.\n\nFix 4 — replace the misleading test. Delete transfer.test.ts:361 ('clears the mirror stamp when the schedule link is removed'); its `{...payload, schedule: null, schedule_occurrence: null}` payload is one no production caller sends, so it passes today and passes with the fix reverted. Replace it in the same describe block with cases driving the real path via `batchUpdateTransactions`.\n\nI keep the 'make it real' branch on the conflict the router flagged: Fix 1 is a behaviour change to the schedule UI, so the clearing claim stays in this work order rather than moving to out_of_scope.\n\nRelease note in upcoming-release-notes/ — the Schedules page shows a different status cell after a relink.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/hooks/useTransactionBatchActions.ts",
+        "action": "edit",
+        "change": "onBatchUnlinkSchedule sends schedule_occurrence: null alongside schedule: null in its batch-update payload (currently ids.map(id => ({ id, schedule: null })) at ~line 436), so link and stamp clear as one pair. The cast to Partial<TransactionEntity> already admits the field; schedule_occurrence?: string | null is on TransactionEntity.",
+        "why": "This is the payload the QA reproduction drives — the one that leaves both transfer legs stamped today."
+      },
+      {
+        "path": "packages/desktop-client/src/components/schedules/ScheduleLink.tsx",
+        "action": "edit",
+        "change": "onSelect's transactions-batch-update payload (line 52, currently ids.map(id => ({ id, schedule: scheduleId }))) gains schedule_occurrence: null. This — not the hook's onBatchLinkSchedule, which only opens this modal — is the production LINK write.",
+        "why": "A relink is where a stale stamp from another schedule does its damage; without this the fix covers unlinking but not relinking."
+      },
+      {
+        "path": "packages/desktop-client/src/components/schedules/ScheduleEditModal.tsx",
+        "action": "edit",
+        "change": "onLinkTransactions (~183) and onUnlinkTransactions (~193) each add schedule_occurrence: null to their updated payload, matching the two hook sites.",
+        "why": "The Schedules page reaches the same write through its own copy of the pair; changing the register alone would leave the schedule page able to reproduce the bug."
+      },
+      {
+        "path": "packages/desktop-client/src/components/mobile/schedules/MobileScheduleEditPage.tsx",
+        "action": "edit",
+        "change": "Same two edits: onLinkTransactions (~141) and onUnlinkTransactions (~151) add schedule_occurrence: null. Both are defined in this file — a genuine third copy, not a re-export.",
+        "why": "Leaving the mobile page out makes the fix desktop-only."
+      },
+      {
+        "path": "packages/desktop-client/src/components/schedules/DiscoverSchedules.tsx",
+        "action": "edit",
+        "change": "onCreate's transactions-batch-update payload (~line 184, currently transactions.map(t => ({ id: t.id, schedule: scheduleId }))) gains schedule_occurrence: null. This is the seventh production link write and the proposal explicitly excluded it on a wrong reading — find-schedules.ts:29 only filters schedule: null while MATCHING candidates and never writes; the link is written here, from the client.",
+        "why": "This is the only site where a stale stamp is guaranteed to survive into a fresh link: the server-side matcher selects exactly the schedule: null rows, which is the state the unlink defect produces. Omitting it leaves a path that turns the bug's output directly into a new wrong pairing."
+      },
+      {
+        "path": "packages/loot-core/src/server/transactions/transfer.ts",
+        "action": "edit",
+        "change": "In addTransfer, derive const matchedOccurrence = matchedSchedule === transaction.schedule ? transaction.schedule_occurrence : undefined next to the existing matchedSchedule (line 73) and use it in BOTH writes, deliberately different. Mirror insert (:75-80): put schedule_occurrence: matchedOccurrence in the override object AFTER the ...transferTransaction spread alongside schedule: matchedSchedule — the literal at :61-70 already carries schedule_occurrence: transaction.schedule_occurrence and would otherwise win; undefined is dropped by conform's skipNull, falling back to the column default NULL. Main-leg update (:82-86): ...(matchedSchedule ? { schedule: matchedSchedule, schedule_occurrence: matchedOccurrence ?? null } : {}) — the explicit ?? null is load-bearing, because convertForUpdate passes no options so skipNull is false, a dropped key never reaches update()'s Object.keys(params) loop, and the column would PRESERVE its old stamp. A runRules relink then leaves both legs linked to the new schedule with no stamp. Separately, reword the comment at lines 133-136 to state the real contract: the field is passed verbatim because the batch path always supplies the full row, so ?? null and verbatim agree in production.",
+        "why": "This is the last server path that can write the two fields apart, and it writes the schedule twice. The explicit ?? null is not a style choice — an omitted occurrence on the update leaves the main leg stamped for the old schedule while linked to the new one, which is the defect AC-5 forbids."
+      },
+      {
+        "path": "packages/loot-core/src/server/transactions/transfer.test.ts",
+        "action": "edit",
+        "change": "Delete 'clears the mirror stamp when the schedule link is removed' (~line 361) — its {...payload, schedule: null, schedule_occurrence: null} payload is one no production caller sends and it passes with the fix reverted. Add replacements in the same describe block driving batchUpdateTransactions with the production payloads and reading rows via db.all: a batch unlink asserting BOTH legs come back schedule: null, schedule_occurrence: null; a batch relink to a second schedule asserting BOTH legs end linked to it with a NULL occurrence; and a case where the payment's own date falls inside the new schedule's window while carrying an older stamp, asserting the row now matches getHasTransactionsQuery (the due → paid direction). Update the block comment to say which cases are proofs of this change and which are regression guards. When asserting, schedule_occurrence off a db.all row is the raw INTEGER and off db.getTransaction a 'YYYY-MM-DD' string.",
+        "why": "The deleted test proves nothing — it passes with the fix reverted. Its replacements must fail on unfixed code."
+      },
+      {
+        "path": "packages/loot-core/src/shared/schedules.test.ts",
+        "action": "edit",
+        "change": "Add a case pinning the query-level direction: a row linked to a schedule carrying a stale occurrence for a DIFFERENT date matches neither arm of getHasTransactionsQuery, while the same row with a null occurrence and an in-window date does match.",
+        "why": "The browser signal comes from this query, and the due → paid direction is the one the fix ADDS a match for — the shape most likely to be mistaken for a regression, so it deserves a direct test."
+      },
+      {
+        "path": "upcoming-release-notes/fix-stale-schedule-occurrence-stamp.md",
+        "action": "create",
+        "change": "A Bugfixes release note (frontmatter category: Bugfixes, authors: [Shivam-Fl]) in the shape of fix-schedule-occurrence-consumption.md, describing that unlinking or relinking a scheduled transaction now clears its occurrence stamp with the link, so a payment can no longer mark a schedule occurrence paid when its own date does not.",
+        "why": "User-visible: this changes what the Schedules page status cell reads after an unlink or relink."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/server/transactions/transfer.test.ts",
+        "action": "edit",
+        "cases": [
+          "batch unlink of a stamped transfer pair with the production payload { id, schedule: null, schedule_occurrence: null } clears schedule AND schedule_occurrence on BOTH legs — fails on unfixed code, where both legs keep the old stamp",
+          "batch relink of that row to a second schedule leaves BOTH legs linked to the new schedule with a NULL occurrence — the mirror insert and the main-leg update must agree",
+          "the main-leg relink specifically: relinking the MAIN leg alone must not leave it carrying the old schedule's occurrence — this is the case that fails on an insert-only Fix 2, since an omitted occurrence on the update path is simply not written",
+          "a payment dated inside the new schedule's match window but stamped for an older occurrence now matches getHasTransactionsQuery once the stamp is cleared (the due → paid direction; the direction in which the fix ADDS a match rather than removing one)",
+          "existing 'gives the mirror leg the schedule and stamp of its main leg' still passes — the stamp still rides along when the rule does NOT relink",
+          "existing 'keeps the mirror stamp when the main leg is updated' and 'leaves the mirror stamp alone when a partial update omits the field' still pass, unchanged"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/shared/schedules.test.ts",
+        "action": "edit",
+        "cases": [
+          "a row linked to a schedule with a stale occurrence for a DIFFERENT date matches neither arm of getHasTransactionsQuery, while the same row with a null occurrence and an in-window date does — pins the due → paid direction at the query level, where the browser signal actually comes from"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "Relinking a payment to a different schedule no longer marks that schedule Paid on the strength of the old schedule's occurrence stamp, when the payment's own date falls outside the new schedule's match window. This is the only shape in which the Schedules page visibly changes, and it is the shape 'Post transaction today' on an UPCOMING schedule produces, because postTransactionForSchedule sets date = currentDay() but occurrence = schedule.next_date (schedules/app.ts:570/603).",
+        "how_to_verify": "Follow qa_script steps 1-9. The discriminating read is the Schedules-page status cell for QA Sch B. Derivation from getHasTransactionsQuery (shared/schedules.ts:192-222): with QA Sch B dated the same day as QA Sch A's next occurrence, the stale stamp equals B.next_date and arm 1 (schedule_occurrence === next_date) matches, so B reads Paid before the fix; after the fix the stamp is null and arm 2 requires date >= matchStartDate, which for a one-time schedule is the occurrence date itself, and the payment is dated today — so B must NOT read Paid. Do not attempt to read schedule_occurrence off the transaction: it is not rendered anywhere in the product (grep across desktop-client and component-library returns zero non-test hits), so a criterion asking for it cannot be performed.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "The batch unlink action clears the occurrence stamp together with the schedule link, so a later relink cannot pair a stale stamp with a new schedule.",
+        "how_to_verify": "Unit only — the browser cannot show the stamp, and unlink alone produces no visible status change even with the fix (the schedule stops matching once the link is null). Covered by the batch-unlink case in transfer.test.ts, which drives batchUpdateTransactions with the production payload and fails on unfixed code.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "Every production link/unlink write carries the stamp: all seven sites — the register batch action, the Link schedule modal, the Schedules page desktop modal, the mobile schedule page, and the DiscoverSchedules auto-link — so no surface can leave a row stamped for a schedule it is not linked to.",
+        "how_to_verify": "Unit only, for the same reason as AC-2. The seven sites are named in files[]. The mobile transaction list routes through the shared hook and is not a separate site. If a reviewer wants browser coverage of the desktop and mobile schedule surfaces, qa_script steps 11 and 12 repeat the AC-1 flow from each. DiscoverSchedules has no browser step because its input is server-side pattern matching over transaction descriptions, which cannot be staged by hand in a synthetic budget — flag it to the implementer instead of pretending it is covered.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "A payment that legitimately falls inside a newly linked schedule's match window is no longer blocked from discharging that occurrence by a stale stamp left over from another schedule — the due → paid direction.",
+        "how_to_verify": "Unit only, deliberately: reaching it in the browser needs a transaction re-dated after posting, which is fiddly to stage by hand. Covered by the third new case in transfer.test.ts and the getHasTransactionsQuery case in schedules.test.ts. This is the direction in which the fix ADDS a match rather than removing one — worth watching in review, because it is the one that could look like a regression.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "When a schedule rule relinks a transfer during addTransfer, BOTH legs end up linked to the new schedule with a NULL schedule_occurrence — the main leg as well as the mirror, with the main-leg write sending an explicit null because a dropped key would preserve the old value.",
+        "how_to_verify": "Unit only: this needs a schedule rule that sets the schedule, and getActionFields() (RuleEditor.tsx:443-454) has no schedule field, so no rule the UI can author produces it. Covered by the main-leg-relink case in transfer.test.ts, which fails on unfixed code and fails on an insert-only Fix 2. See unknowns for the fixture caveat.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "The existing transfer, merge and schedule-stamp tests still pass, and the transfer partial-update comment describes the real contract (the batch path always supplies the full row) rather than a hazard no production caller can produce.",
+        "how_to_verify": "Run yarn workspace @actual-app/core run test:node src/server/transactions src/server/schedules src/shared/schedules.test.ts and confirm green. A green suite alone is not evidence this change works: some of the tests inherited from PR #33 pass with the fix reverted, so the new cases are the ones to watch.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-7",
+        "check": "The PR is titled with the mandatory [AI] prefix and a release note exists for the user-visible schedule-status change.",
+        "how_to_verify": "gh pr view --json title returns a title starting with '[AI]'; upcoming-release-notes/fix-stale-schedule-occurrence-stamp.md exists with category Bugfixes. PR #33's own title cannot be fixed — it is merged — so the rule is carried forward against this PR.",
+        "verify": "api"
+      }
+    ],
+    "qa_script": [
+      "Open the app and click 'View demo' to load a synthetic budget.",
+      "Go to Schedules and add 'QA Sch A' — payee 'QA Payee A', account HSBC, 44.00, Repeats ON, starting 5 days from today. Add it.",
+      "Add 'QA Sch B' — payee 'QA Payee B', same account, same amount, Repeats OFF, date set to the SAME day as QA Sch A's next occurrence (5 days out). The shared occurrence date is the point: it is what makes the stale stamp equal B.next_date and collide with B's own occurrence.",
+      "Note QA Sch A's status cell, then right-click it and choose 'Post transaction today'. QA Sch A must now read Paid — paying an occurrence early is legitimate.",
+      "Go to the HSBC register and find the QA Payee A row just created. IMPORTANT: it is dated TODAY but stamped with the occurrence 5 days out. That gap is the whole mechanism — the date is outside B's match window while the stamp claims the occurrence.",
+      "Hover the row, tick its select checkbox, click the '1 transactions' button and choose 'Unlink schedule'.",
+      "Return to Schedules: QA Sch A must read Upcoming again, not Paid. This passes today too (the link is gone either way) — it confirms the unlink landed, it does not detect the bug.",
+      "Back in the HSBC register, select the same row, choose 'Link schedule', pick QA Sch B.",
+      "Return to Schedules and read QA Sch B's status cell. THIS IS THE DISCRIMINATING STEP (AC-1): before the fix it reads Paid — a schedule marked paid by another schedule's occurrence, on a payment dated five days before it was even due. After the fix it must NOT read Paid; with the occurrence 5 days out and the default 7-day upcoming window it reads Upcoming. Do not try to read schedule_occurrence off the transaction — it is not rendered anywhere, so no page will show it to you.",
+      "Confirm QA Sch A still reads Upcoming and that no unrelated schedule changed status.",
+      "Repeat steps 6-10 driven from the Schedules page instead of the register: open QA Sch A's edit page, select the transaction under 'Linked transactions', choose 'Unlink from schedule', then relink it to QA Sch B. B must again not read Paid. This covers the ScheduleEditModal write site.",
+      "Repeat the unlink-and-relink once more from the mobile schedule page to cover the third copy of the pair.",
+      "Post QA Sch A's occurrence again, link a NEW payment to QA Sch B from the Link schedule modal, and confirm B reads Paid for that payment — the fix must not over-clear a legitimate match. This is the check most worth watching in review: the fix makes a schedule read Paid in some cases it previously read Due.",
+      "Confirm no console errors."
+    ],
+    "risks": [
+      "Fix 1 clears the stamp on every relink, including a relink to the schedule the row was already stamped for. Where the payment's own date still falls inside the match window this is invisible (arm 2 matches either way), but a payment dated more than 2 days before a recurring occurrence — or any date before a one-time schedule's date — loses its match on relink. QA step 13 probes the ordinary case; the out-of-window case is the review risk.",
+      "The fix moves schedules from Due to Paid where a stale stamp was suppressing a legitimate match (AC-4). That is correct, but it is the shape most likely to be mistaken for a regression, so it has its own acceptance criterion rather than being buried.",
+      "The addTransfer fix is verified by derivation and by the insert/update asymmetry, not by a reproduction, and its production reachability is unproven — I confirmed the hedge is correct rather than assuming it: getActionFields() has no schedule field, so no UI-authored rule can reassign the schedule. If both addTransfer writes are dead code in practice, Fix 2 is harmless but untested in production, and a reviewer may reasonably call it unnecessary. The cost is two lines.",
+      "The DiscoverSchedules site has no browser coverage and cannot get any: its input is server-side pattern matching over transaction descriptions, which cannot be staged by hand in a synthetic budget. It is covered by reading the payload shape, not by a run.",
+      "The mobile schedule edit page's link/unlink is changed but exercised by no automated test and only lightly in the QA script; the mobile view is the least-covered of the three surfaces."
+    ],
+    "out_of_scope": [
+      "A migration clearing schedule_occurrence on rows already in the corrupt state. Nothing repairs them, so a stale stamp on an existing row can still suppress a legitimate occurrence match. Deferred deliberately — it is a data migration over user money rows, with its own sync and undo surface, and the browser route cannot verify it. Listed as the first residual risk.",
+      "@actual-app/api's updateTransaction surface, which can build the same stale-stamp diff because it diffs from a full-row read (api.ts:597 calls updateTransaction on full rows). Not reachable from the UI.",
+      "PR #33's title lacked the mandatory [AI] prefix. That PR is merged, so there is no title left to fix; the rule is carried forward as AC-7 against this PR.",
+      "The tests inherited from PR #33 that pass with the fix reverted. Kept as regression guards, with the block comment saying so, rather than deleted — deleting tests on the strength of this ticket's scope is the wrong default.",
+      "Any change to getHasTransactionsQuery. Its two-arm shape is what makes the defect silent and what makes the fix's effect conditional on the payment's date; rewriting it to be stamp-agnostic would be a much larger behaviour change than this defect warrants.",
+      "merge.ts, which writes schedule and schedule_occurrence together from one source (scheduleSource at merge.ts:173-186) and therefore cannot desync. Verified, not assumed."
+    ],
+    "kind": "bug",
+    "confidence": 76,
+    "confidence_rationale": "The root cause is verified rather than inferred, and I re-derived it myself rather than trusting the proposal: conform() drops undefined and writes explicit null; convertForInsert passes skipNull:true while convertForUpdate passes no options; update() emits only for Object.keys(params); batchUpdateTransactions re-reads full rows at index.ts:129-137. All seven write sites are confirmed at the line numbers named, including the seventh the proposal missed, and the proposal's exclusion of it is demonstrably wrong (find-schedules.ts only matches, the link is written from DiscoverSchedules.tsx). What holds the number at 76 rather than higher: the browser leg is derived, not run — neither I nor the proposal started the app, so AC-1's status-cell flip rests on my reading of getHasTransactionsQuery's two arms rather than on an observed run, and it is the only load-bearing claim not executed end to end; Fix 2's fixture is still unbuilt, so AC-5 rests on the invariant plus the verified insert/update asymmetry rather than on a run; and the exact browser selectors for the Link schedule modal are not recorded in .sdlc/memory/qa/selectors.md, so the QA script may need a retry. A reviewer who rejected Fix 2 entirely would not change AC-1 through AC-4.",
+    "reproduced": true,
+    "evidence": [
+      "packages/desktop-client/src/hooks/useTransactionBatchActions.ts:430-441 — onBatchUnlinkSchedule builds ids.map(id => ({ id, schedule: null })) and mentions no other field. The payload the QA reproduction drives.",
+      "packages/loot-core/src/server/aql/schema-helpers.ts:135-144 — conform() returns null (drops the key) when obj[field] === undefined, and only skips nulls when skipNull is set. convertForInsert (line 184) passes { skipNull: true }; convertForUpdate (lines 187-195) calls conform with no options. This is the insert/update asymmetry the last review demanded the plan state explicitly.",
+      "packages/loot-core/src/server/db/index.ts:210-227 — update() builds one sync message per Object.keys(params).filter(k => k !== 'id'), so a key dropped by conform is never written and the column keeps its old value. Read directly.",
+      "packages/loot-core/src/server/transactions/index.ts:129-137 — batchUpdateTransactions re-reads every changed row in full via getTransactionsByIds before transfer.onUpdate runs, so the server cannot distinguish an intentional stamp from an omitted one. This is why Fix 1 is on the senders and not in the batch path, and it is also why transfer.ts:133-136's partial-update comment describes a hazard no production caller can produce.",
+      "packages/loot-core/src/server/transactions/transfer.ts:61-86 — the literal at :61-70 already carries schedule_occurrence: transaction.schedule_occurrence; the mirror insert override at :79 writes schedule: matchedSchedule; and a SECOND write at :85 puts ...(matchedSchedule ? { schedule: matchedSchedule } : {}) onto the MAIN leg. Neither derives the stamp. The override placement matters: the literal's value wins unless schedule_occurrence is overridden after the spread.",
+      "grep schedule_occurrence across packages/desktop-client/src and packages/component-library/src returns only useSchedules.test.ts and usePreviewTransactions.test.ts — zero non-test hits. schedule is likewise absent from TransactionList.tsx. No browser step can read the stamp.",
+      "packages/desktop-client/src/components/schedules/DiscoverSchedules.tsx:184-189 — the SEVENTH write site, which the proposal excluded on a wrong reading. onCreate sends transactions-batch-update with updated: transactions.map(t => ({ id: t.id, schedule: scheduleId })), stamp omitted. packages/loot-core/src/server/schedules/find-schedules.ts:29 only filters schedule: null while matching candidates and never writes a link — so the proposal's stated reason for excluding it ('FindSchedules writes a schedule-discovery link server-side, not a transaction link') describes a write that does not exist, while the real link write sits in the client component. Reachable with a stale stamp, because the matcher selects exactly the schedule: null rows the unlink defect produces.",
+      "Exhaustive grep of the client for schedule link writes returns seven sites (MobileScheduleEditPage 143/151, DiscoverSchedules 187, ScheduleLink 52, ScheduleEditModal 185/193, useTransactionBatchActions 436). MobileScheduleEditPage.tsx:101 and the two TransactionListItem.tsx hits (135, 422) are reads, not writes; useScheduleEdit.ts:255 is a reducer's initial state.",
+      "packages/loot-core/src/shared/schedules.ts:192-222 — getHasTransactionsQuery ORs schedule_occurrence === next_date against schedule_occurrence IS NULL AND date >= matchStartDate. With getScheduleOccurrenceMatchStartDate returning the occurrence date itself for a one-time schedule (dateCond op 'is', line 95), AC-1's flip is derivable: the stale stamp equals B.next_date so arm 1 matches before the fix; after the fix arm 2 needs date >= the occurrence date and the payment is dated today.",
+      "packages/loot-core/src/server/rules/transaction-rules.ts:363-391 and packages/desktop-client/src/components/rules/RuleEditor.tsx:443-454 — runRules skips rules linked to other schedules when the transaction already has one, and getActionFields() offers category, payee, payee_name, notes, cleared, account, date, amount — no schedule. I checked the proposal's reachability hedge for Fix 2 instead of accepting it, and it holds: no UI-authored rule can reassign a schedule, so Fix 2 rests on the invariant rather than an observed user bug.",
+      "packages/loot-core/src/server/transactions/merge.ts:173-186 — merge writes schedule and schedule_occurrence together from one source (scheduleSource), so it cannot desync and needs no change.",
+      "packages/loot-core/src/server/transactions/transfer.test.ts:361-388 — the flagged test builds {...payload, schedule: null, schedule_occurrence: null} and calls transfer.onUpdate directly, bypassing batchUpdateTransactions. No production caller constructs this payload, so it passes with the fix reverted.",
+      "packages/loot-core/src/server/schedules/app.ts:568-608 — postTransactionForSchedule sets occurrence = today ? schedule.next_date : (date ?? schedule.next_date) while date = today ? currentDay() : .... Posting today against an UPCOMING schedule therefore produces exactly the payment the fix changes the status of: dated today, stamped for a future occurrence. This is what makes AC-1 reachable by hand in five clicks."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Enforce the invariant server-side in batchUpdateTransactions: when an update changes `schedule`, null the stamp unless the payload mentions it.",
+        "rejected_because": "It needs a read of each row's current schedule to tell a real link change from a no-op re-send, adding a query to a hot path, and it guesses at intent on paths (api.updateTransaction, sync imports) that legitimately send a full row. The callers are few, enumerable and all send the same one-field payload — I verified the set is exactly seven — so fixing the senders is smaller, has no inference, and needs no new read. If a future caller appears that cannot be enumerated, this becomes the right fix."
+      },
+      {
+        "approach": "Drop the clearing clause and close the ticket on the documentation-and-test fixes only.",
+        "rejected_because": "It leaves a real, reproduced defect in the product (both legs keep a stamp for a schedule they are no longer linked to) and closes the ticket on it. The 'make it real' branch fixes the UI rather than deleting the criterion."
+      },
+      {
+        "approach": "Keep the last plan's AC-2 and qa_script steps 8-9 as written — 'relink to B and confirm B reads Due, not Paid'.",
+        "rejected_because": "That step cannot fail. With B dated far in the future and the payment dated and stamped today, B reads scheduled both before and after the fix; with two same-date schedules and the payment on that date, B reads paid both times. A criterion that passes on unfixed code manufactures false confidence. The step is rebuilt on the one shape that does flip, and AC-1 now carries the derivation that shows why it flips."
+      },
+      {
+        "approach": "For the addTransfer hazard, stop runRules from reassigning the schedule on a mirror at all.",
+        "rejected_because": "It changes rule semantics for every mirrored transaction — a rule that legitimately relinks the other account's row would stop working, a wider behaviour change than dropping a stamp that no longer applies. Deriving the occurrence is narrower and leaves the invariant intact."
+      },
+      {
+        "approach": "Also rewrite getHasTransactionsQuery so a stale stamp cannot suppress a legitimate match (e.g. treat any linked row in the date window as a match regardless of stamp).",
+        "rejected_because": "It would make the fix unconditional and stop the defect mattering, but it discards the stamp's actual purpose: a re-dated payment must keep discharging the occurrence it was posted for (the comment at app.ts:605 says so). Matching on the date alone would re-break that."
+      },
+      {
+        "approach": "Fix the six sites the proposal named and leave DiscoverSchedules.tsx alone, on the proposal's stated reason that the server-side discovery writes only a schedule-discovery link.",
+        "rejected_because": "The stated reason is factually wrong — find-schedules.ts only filters candidates while matching and never writes a transaction link; the real link write is the client-side transactions-batch-update at DiscoverSchedules.tsx:184. And the site is not inert: its matcher selects schedule: null rows, which is exactly the state the unlink defect leaves behind, so it is the one path that turns the bug's output directly into a new wrong pairing. Including it costs one line."
+      }
+    ],
+    "assumptions": [
+      "The seven write sites are the complete set of production link/unlink writers. Verified by an exhaustive grep of the client for schedule link payloads, by reading each site, and by confirming mobile TransactionList routes through the shared hook while DiscoverSchedules is the auto-link path. find-schedules.ts writes no transaction link.",
+      "schedule_occurrence off a db.all row is the raw INTEGER and off db.getTransaction a 'YYYY-MM-DD' string; new tests must insert and assert in the right form. Read from the block comment at transfer.test.ts:230 and from schema/index.ts:56, where schedule_occurrence is f('date').",
+      "The mobile schedule page is a genuine third copy rather than a re-export — both files define their own onLinkTransactions/onUnlinkTransactions.",
+      "api.updateTransaction is NOT changed by this order. Its payload carries whatever the full-row read produced, so the stale diff it can build is a separate surface; touching it would widen the blast radius. Listed as a residual risk rather than assumed safe."
+    ],
+    "unknowns": [
+      "Whether any user's existing budget already holds rows in the corrupt state. Nothing in the code reads such rows defensively, so this change stops new corruption but does not repair old rows, and an existing stale stamp can still suppress a legitimate occurrence match (AC-4's direction). A migration would be the follow-up.",
+      "How to construct the addTransfer relink fixture. A rule that sets `schedule` is not authorable through the RuleEditor, so the AC-5 test must insert the rule directly (schedules/app.test.ts already does this with insertRule from transaction-rules and drives the handler through runHandler). I flag this rather than write a test I could not run.",
+      "Whether relinking a row a user deliberately stamped is a flow the product intends to support. Fix 1 clears the stamp on every relink. It is invisible whenever the payment's date is inside the new schedule's window, which covers the ordinary case, but intent could not be determined from the code.",
+      "The exact browser selectors for the Link schedule modal and the Schedules page's Unlink action are not in .sdlc/memory/qa/selectors.md (an empty stub). The QA script is written by visible text and may need a retry; the Librarian should record what holds.",
+      "Whether DiscoverSchedules' auto-link can be driven from any fixture at all — its input is server-side pattern matching over transaction descriptions. This is why AC-3 has no browser step for that site."
+    ],
+    "debate_summary": "There was no critique to judge — plan/critique.json is `{}`. The council's critic wrote nothing, so there was nothing to weigh the proposal against. I am reporting that plainly rather than implying a consensus that did not happen; it also means the proposal's evidence was never independently attacked, which is why I re-derived its load-bearing claims myself rather than adopting them.\n\nWhat I confirmed by reading the code, independently of the proposal's transcripts: the root cause (conform drops undefined, so a caller sending only { id, schedule } leaves the stamp); the insert/update asymmetry the last review demanded be stated explicitly — convertForInsert passes skipNull:true, convertForUpdate passes no options, and update() emits only for Object.keys(params), so a dropped key PRESERVES on update and falls back to NULL on insert; the re-read at transactions/index.ts:129-137 that rules out a server-side chokepoint; the zero-hit grep for schedule_occurrence in production client code; and the two honesty fixes (the unreachable partial-update hazard at transfer.ts:133-136 and the production-unreachable payload at transfer.test.ts:361). I also checked the proposal's own hedge on Fix 2's reachability rather than accepting it, and the hedge holds: getActionFields() has no schedule field and runRules skips other schedules' rules, so Fix 2 rests on the invariant rather than on an observed bug. The proposal took the 'make it real' branch on the router's flagged conflict, which is right.\n\nWhat I changed, and it is the substantive part: the proposal's central completeness claim is wrong. It asserts the write sites are \"exactly six\" and excludes a seventh by saying \"FindSchedules writes a schedule-discovery link server-side, not a transaction link, so it is excluded.\" No such server-side write exists — find-schedules.ts:29 only filters schedule: null while matching candidates. The actual link write is DiscoverSchedules.tsx:184-189, a client-side transactions-batch-update the proposal never examined, and it omits the stamp. It is not inert: its matcher selects exactly the schedule: null rows, which is the state the unlink defect produces, so it is the one site that converts the bug's output directly into a new wrong pairing. I added it to files[] and named it in AC-3. Adopting the proposal verbatim would have shipped a fix that reads complete and is not.\n\nA second change is smaller but load-bearing: Fix 2's mirror-insert instruction now specifies that schedule_occurrence must go in the OVERRIDE object after the ...transferTransaction spread, not in the literal at transfer.ts:61-70 — the literal already carries schedule_occurrence: transaction.schedule_occurrence and would otherwise win. The proposal did not say this, and getting it wrong silently reintroduces the bug on the mirror leg.\n\nI did not overturn the proposal's diagnosis. Its six named sites, its insert/update asymmetry handling (the explicit ?? null on the main-leg update, which the last review specifically required and which this order keeps), its rebuild of the QA discriminating step away from a shape that cannot fail, and its refusal to delete the inherited tests all survive my checking. I did downgrade one thing: I did not adopt the proposal's confidence of 78 as given, because its browser leg is derived rather than run and its seventh-site miss is evidence that the enumeration was not exhaustive — 76 is where that leaves the plan, and the number moves up if QA runs the script and the AC-1 flip is observed rather than derived.",
+    "residual_risks": [
+      "Rows already corrupt in a user's budget stay corrupt. Nothing repairs them; a stale stamp on an existing row can still suppress a legitimate occurrence match, which is the due → paid direction in AC-4. This is the gap QA should understand before signing off, and the reason a follow-up migration is the natural next ticket.",
+      "The api package's updateTransaction can still build a diff that links a row to a new schedule while carrying the old stamp, because it diffs from a full-row read (api.ts:597). Not reachable from the UI, so not fixed here.",
+      "The addTransfer fix is verified by derivation and by the insert/update asymmetry, not by a reproduction, and its production reachability is unproven — no UI-authored rule can set a schedule. If both addTransfer writes are dead code in practice, Fix 2 is harmless but untested in production, and the cost is two lines.",
+      "The DiscoverSchedules auto-link site is covered by reading its payload shape only. It has no browser coverage and cannot get any, because its input is server-side pattern matching that cannot be staged in a synthetic budget.",
+      "The mobile schedule edit page's link/unlink is changed but exercised by no automated test and only lightly in the QA script; the mobile view is the least-covered of the three surfaces.",
+      "AC-1's status-cell flip is derived from getHasTransactionsQuery's two arms, not observed in a running app. If it does not flip for a reason I did not anticipate, the browser criterion fails even though the field-level defect is genuinely fixed — read the field-level tests (AC-2, AC-3) as the primary evidence and AC-1 as corroboration.",
+      "Some tests inherited from PR #33 pass with the fix reverted. A green suite after this change is therefore not evidence that this change works — the new cases are, and they are the ones to watch."
+    ],
+    "mode": "committed"
+  }
 }
