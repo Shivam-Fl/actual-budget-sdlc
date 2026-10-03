@@ -70,5 +70,167 @@
     "decided_at": "2026-10-03T22:05:25.915Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "plan"
+  "dispatched_stage": "plan",
+  "validated_work_order": {
+    "issue": 44,
+    "version": 1,
+    "understanding": "useSchedules (packages/desktop-client/src/hooks/useSchedules.ts:135-190) tears the account register for one query round trip every time the schedules table changes. The schedules liveQuery's onData fires again on any change to the schedules table (a schedule edit, or a sync event touching schedules). It unsubscribes the two dependent queries, then declares `let statuses: ScheduleStatuses = new Map()` and `let postedTransactionsBySchedule = new Map()`, reopens both queries, and calls publish() from whichever returns first. The posted-transactions query is a plain $or over three columns; the status query is an $or of per-schedule $and branches with a calculate upstream, so the cheap query is expected to win and the tear is the common case. Publishing a fresh schedule list against an empty status map makes every schedule fail `isForPreview` (statuses.get returns undefined, which is not in ['due','upcoming','missed','paid']), so computeSchedulePreviewTransactions returns [], and usePreviewTransactions clears previewTransactions (usePreviewTransactions.ts:103-107). The register blanks and then repopulates. `setIsLoading(true)` sits in the effect body keyed on [query, upcomingLength] and never in onData, so only the initial mount is masked (gated behind isSchedulesLoading at usePreviewTransactions.ts:77-79); a refresh is not, and Balance.tsx:92-95 gates only on isLoading. I reproduced this: driving the hook through two onData cycles with the posted-transactions query resolving first leaves result.current.statuses.size === 0 while result.current.schedules.length === 2. The fix the epic names is to seed the two locals from the currently published data before reopening the queries. I trialled that seeding in a copy of the hook and it holds the rows; the existing six useSchedules tests still pass against it. One correction to the epic: seeding alone does NOT stop statusLabels being rebuilt on every posted-transaction event — publish() constructs `new Map([...statuses.keys()].map(...))` unconditionally, so a new Map identity is produced on each publish even when statuses is unchanged by identity. I verified this: with seeding alone, asserting `result.current.statusLabels` is the same object before and after the refresh failed. Reusing the previous statusLabels when the statuses Map is unchanged by identity makes it pass, and is a separate two-line change in the same publish body.",
+    "root_cause": "The schedules liveQuery's onData reinitialises both dependent Maps to empty on every refresh and publishes from whichever dependent query returns first, so the cheaper posted-transactions query publishes a fresh schedule list against an empty status map. isForPreview then rejects every schedule and the register empties for a round trip. setIsLoading(true) lives in the effect body only, so nothing masks a refresh.",
+    "approach": "Seed the two per-refresh locals from the last published ScheduleData instead of from empty Maps, held in a ref so onData (which closes over a stale render's `data`) reads the current value. Three edits, all inside useSchedules.ts: (1) add `const latestDataRef = useRef<ScheduleData>(data);` beside the three existing LiveQuery refs; (2) in the schedules onData, replace the two empty-Map declarations with reads of latestDataRef.current.statuses and latestDataRef.current.postedTransactionsBySchedule, and update the existing comment above them, which currently explains the reset and would otherwise describe behaviour the code no longer has; (3) in publish(), build the next ScheduleData object, reuse latestDataRef.current.statusLabels when `statuses === previous.statuses` by identity, otherwise build it as today, then assign latestDataRef.current = next before setData(next). Everything else in the hook is unchanged — the same queries are opened, the same teardown runs, isLoading is untouched. The seed is deliberately NOT filtered to the incoming schedule ids: a schedule added by the edit has no seeded status and is therefore excluded for one round trip, which is correct (an unknown status must not render a row) and is the conservative direction, whereas seeding a stale status onto a newly completed schedule is harmless because isForPreview also tests `!schedule.completed` against the fresh schedule object. This is a two-file change: the hook and its existing test file, plus a release note. No component, query builder, or consumer changes.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/hooks/useSchedules.ts",
+        "action": "edit",
+        "change": "Add `const latestDataRef = useRef<ScheduleData>(data);` after the postedQueryRef declaration (line 108). In the schedules liveQuery's onData, replace `let statuses: ScheduleStatuses = new Map();` and `let postedTransactionsBySchedule = new Map<string, PostedScheduleTransaction[]>();` (lines 147-151) with reads seeded from latestDataRef.current, and rewrite the comment block immediately above them (lines 143-146) so it explains that both queries start from the last published values rather than from empty, instead of describing the reset it no longer performs. In publish(), stop calling setData with an inline object literal: read `const previous = latestDataRef.current`, set `const statusLabels = statuses === previous.statuses ? previous.statusLabels : new Map([...statuses.keys()].map(key => [key, getStatusLabel(statuses.get(key) || '')]))`, build `const next: ScheduleData = { schedules, statuses, statusLabels, postedTransactionsBySchedule }`, then assign `latestDataRef.current = next;` before `setData(next);`. Leave the isUnmounted guard, the teardown of the two dependent queries, the error handling, setIsLoading, and the return shape untouched.",
+        "why": "This is the root cause: the register is emptied because a fresh schedule list is published against an empty status map. The ref rather than the `data` state variable is required because onData is created inside the effect, which only re-runs on [query, upcomingLength], so it closes over a stale `data` from the render that started the effect — reading state directly would seed from the initial empty Maps on every refresh and change nothing."
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useSchedules.test.ts",
+        "action": "edit",
+        "change": "Add tests covering the refresh seed. Reuse the existing `calls` array harness: calls[0] is the schedules query, and each schedules onData pushes the status query then the posted-transactions query, so the first cycle is calls[1]/calls[2] and the second is calls[3]/calls[4]. IMPORTANT: hoist the query into a `const query = q('schedules').select('*')` outside the renderHook callback in any new test that asserts on isLoading or on publish output — the existing tests build the query inline, which yields a fresh object per render, re-runs the effect, and leaves isLoading stuck at true; that is a latent flaw in the existing tests that only does not bite because they never assert isLoading. Use next_date values relative to `monthUtils.currentDay()` (import * as monthUtils from '@actual-app/core/shared/months') rather than fixed far-future dates: getStatus compares against today plus a 7-day window, so a fixed 2099 date yields 'scheduled' and a fixed past date yields 'missed', neither of which is the 'upcoming'/'due' a reader would expect.",
+        "why": "The behaviour is a race between two mocked queries, which is exactly what this harness can drive deterministically; without a test, the seed can be reverted silently because the existing suite still passes with the reset in place."
+      },
+      {
+        "path": "upcoming-release-notes/fix-schedule-rows-refresh-flicker.md",
+        "action": "create",
+        "change": "Create a release note with frontmatter `---\\ncategory: Bugfix\\nauthors: [Shivam-Fl]\\n---` followed by one sentence: 'Fix the Upcoming rows in an account register briefly disappearing when a schedule is edited or synced.'",
+        "why": "upcoming-release-notes/ is this repo's convention for user-visible fixes and every comparable AI-authored fix in that directory ships one (e.g. fix-schedule-occurrence-consumption.md)."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/hooks/useSchedules.test.ts",
+        "action": "edit",
+        "cases": [
+          "keeps the published statuses when the posted-transactions query wins the race on refresh: first cycle, deliver schedules then status then posted and assert statuses.size is 2; second schedules onData, deliver ONLY the posted query (calls[4]) and assert schedules.length is 2 AND statuses.size is 2 — this is the regression test, and it fails on the unmodified hook with 0",
+          "reuses the same statusLabels Map instance when statuses is unchanged by identity: capture result.current.statusLabels before the refresh, deliver only the posted query, assert result.current.statusLabels is toBe the captured value",
+          "rebuilds statusLabels once the status query delivers a new map: after the refresh, deliver calls[3] and assert the statusLabels instance is no longer the captured one",
+          "does not seed a status for a schedule added by the refresh: after a refresh whose schedule list includes a new id, delivering only the posted query leaves statuses.has(newId) false, and delivering the status query then makes it true",
+          "still unsubscribes the previous status and posted queries when schedules refresh, and still unsubscribes every query on unmount (the two existing tests, unchanged)"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/usePreviewTransactions.test.ts",
+        "action": "edit",
+        "cases": [
+          "no change required — the existing suite must keep passing untouched; it mocks useCachedSchedules wholesale and does not exercise the hook's refresh path, which is why the regression was invisible to it"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "source": "IAC-1",
+        "check": "With Upcoming rows showing in an account register, editing a schedule leaves those rows continuously on screen — they never blank out and reappear",
+        "verify": "browser",
+        "how_to_verify": "Open the demo budget (Welcome screen > 'Try the demo'), go to the Bank of America account register, and confirm Upcoming rows for 'Phone bills' / 'Internet bill' are listed. Open the schedule (Schedules > the schedule > Edit), change the amount, and save. Watch the register rows through the save: they must stay on screen for the whole refresh. The bug is a one-round-trip tear, so it may be a single dropped frame — use Playwright request throttling or repeat the edit several times to make it visible. The rows must never be absent while a refresh is in flight."
+      },
+      {
+        "id": "AC-2",
+        "source": "IAC-2",
+        "check": "The register renders Upcoming rows from the currently published schedule data, without waiting for the slower status query to return",
+        "verify": "browser",
+        "how_to_verify": "Same setup as AC-1. After the fix, the Upcoming rows in the register are produced from the seeded (previously published) status map the moment the schedules query fires, so the rows are already correct on screen before the status query resolves. Confirm by editing a schedule whose status does not change (e.g. only the amount) and checking the rows never disappear; the status query landing afterwards must not produce a second visible change."
+      },
+      {
+        "id": "AC-3",
+        "source": "IAC-3",
+        "check": "A test drives useSchedules through two onData cycles with the posted-transactions query resolving first, and the published data never pairs a schedule list with an empty status map",
+        "verify": "test",
+        "how_to_verify": "Run `yarn workspace @actual-app/web run test src/hooks/useSchedules.test.ts`. The named case is 'keeps the published statuses when the posted-transactions query resolves first on refresh'. It must be shown to fail on the unmodified hook (statuses.size === 0) and pass with the change."
+      },
+      {
+        "id": "AC-4",
+        "source": "IAC-4",
+        "check": "The existing useSchedules and usePreviewTransactions tests still pass, and statusLabels keeps its identity across a refresh that does not change statuses",
+        "verify": "test",
+        "how_to_verify": "Run `yarn workspace @actual-app/web run test src/hooks/useSchedules.test.ts src/hooks/usePreviewTransactions.test.ts` — all pre-existing cases pass. The statusLabels identity case is 'reuses the same statusLabels Map instance when statuses is unchanged by identity'."
+      },
+      {
+        "id": "AC-5",
+        "check": "A schedule added by the edit does not render an Upcoming row until its status is known, and a schedule marked completed in the edit leaves the register immediately rather than lingering on a stale status",
+        "verify": "browser",
+        "how_to_verify": "In the demo budget, edit a schedule to mark it complete and save: its Upcoming row must disappear from the register at the save, not one round trip later. Separately, create a brand-new schedule with a due date inside the upcoming window and confirm its row appears once the schedules view has settled. This is the boundary of the seed: unknown status renders nothing, and the fresh schedule object's own `completed` flag overrides any seeded status."
+      }
+    ],
+    "qa_script": [
+      "Boot with `yarn start` and open http://localhost:3001; the pipeline env is compose mode, base_url http://localhost:3001, no login (qa_auth.mode is none).",
+      "On the Welcome screen choose 'Try the demo' — the demo budget is created with real schedules ('Phone bills', 'Internet bill') on the Bank of America account, so Upcoming rows are present without hand-building data.",
+      "Open the Bank of America account and confirm the Upcoming rows are listed.",
+      "Trigger a schedules-table refresh WITHOUT touching the register: open the schedule in the Schedules page, change the amount, save, then navigate back to the account. Confirm the Upcoming rows never blank.",
+      "For a visible tear, throttle the network with Playwright/CDP network conditions (or repeat the edit several times) — the bug is a single query round trip and is easy to miss at full speed.",
+      "Repeat the refresh with a schedule marked complete, and confirm its row leaves the register promptly rather than after a delay.",
+      "Add a brand-new schedule dated inside the upcoming window and confirm its row appears once the view settles.",
+      "Watch the browser console throughout; a `Cannot read properties of undefined` from the schedules path would indicate the seed published a schedule list with no matching statuses."
+    ],
+    "risks": [
+      "The seed is stale by design for one round trip: between the schedules query firing and the status query returning, the register renders rows computed from the PREVIOUS status map. If a schedule's status genuinely changed in the edit (e.g. next_date moved from upcoming to missed), the row can show its old status briefly before correcting. This is strictly better than the current behaviour, which shows nothing at all for the same window. AC-5 pins the two edges that matter (added schedule, completed schedule).",
+      "A schedule ADDED by the refresh has no seeded status and is therefore excluded from the register for one round trip, because isForPreview treats an unknown status as not-for-preview. This is the conservative direction — an unknown status must not fabricate a row — but it means a newly created schedule's first row can appear a beat after the save.",
+      "The statusLabels identity reuse keys on Map identity. Any future code that MUTATES the statuses Map in place instead of replacing it would leave statusLabels stale; the current code always builds a fresh Map per status-query delivery, so the invariant holds today, but it is an invariant the next editor must know about.",
+      "No forbidden path is touched: the change is confined to packages/desktop-client/src/hooks/useSchedules.ts, its test, and a new file under upcoming-release-notes/. Nothing under .sdlc/**, .github/**, or the approved docs is modified.",
+      "No new host is contacted by this change. The existing api_allowlist (localhost, 127.0.0.1, api.github.com, raw.githubusercontent.com) already covers the app's runtime traffic, and nothing is added."
+    ],
+    "out_of_scope": [
+      "Moving setIsLoading(true) into onData so a refresh is masked by the loading state — the seed makes the gap disappear without touching isLoading, and flipping isLoading on refresh would blank the register for the round trip it is meant to hide.",
+      "A loading state in the register UI. There is none today and none is added; AC-1 is about continuity, not about a spinner.",
+      "Widening the change to usePreviewTransactions.ts, Balance.tsx, or the schedule query builders. They consume the hook correctly; the defect is entirely in what the hook publishes.",
+      "Deduplicating or cancelling in-flight dependent queries across a refresh, or any change to the tear-down ordering that the existing unsubscribe tests already cover.",
+      "Making the two dependent queries atomic (publish only once both have delivered). The comment in the hook explains why this is deliberately not done: it strands the register in its loading state whenever one query is slow. IAC-2 depends on the current independent-publish behaviour.",
+      "Scheduling or sync-side changes. Nothing about how schedule edits propagate is touched."
+    ],
+    "kind": "bug",
+    "confidence": 88,
+    "confidence_rationale": "The failure is reproduced deterministically in the unit harness, the fix is trialled in a copy of the hook against both the reproduction and the existing suite, and the two edge cases that the seed could plausibly break were tested rather than reasoned about. The residual uncertainty is behavioural rather than technical: how visible a one-round-trip tear is in a browser, which affects how AC-1 should be judged but not what to build. The one correction to the epic's stated fix (statusLabels is not stabilised by seeding alone) is verified by a failing assertion, so the implementer is not being handed an unverified claim.",
+    "reproduced": true,
+    "evidence": [
+      "Reproduced the tear in a vitest harness against the unmodified hook: renderHook(useSchedules), deliver schedules -> status -> posted, assert statuses.size === 2 (passes), then fire a second schedules onData and deliver ONLY the posted query (calls[4]); result.current.schedules.length === 2 but result.current.statuses.size === 0, and the assertion `statuses.size > 0` failed with 'expected 0 to be greater than 0'.",
+      "Confirmed the epic's secondary claim does not hold on its own: with seeding applied but statusLabels still built unconditionally in publish, asserting result.current.statusLabels is the same object before and after the refresh FAILED ('Compared values have no visual difference' — a fresh Map each publish). Adding the identity reuse made it pass.",
+      "Verified the candidate fix: seeding both maps from a latestDataRef plus the statusLabels identity reuse keeps statuses.size at 2 across the refresh, and the existing six useSchedules tests all pass against it.",
+      "Verified the edge cases against the candidate fix: a schedule added by the refresh has no seeded status and is excluded until the status query delivers, then appears; a schedule marked completed by the refresh still leaves the register immediately because isForPreview tests the fresh schedule object's own `completed` flag.",
+      "A first run of the reproduction appeared to show isLoading stuck true; that was an artefact of building the query inline so the effect re-ran each render, not the hook's behaviour — real callers memoise the query (Account.tsx:2091, the mobile pages).",
+      "All scratch files (__repro.test.ts, __trial*.test.ts, useSchedulesTrial*.ts) were deleted; `git status` shows only the untracked plan/ directory plus work-order.json, and `git diff` against HEAD is empty."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Set isLoading true in onData so the refresh is masked by the loading state, as the initial mount already is",
+        "rejected_because": "That blanks the register for exactly the round trip it is meant to hide: usePreviewTransactions returns [] while isSchedulesLoading is true, and Balance.tsx returns null on isLoading. It converts a data tear into a loading flicker, and it would break AC-1 rather than fix it."
+      },
+      {
+        "approach": "Hold the previous status map in a ref but publish only once both dependent queries have delivered in the current cycle",
+        "rejected_because": "This is the atomic-publish approach the existing comment at useSchedules.ts:143-146 already rejects: the two queries are independent subscriptions and one of them can be arbitrarily slow, so the register would sit in its loading state until the slower one lands. IAC-2 explicitly requires the register to render without waiting for the slower query."
+      },
+      {
+        "approach": "Seed only the statuses map and leave postedTransactionsBySchedule empty on refresh",
+        "rejected_because": "Both locals are published from the same body and `computeSchedulePreviewTransactions` consumes both; seeding one and resetting the other produces a mixed state (correct statuses, empty occurrence index) that would re-show occurrences the user had already posted. I trialled seeding both and verified the added/completed edge cases hold."
+      },
+      {
+        "approach": "Derive statusLabels with useMemo over statuses instead of an explicit identity check in publish",
+        "rejected_because": "statusLabels is built inside publish, which runs from a query callback rather than during render, so a useMemo keyed on statuses would not be the thing that decides the value. It also does not address the case where statuses is unchanged — the map is rebuilt on every publish regardless. The identity check inside publish is the direct expression of the invariant."
+      }
+    ],
+    "assumptions": [
+      "The three existing useSchedules tests that build `q('schedules').select('*')` inline inside renderHook are not themselves broken; the fresh-per-render query re-runs the effect, but those tests never assert isLoading and their assertions still hold. The new tests must hoist the query.",
+      "getStatus reads `monthUtils.currentDay()`, so any test asserting a specific status string must use dates relative to today rather than fixed literals.",
+      "The demo budget created by 'Try the demo' contains schedules on Bank of America (packages/loot-core/src/mocks/budget.ts:944+), so AC-1 and AC-5 are reachable without hand-built data.",
+      "No consumer depends on the status map being empty immediately after a refresh. usePreviewTransactions, Balance.tsx, RuleEditor.tsx and useCategoryScheduleGoalTemplates all treat statuses as a lookup keyed by schedule id, so a map carrying one round trip of stale values is well-formed for every one of them."
+    ],
+    "unknowns": [
+      "Whether the tear is perceptible at full speed in a browser. It is a single query round trip and may be one dropped frame; the qa_script therefore calls for network throttling or repeated edits rather than a single observation. If QA cannot make it visible at all, AC-3's test is the authoritative proof and AC-1 should be judged on the rows being continuously correct rather than on catching the flicker.",
+      "Whether other consumers of useCachedSchedules render anything user-visible from statuses during the refresh window that would now show a stale value where it previously showed nothing. RuleEditor.tsx:397 and useCategoryScheduleGoalTemplates.ts read statusLabels by schedule id; neither was traced far enough to rule out a stale label being visible for a round trip."
+    ],
+    "debate_summary": "Single-stage plan (no council), so no critique/arbiter exchange. The substantive finding is a correction to the epic's stated fix: the epic says seeding 'also stops statusLabels being rebuilt on every posted-transaction event'. Verified false on its own — publish() constructs the Map unconditionally — with a failing identity assertion, so the work order specifies the identity reuse as a separate required change and explains why useMemo is not the right tool for it.",
+    "residual_risks": [
+      "QA cannot drive the exact race in a live browser — it is two local queries landing in a particular order — so AC-1 and AC-2 are judged on continuity of the rows rather than on observing the tear directly. AC-3 is the deterministic proof and is the one to trust if the browser observation is ambiguous.",
+      "The refresh path has no e2e coverage upstream; this change adds unit coverage only. A regression that only shows up with a real sync event landing mid-refresh would not be caught by the added tests."
+    ],
+    "mode": "proposal",
+    "route_request": {
+      "type": "insert_stage",
+      "stage": "maintainer",
+      "reason": "Not requested for this ticket's work — raised only so a human can decide whether the stale-status window (up to one query round trip showing a previous status after an edit that changes it) is acceptable as a user-visible trade, or whether the epic should be re-split to require an atomic publish with a real loading state instead. The fix as specified is correct and tested; the question is product tolerance for briefly-stale status text, which a planner should not settle alone."
+    }
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-03T22:27:49.681Z",
+  "validated_ac_changes": []
 }
