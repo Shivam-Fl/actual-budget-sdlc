@@ -247,5 +247,163 @@
       "The isMockFunction assertion is position-sensitive — only meaningful before the test's own spy. A later edit that moves it below line 42 would make AC-1 unsatisfiable-by-accident rather than catch the regression, which is why the qa_script checks the position explicitly.",
       "If it.fails is rejected at review, the afterEach and the isMockFunction assertion still stand on their own — but the ticket's falsifiability claim weakens, and the leak would only be caught by the next person who happens to break an assertion in that file."
     ]
-  }
+  },
+  "approved_work_order": {
+    "issue": 29,
+    "version": 2,
+    "kind": "chore",
+    "mode": "committed",
+    "understanding": "Issue #29 collects six non-blocking review findings from PR #27 (for #24) and asks each be re-checked before planning, and dropped if it does not hold up. Re-checked all six against the tree at 63633ad; they split three ways. Three are real code work: (2) the electron test restores its console.log spy and closes both better-sqlite3 handles as the last three statements of the test body (index.electron.test.ts:81-83), so a failing assertion above them skips both — confirmed, since packages/loot-core/src/mocks/setup.ts:161 runs afterEach but never vi.restoreAllMocks(); (3) the web test at index.test.ts:303 opens two sql.js handles and never closes them (grep for closeDatabase returns 0); (6) the web case repeats a six-line runQuery block three times where a local query(db, pattern) helper — the shape index.electron.test.ts:50-56 already uses — says it in one line. Three are not code changes: (1) #24's AC-4 named the wrong import mechanism, so the fix is to the criterion not the file; (4) a merged PR's title/body accuracy; (5) the repo-wide customConditions gap the reviewer explicitly ruled out of a test-only PR. The change is confined to the two sqlite test files.",
+    "root_cause": "The two new tests written in PR #27 put their cleanup at the end of the test body rather than in an afterEach, so cleanup is skipped whenever an assertion above it fails. The web copy also inlined its query call three times instead of using the local helper its electron twin already has. Neither is a product-code defect: the REGEXP dedupe fix in index.electron.ts:130 and index.ts:220 is correct. Test hygiene only.",
+    "approach": "Two test files, no product code. In index.electron.test.ts, hoist teardown into a describe-level afterEach (vi.restoreAllMocks plus closing every handle in a describe-scoped `handles` array), matching ../connection/index.api.test.ts:4-6, and delete the trailing three statements at lines 81-83. Make the fix falsifiable — this is where v1 was wrong. v1 proposed an `it.fails` guard alone and named 'expected true to be false' as its message; that guard could never emit it, because it.fails passes whether or not the afterEach exists and nothing downstream observed the leak. The corrected mechanism has two coordinated halves, both required: (1) keep the `it.fails` guard first — spy on console.log, open a handle, push it onto `handles`, assert something deliberately false; (2) add `expect(vi.isMockFunction(console.log)).toBe(false)` as the FIRST statement of the existing test, before its own vi.spyOn at line 42. I ran both directions in a scratch vitest 5.0.3 harness: with the afterEach, '1 passed | 1 expected fail', exit 0; with the block deleted, the following test fails 'expected true to be false'. The failure surfaces in the FOLLOWING test, never in the it.fails test, so AC-1/AC-2 say exactly that. In index.test.ts, add a local query(db, pattern) helper passing null — matching the three replaced calls verbatim, so assertions are unchanged — and close both handles with closeDatabase, already exported at index.ts:289. v1 had the backend asymmetry backwards and the review caught it: web binds (index.ts:114), electron spreads (index.electron.ts:60,66); [] is what the ELECTRON backend requires, so no 'params is not iterable' probe is claimed on web.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+        "action": "edit",
+        "change": "Add a describe-scoped `const handles: Database[] = []` and a describe-level `afterEach(() => { vi.restoreAllMocks(); for (const handle of handles.splice(0)) { handle.close(); } })` as the first statements inside `describe('Native sqlite REGEXP guard', ...)`, matching ../connection/index.api.test.ts:4-6. Add an `it.fails(...)` as the FIRST test: it spies on console.log, opens a handle, pushes it onto `handles`, runs execQuery, then asserts `expect('never called').toBe('called')`. SECOND, add `expect(vi.isMockFunction(console.log)).toBe(false);` as the very first statement of the existing test, BEFORE its own `vi.spyOn` at line 42 — this is what makes the guard load-bearing. Push db1/db2 onto `handles` after each openDatabase call and delete the trailing mockRestore/close at lines 81-83. All globals (afterEach, it.fails, vi) come from vitest globals:true, so add no import.",
+        "why": "Finding 2 plus the falsifiability fix the review required. Verified in both directions in a scratch vitest 5.0.3 harness."
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "change": "Extend the line-3 import to include `closeDatabase`. In the case starting at line 303, insert `const query = (db, pattern) => runQuery(db, `SELECT id FROM textstrings where REGEXP('${pattern}', string)`, null, true);` above the db1 line, replacing the three verbatim six-line blocks (332-345, 344-351, 355-363) with one-line calls, preserving the two explanatory comments. Use null, not []: it matches the replaced calls verbatim (336, 346, 356). Append `closeDatabase(db1); closeDatabase(db2);` alongside the existing mockRestore at line 365. Let oxfmt wrap the import.",
+        "why": "Findings 3 and 6. The three blocks are byte-identical but for db1/db2; the electron twin already uses this helper shape and index.ts:289 exports closeDatabase."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+        "action": "edit",
+        "cases": [
+          "leaves its cleanup to afterEach, so a failing assertion cannot leak — the new it.fails guard; its aftermath is observed by the NEXT test, not by itself",
+          "reports an unparseable pattern once per database handle, not once per process — existing case, assertions unchanged (1, 2, 2, 3, 3), now opening with the isMockFunction assertion before its own spy; this is the assertion that goes red when the afterEach is removed",
+          "file-level: reports '1 passed | 1 expected fail' and exits 0, with no handle left open and no console.log mock surviving into the following test"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "cases": [
+          "should report an unparseable pattern once per database handle, not once per process — same assertions (1 then 2, then still 2), now through the query helper, closing both handles",
+          "file-level: the web sqlite suite still reports 9 passed (15 across the two web sqlite test files) and exits 0"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "index.electron.test.ts restores its console.log spy and closes both better-sqlite3 handles from a describe-level afterEach, not from the last three statements of the test body: the file contains afterEach( calling vi.restoreAllMocks() and closing every handle in a handles array, and the body no longer ends with consoleSpy.mockRestore(); db1.close(); db2.close(). This is the corrected form of #24's AC-4 mechanism, restated because that criterion named the wrong import and the code, not the criterion, was right.",
+        "how_to_verify": "Not browser-observable — test-file teardown with no UI. Run `yarn workspace @actual-app/core run test:node`; must exit 0. Then delete the afterEach block and re-run: THE FAILURE SURFACES IN THE FOLLOWING TEST — 'reports an unparseable pattern once per database handle' fails with 'expected true to be false' — not in the it.fails guard, which passes either way by design. Restore the block and confirm green.",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "The teardown is load-bearing rather than merely present: the file contains an it.fails test that spies on console.log, opens a handle and fails on purpose, AND the following test asserts expect(vi.isMockFunction(console.log)).toBe(false) as its first statement before its own spy. Both halves are required — the it.fails test alone passes with or without the afterEach, and the assertion alone has nothing to observe.",
+        "how_to_verify": "Run test:node and confirm '1 passed | 1 expected fail' and exit 0 — the expected failure is correct, not a defect. Then delete the afterEach and confirm the following test's isMockFunction assertion fails 'expected true to be false', which is the falsifiability proof. Do not expect the it.fails test itself ever to go red.",
+        "source": "IAC-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "The web sqlite per-handle test closes both sql.js handles it opens, via closeDatabase(db1) and closeDatabase(db2) imported from './index', and asserts the same log counts as before (1, then 2, then still 2).",
+        "how_to_verify": "Run `yarn workspace @actual-app/core run test:web`; the sqlite files must report 15 passed across 2 files and exit 0. The reviewer recorded closing these handles as optional, so this requires the calls to exist and the suite to stay green, not a new assertion.",
+        "source": "IAC-3",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "The web sqlite per-handle test issues its three REGEXP queries through one local query(db, pattern) helper rather than three inlined six-line runQuery blocks, and the helper passes null for params — matching the three calls it replaces verbatim — so the three existing assertions (returns [], log counts 1, 2, 2) are unchanged.",
+        "how_to_verify": "Run test:web; 9 tests in index.test.ts must pass. The helper's load-bearing-ness is established by the case's own unchanged assertions. Do NOT substitute [] for null as a falsification probe — this backend binds (index.ts:114), so [] is accepted and the case stays green; 'params is not iterable' is an error from the ELECTRON backend's spread (index.electron.ts:60,66) and cannot occur here.",
+        "source": "IAC-4",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "The diff touches exactly the two sqlite test files named in files[] — no product code in index.electron.ts or index.ts, no tsconfig.json, no refactor or rename beyond what the two findings require.",
+        "how_to_verify": "git diff --stat against main must list only the two sqlite test files. This is the scope check #24's review flagged on PR #27, kept explicit because finding 5 is a tempting tsconfig edit that is deliberately out of scope.",
+        "source": "IAC-5",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "yarn workspace @actual-app/core run test:node — must exit 0 and report '1 passed | 1 expected fail' for index.electron.test.ts (the it.fails guard). Baseline before this change is 1212 passed | 2 skipped across 87 files; after, 1212 passed | 1 expected fail | 2 skipped.",
+      "yarn workspace @actual-app/core run test:web — must exit 0 with 15 passed across 2 files, unchanged from baseline.",
+      "npx oxlint packages/loot-core/src/platform/server/sqlite/ — must exit 0. The load-bearing oxlint-disable on the './index.api' import must survive; deleting it trips no-restricted-imports.",
+      "npx oxfmt --check packages/loot-core/src/platform/server/sqlite/ — must report all files correctly formatted. Run oxfmt (without --check) rather than hand-wrapping the multi-line import or the query helper.",
+      "npx tsgo -p packages/loot-core/tsconfig.json --noEmit — no new errors in the sqlite directory (pre-existing TS6305 crdt-build noise is expected and unrelated).",
+      "Falsification check, the point of the ticket: temporarily delete the afterEach block and re-run test:node. THE FAILURE MUST APPEAR IN THE FOLLOWING TEST as 'expected true to be false' at the `expect(vi.isMockFunction(console.log)).toBe(false)` line. The it.fails guard itself will still pass — that is correct and expected. If the following test stays green, the guard is not testing the teardown. Restore and re-run to confirm green.",
+      "Confirm the electron file's new isMockFunction assertion is positioned BEFORE its own vi.spyOn(console, 'log') (currently line 42) and that db1/db2 are pushed onto `handles` immediately after each openDatabase(':memory:') call — an assertion placed after the spy would always pass.",
+      "git diff --stat against main — exactly the two sqlite test files, nothing else."
+    ],
+    "risks": [
+      "it.fails has no precedent in this repository — grep for it across packages/ returns 0 matches. It works in vitest 5.0.x (verified: '1 passed | 1 expected fail', exit 0), but it reads as unfamiliar; a reviewer who objects should reject the guard, not the afterEach, which is the actual fix and stands on its own.",
+      "The it.fails guard asserts something deliberately false. If a future edit made it accidentally true, the test fails as an unexpected pass — correct behaviour that looks like a broken test at a glance. The comment above it should say the failure is intentional.",
+      "The isMockFunction assertion is position-sensitive: only meaningful BEFORE that test installs its own console.log spy. Placed after, it observes the test's own mock and passes unconditionally, quietly restoring exactly the unfalsifiable guard this plan replaced. The qa_script checks the position for this reason.",
+      "Closing the two sql.js handles in index.test.ts changes behaviour for that one case only. The other eight cases still leak their handles, as they always have; deliberate, but the file is now internally inconsistent on this point and a reviewer may read that as an incomplete rather than scoped fix.",
+      "packages/loot-core/tsconfig.json is deliberately NOT touched (finding 5). Every non-electron TypeScript consumer of '#platform/server/sqlite' still silently resolves to sql.js types, and the only record remains a comment in one test file.",
+      "No forbidden path is touched: both files are under packages/loot-core/src/platform/server/sqlite/, not in forbidden_paths; nothing in .sdlc/**, .github/** or the approved docs is modified.",
+      "No host, endpoint or api_allowlist change — this diff adds no network calls and touches no configuration."
+    ],
+    "out_of_scope": [
+      "AC-4 of #24 named the wrong import mechanism (the file imports './index.api' behind an oxlint-disable, because loot-core's tsconfig declares no customConditions so tsgo resolves the subpath's default export to sql.js). The code is correct and the AC text was wrong; restated correctly in AC-1. No file changes for it — the AC text lives in #24's already-merged work order.",
+      "Retitling PR #27 ('4 from the review' shipped two findings). PR #27 is merged; its title is a GitHub record, not a file in this repository.",
+      "packages/loot-core/tsconfig.json: adding \"customConditions\": [\"electron\"]. Excluded at the reviewer's instruction — it changes type resolution for every module in loot-core, a far larger blast radius than a test-only ticket should carry. The header comment at index.electron.test.ts:3-9 is the correct fix at this scope and is already there.",
+      "Hoisting the seed helper shared between index.test.ts and index.electron.test.ts into a common module. The reviewer recorded the duplication as deliberate; extracting it adds a shared file across two vitest configs for two six-line functions.",
+      "Retrofitting afterEach teardown onto the other eight cases in index.test.ts, and onto the pre-existing consoleSpy.mockRestore() calls in this file.",
+      "Any change to the REGEXP dedupe logic itself in index.electron.ts:130 or index.ts:220. That fix from #24 is correct; this ticket is test hygiene only."
+    ],
+    "confidence": 90,
+    "confidence_rationale": "Higher than v1, because the two objections that sank it were both about falsifiability and both are now empirically closed rather than asserted. I built the corrected mechanism in a scratch vitest 5.0.3 harness and ran both directions: with the afterEach the pair reports '1 passed | 1 expected fail' and exits 0; with the afterEach block deleted the following test fails 'expected true to be false' at the isMockFunction assertion. That is exactly the behaviour AC-1 tells QA to look for, and it was impossible on v1's design. I also re-read both backends directly and the second objection is confirmed as the review states: web binds (index.ts:114), electron spreads (index.electron.ts:60,66), so [] would not throw on web and no such probe is claimed. Every line reference in files[] was read from the tree. The deduction left is it.fails, still with no precedent in the repo; it works, and the review named the afterEach-plus-assertion as the thing that matters, so that risk is confined to one guard test.",
+    "reproduced": true,
+    "evidence": [
+      "Objection 1 confirmed and now fixed. v1's it.fails guard alone could never detect a missing afterEach: it.fails asserts only that the body threw, and the guard's body asserts expect('never called').toBe('called'), so it passed either way. The reviewer's required mechanism — an isMockFunction assertion at the top of the FOLLOWING test — was built and run in both directions in a scratch vitest 5.0.3 harness: with the afterEach, 'Tests 1 passed | 1 expected fail (2)', exit 0; with the afterEach block deleted, 'AssertionError: expected true to be false' at the isMockFunction line in the following test, exit non-zero. That is the exact message AC-1 names, and it is reachable only on a spec-conforming PR.",
+      "Finding 2's premise confirmed in the tree: index.electron.test.ts:81-83 are the trailing consoleSpy.mockRestore(); db1.close(); db2.close(); inside the it body, and packages/loot-core/src/mocks/setup.ts:161 runs afterEach without ever calling vi.restoreAllMocks(), so a mocked console.log really does survive a failing assertion. Sibling precedent at ../connection/index.api.test.ts:4-6.",
+      "Objection 2 confirmed as the review states, and v1 was reversed. The web backend never spreads: index.ts:114 is stmt.bind(params) and index.ts:132 is stmt.run(params), and verifyParamTypes (index.ts:76-82) is an arr.forEach that no-ops on an empty array, so [] is accepted there. It is the ELECTRON backend that spreads — index.electron.ts:60 stmt.all(...params) and :66 stmt.run(...params) — which is what rejects null and why index.electron.test.ts:48-54 passes []. AC-4 and the qa_script's second probe are corrected and the impossible probe removed.",
+      "Finding 6 confirmed by reading: index.test.ts:332-345, 344-351 and 355-363 are the same SQL string differing only in db1/db2, each wrapped in an identical six-line expect(runQuery(...)) block with null params at lines 336, 346 and 356. index.electron.test.ts:50-56 already defines the query(db, pattern) helper shape.",
+      "Finding 3 confirmed: grep -c closeDatabase index.test.ts returns 0, and the case at 319-322 opens db1 and db2 with no close before the test ends at 366. closeDatabase is already exported from index.ts:289 and index.electron.ts:164, so no new helper is needed.",
+      "vitest globals confirmed: packages/loot-core/vitest.config.ts sets globals: true and the electron file imports only a type and './index.api', so the new afterEach and it.fails calls need no import.",
+      "Scope guards re-confirmed: packages/loot-core/tsconfig.json declares no customConditions while package.json maps './platform/server/sqlite' to {electron, api, default}. Neither edited path is in forbidden_paths.",
+      "Working tree left pristine: git status --porcelain shows only the untracked plan/ directory. All falsification experiments ran in a scratch directory outside the repo and were deleted afterwards.",
+      "Not re-verified here: the repo's own suite counts. node_modules is not installed in this planning environment, so I could not re-run test:node/test:web against the real files; the 1212 passed | 2 skipped and 15 passed baselines are carried forward from v1's recorded runs and should be confirmed by the implementer on first run. Every mechanism claim above was verified against real code or a real vitest 5.0.3 runtime."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Leave both cleanup blocks in the test bodies (do nothing for finding 2), matching the file's current style.",
+        "rejected_because": "The reviewer classified this as a robustness nit rather than a correctness bug, and that is fair given vitest's isolate:true and one test per file. But the leak is not hypothetical: setup.ts:161 runs afterEach without vi.restoreAllMocks(), so a failing assertion does leave a mocked console.log in place. The fix is four lines and matches a sibling file that already does it."
+      },
+      {
+        "approach": "Apply the customConditions fix (finding 5) in the same PR so the test file can import '#platform/server/sqlite' as AC-4 originally specified.",
+        "rejected_because": "The reviewer explicitly said not to. packages/loot-core/tsconfig.json declares no customConditions, so adding one re-types every module consuming a conditional export — a repo-wide type-resolution change riding on a test-hygiene ticket."
+      },
+      {
+        "approach": "Add the clean-state assertion at the END of the existing electron test instead of at the top, leaving the it.fails guard first.",
+        "rejected_because": "An assertion at the end of a test body runs before afterEach and, here, after the test's own vi.spyOn — it would observe the test's own mock and pass unconditionally. That is the same unfalsifiable shape v1 shipped, and the specific defect the review caught."
+      },
+      {
+        "approach": "Drop it.fails entirely and use an ordinary preceding test that fails on purpose, plus the isMockFunction assertion in the following test.",
+        "rejected_because": "Equivalent in proof — the review says so explicitly — but it leaves a permanently red test every future reader and CI run must interpret. I verified the it.fails form is green on both counts, and the deletion probe shows the following test going red with the exact message AC-1 names. Keeping one mechanism, described consistently, is what the review asked for."
+      },
+      {
+        "approach": "Skip finding 3 (unclosed sql.js handles) on the grounds that the reviewer marked it 'None required'.",
+        "rejected_because": "The reviewer said none required but noted closing both handles is desirable for symmetry with the electron file, and this ticket is already rewriting that exact case for finding 6. closeDatabase is already exported from index.ts:289, so it is two lines with no new helper."
+      }
+    ],
+    "assumptions": [
+      "The six findings still describe the tree at main (63633ad). I re-verified each against the current files rather than trusting the review's line numbers.",
+      "'packages/loot-core/src/platform/server/sqlite/index.test.ts' runs under vitest.web.config.ts (excluded from vitest.config.ts's node run), which is why it needs ENV=web and a separate command.",
+      "vitest globals are enabled for loot-core (packages/loot-core/vitest.config.ts sets globals: true), so the new afterEach and it.fails calls need no import and the electron file's import line is untouched.",
+      "oxfmt, not hand-formatting, decides the final line wrapping for the multi-line import and the query helper."
+    ],
+    "unknowns": [
+      "Whether the reviewer will accept it.fails as the mechanism for the guard. The repo has no precedent, and the guard is now only half the proof (the other half being the following test's isMockFunction assertion). A reviewer who rejects it.fails should reject only the guard; the afterEach and the assertion stand on their own.",
+      "Whether closing only two of the nine handles in index.test.ts reads as an arbitrary line in the diff or as correct scoping. I judged it scoping — the ticket is the two tests PR #27 added — but a reviewer may reasonably ask for all of them."
+    ],
+    "residual_risks": [
+      "The web test file now closes handles in one case and not in eight others. A future reader may reasonably ask why; the diff should make the scoping obvious rather than looking like an oversight.",
+      "The isMockFunction assertion is position-sensitive — only meaningful before the test's own spy. A later edit that moves it below line 42 would make AC-1 unsatisfiable-by-accident rather than catch the regression, which is why the qa_script checks the position explicitly.",
+      "If it.fails is rejected at review, the afterEach and the isMockFunction assertion still stand on their own — but the ticket's falsifiability claim weakens, and the leak would only be caught by the next person who happens to break an assertion in that file."
+    ]
+  },
+  "approved_too_high": false
 }
