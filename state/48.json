@@ -175,7 +175,11 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/e2e/command-bar.test.ts",
+    "upcoming-release-notes/fix-command-bar-dialog-title-warning.md",
+    "packages/desktop-client/e2e/command-bar.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
