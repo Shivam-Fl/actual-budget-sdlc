@@ -288,7 +288,8 @@
         "detail": "The new `referredText` helper types its locator as `ReturnType<Page['locator']>` and casts inside it with `attr as string`. Both drift from the surrounding file and from AGENTS.md. Every other e2e file in the repo — 32 of them, including `fixtures.ts:2` in this same directory — imports `Locator` by name from `@playwright/test`; `grep -rn 'ReturnType' packages/desktop-client/e2e/` returns nothing else, so this is the only indirect spelling in the suite. And the cast is dead weight: `attribute` is already typed `'aria-labelledby' | 'aria-describedby'`, which is assignable to `string`, so `as string` narrows nothing — while AGENTS.md states plainly \"Prefer `satisfies` over type assertions (`as`, `!`)\".\n\n`packages/desktop-client/e2e/command-bar.test.ts:16`\n\nEvidence: packages/desktop-client/e2e/command-bar.test.ts:15-21 — `function referredText(dialog: ReturnType<Page['locator']>, attribute: 'aria-labelledby' | 'aria-describedby'): Promise<string | null> { return dialog.evaluate((node, attr) => { const id = node.getAttribute(attr as string); ...`. Compare packages/desktop-client/e2e/accounts.test.ts:3 and e2e/fixtures.ts:2, both `import type { Locator, Page } from '@playwright/test'`.\n\nFix: Add `Locator` to the existing `import type { Page } from '@playwright/test'` and write `dialog: Locator`, then drop the cast: `const id = node.getAttribute(attr);`."
       }
     ],
-    "pr": "39"
+    "pr": "39",
+    "filed": 48
   },
   "qa": {
     "verdict": "pass",
