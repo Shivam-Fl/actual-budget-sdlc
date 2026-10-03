@@ -418,7 +418,8 @@
         "detail": "The doc comment pins line numbers inside a third-party package's built output (`dist/index.mjs:288 and :304`). Those line numbers are correct today and will be silently wrong after any Radix patch release, at which point the comment reads as a false citation rather than as a stale one.\n\n`packages/desktop-client/e2e/command-bar.test.ts:10`\n\nEvidence: I fetched @radix-ui/react-dialog@1.1.15/dist/index.mjs and confirmed line 288 is the title MESSAGE template and line 304 is the description MESSAGE template, so the citation is accurate as written. But yarn.lock:6685-6687 resolves `@radix-ui/react-dialog@npm:^1.1.6` to a floating 1.1.15, and a 1.1.16 would move both lines without changing the strings the regex depends on. The commit message for 0acc43a makes the case for quoting the messages verbatim — that part is well justified and inspection is genuinely how the dropped backtick was caught — but the line numbers are the fragile half of the citation.\n\nFix: Drop the line numbers and keep `@radix-ui/react-dialog@1.1.15` plus the two verbatim messages. The version pin is what makes the claim checkable; the line offsets are what make it rot."
       }
     ],
-    "pr": "53"
+    "pr": "53",
+    "filed": 57
   },
   "qa": {
     "verdict": "pass",
