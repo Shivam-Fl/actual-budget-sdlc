@@ -71,5 +71,150 @@
     "decided_at": "2026-10-03T15:58:45.615Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "plan"
+  "dispatched_stage": "plan",
+  "validated_work_order": {
+    "issue": 51,
+    "version": 1,
+    "understanding": "Issue #51 collects four non-blocking findings the review of PR #50 raised and approved despite. Three are in the two sqlite test files PR #50 touched; the fourth is a PR-metadata nit. I reproduced each against the default branch before planning, as the ticket asks.\n\n(1) REPRODUCED. packages/loot-core/src/platform/server/sqlite/index.test.ts:35 — the afterEach added by PR #50 calls vi.restoreAllMocks(), which restores every spy the file holds, including the global.fetch spy that patchFetchForSqlJS installs in the top-level beforeAll (index.test.ts:17, via vi.spyOn(global, 'fetch') at mocks/util.ts:71). My probe appended to the describe printed 'PROBE fetch isMock=false' with line 35 present and 'PROBE fetch isMock=true' with that one line removed. The suite stays green (9 passed) because init() runs once in the beforeAll and sql.js caches the compiled wasm, so this is latent rather than live — exactly as the review said. The fix the review proposed (re-arm the patch per test) works: patchFetchForSqlJS is a vi.spyOn(...).mockImplementation(...), so calling it again is idempotent, and with a beforeEach re-arm my same probe printed isMock=true and the suite stayed green.\n\nThe review also noted this leaves the file differing from its sibling fs/index.test.ts:20, which installs the same beforeAll fetch patch and was left alone. I checked why the sibling needs nothing: its afterEach (fs/index.test.ts:28-30) calls only sqlite._getModule().reset_filesystem() and never vi.restoreAllMocks(), so its fetch patch survives every test. The sibling is not a counterexample — it is the shape that has no bug. The divergence the review flagged is therefore correct after the fix, not a leftover.\n\n(2) REPRODUCED. packages/loot-core/src/platform/server/sqlite/index.electron.test.ts:143 — the comment block at lines 142-144 says `expect(handles).toHaveLength(0)` is 'above'. That assertion is at line 151, after teardown() at 148. grep confirms the only two occurrences of the string are the comment at 143 and the assertion at 151, in that order. One word is wrong.\n\n(3) REPRODUCED. packages/loot-core/src/platform/server/sqlite/index.test.ts:29-30 — the comment PR #50 rewrote promises the afterEach 'would skip the cleanup and leave an open handle and a mocked console.log behind for the next test'. grep confirms 10 `await openDatabase()` calls (lines 42, 71, 111, 154, 199, 220, 261, 341, 344, 382) but handles.push only at 342 and 345, both inside the one 'once per database handle' test. So the mock half is true for every test; the handle half is true for one test of nine. The comment overstates. The review explicitly scopes the fix to not overstating the comment rather than pushing in the eight other tests, and I agree — see out_of_scope.\n\n(4) NOT A CODE CHANGE. PR #50's title lacks the mandatory `[AI]` prefix (.github/agents/pr-and-commit-rules.md). PR #50 is MERGED (mergedAt 2026-10-03T14:41:18Z), so there is no diff to carry this fix: the rule is enforced when a PR is opened, and .github/** is a forbidden path. The review itself notes every recent PR (37, 39, 40, 49) shares this shape, which makes it a pipeline-wide habit and not this ticket's code. Deferred to a human with the reason recorded.",
+    "root_cause": "PR #50 added a blanket vi.restoreAllMocks() to index.test.ts's afterEach and, separately, wrote two comments that claim more than the code does. The blanket restore reaches beyond the console spy AC-1 targeted, because vi.restoreAllMocks() is file-scoped rather than spy-scoped; the comments were written from the shape of the teardown rather than from what each test actually registers.",
+    "approach": "Three small edits across the two files PR #50 touched, plus one regression test that fails without the fix.\n\nThe fetch patch moves from once-per-file to once-per-test. Hoist the existing baseURL template literal to module scope (it is currently computed inside the beforeAll), keep patchFetchForSqlJS(baseURL) in the beforeAll where init({ baseURL }) needs it, and add a beforeEach that calls patchFetchForSqlJS(baseURL) again. patchFetchForSqlJS is vi.spyOn(global, 'fetch').mockImplementation(...), so re-spying a restored global is idempotent and the afterEach's blanket restore can no longer outrun it. This is the smaller of the two fixes the review offered — the other, narrowing the restore to the console spy alone, would mean hand-tracking the console spy and would break the deliberate mirroring of index.electron.test.ts's teardown().\n\nA new test at the end of the describe asserts vi.isMockFunction(globalThis.fetch) is true. I verified both directions: appended to the unmodified file it fails with 'expected false to be true', and passes once the beforeEach re-arm is in. It must not be placed first — without the fix fetch is still patched during whichever test runs before the first afterEach, so a first-positioned assertion would pass for the wrong reason and be vacuous under -t filtering. A comment on the test must say so, matching the existing convention in index.electron.test.ts:61-66.\n\nThe two comment corrections are wording only. In index.test.ts:29-30 the comment is split so the mock half and the handle half carry their true scopes. In index.electron.test.ts:143 'above' becomes 'below'.\n\nNo production code changes. No new dependency. No behaviour change to anything outside the test files.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "change": "Hoist the baseURL template literal out of the beforeAll to a module-scope const, keep patchFetchForSqlJS in the beforeAll (init needs it), and add a top-level beforeEach that calls patchFetchForSqlJS(baseURL) again, with a comment saying the afterEach's vi.restoreAllMocks() takes down the global.fetch spy and that the per-test call re-establishes it. Leave vi.restoreAllMocks() at line 35 exactly as it is. Rewrite the comment at lines 28-31 so the mock half (every test) and the handle half (only what a test pushed, which only the last test does) carry their true scopes. Append a final it(...) named 'keeps the sql.js wasm fetch patched for every test, not just the first' whose body is a single expect(vi.isMockFunction(globalThis.fetch)).toBe(true), preceded by a comment saying it is deliberately not first.",
+        "why": "Findings 1 and 3, both reproduced with a controlled probe in both directions."
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+        "action": "edit",
+        "change": "At the comment block at lines 142-144, change the single word 'above' to 'below' so it reads that expect(handles).toHaveLength(0) is 'below'. No assertion, no line of code and no other comment moves.",
+        "why": "Finding 2, verified by reading the file: comment at 143 cites an assertion eight lines further down at 151."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "cases": [
+          "keeps the sql.js wasm fetch patched for every test, not just the first — new final test; verified to fail ('expected false to be true') on the unmodified file and pass once the beforeEach re-arm is added",
+          "the nine pre-existing cases in the 'Web sqlite' describe still pass unchanged under vitest.web.config.ts"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "Running index.test.ts under vitest.web.config.ts reports 10 passed and 0 failed, including the new last test.",
+        "verify": "test",
+        "how_to_verify": "cd packages/loot-core && yarn vitest --run --config vitest.web.config.ts src/platform/server/sqlite/index.test.ts — expect 'Tests  10 passed (10)'."
+      },
+      {
+        "id": "AC-2",
+        "check": "Reverting only the added beforeEach makes the new fetch-patch test fail with 'expected false to be true' while the other nine still pass.",
+        "verify": "test",
+        "how_to_verify": "Delete the four-line beforeEach block and re-run AC-1's command; expect 'Tests  1 failed | 9 passed (10)'. Both directions were run on the default branch while planning."
+      },
+      {
+        "id": "AC-3",
+        "check": "The comment in index.electron.test.ts says 'below' rather than 'above' for the expect(handles).toHaveLength(0) assertion, and that assertion sits at a higher line number.",
+        "verify": "test",
+        "how_to_verify": "grep -n the two hits must appear in order, comment first. Confirmed on the default branch: 143 and 151."
+      },
+      {
+        "id": "AC-4",
+        "check": "The rewritten comment in index.test.ts claims no more than the code does: mock half for every test, handle half only for pushed handles, which only the final test does.",
+        "verify": "test",
+        "how_to_verify": "Cross-check against grep -n 'handles.push' — 10 openDatabase() calls, handles.push only at 342 and 345."
+      },
+      {
+        "id": "AC-5",
+        "check": "fs/index.test.ts is unchanged and its afterEach still calls only reset_filesystem() with no vi.restoreAllMocks().",
+        "verify": "test",
+        "how_to_verify": "git diff --name-only lists only the two sqlite test files; run the web config and confirm both included files pass (16 tests after the new one)."
+      },
+      {
+        "id": "AC-6",
+        "check": "No production source file changes; yarn typecheck and yarn lint pass.",
+        "verify": "test",
+        "how_to_verify": "git diff --name-only shows exactly the two sqlite *.test.ts files; then yarn typecheck and yarn lint:fix from the root."
+      }
+    ],
+    "qa_script": [
+      "cd packages/loot-core && yarn vitest --run --config vitest.web.config.ts — both web-environment files pass.",
+      "cd packages/loot-core && yarn vitest --run --config vitest.config.ts src/platform/server/sqlite/index.electron.test.ts — the electron file still passes.",
+      "git diff --stat — only the two sqlite *.test.ts files appear.",
+      "Falsifiability check: comment out the added beforeEach, re-run the web config, confirm the new fetch-patch test fails while the other nine pass. Restore it afterwards.",
+      "grep -n 'expect(handles).toHaveLength(0)' packages/loot-core/src/platform/server/sqlite/index.electron.test.ts — comment hit above assertion hit.",
+      "grep -n 'handles.push' packages/loot-core/src/platform/server/sqlite/index.test.ts — still two hits, both in the final test.",
+      "From the repository root: yarn lint:fix and yarn typecheck — both clean."
+    ],
+    "risks": [
+      "The beforeEach re-arm is a new hook running before all ten tests in index.test.ts. patchFetchForSqlJS is a vi.spyOn(global, 'fetch').mockImplementation(...), so the second and later calls reinstall the same mock on an already-restored global; if that ever stopped being true the suite would fail loudly on the new assertion rather than silently.",
+      "The re-arm only touches global.fetch within this one test file. vitest isolates files by default, so it cannot leak into fs/index.test.ts, which runs in the same vitest.web.config.ts project. fs/index.test.ts is deliberately left alone: its afterEach never calls vi.restoreAllMocks().",
+      "Touching only comments in index.electron.test.ts means that file's runtime behaviour is unchanged; the only risk is a bad find-and-replace landing the wrong 'above' or 'below'. AC-3 pins the direction.",
+      "No path in forbidden_paths is touched: .sdlc/memory/**, docs/spec/**, docs/prd.md, docs/trd.md, docs/ui.md, .github/** and .sdlc/** are all outside files[]. In particular the [AI] PR-title rule lives in .github/agents/pr-and-commit-rules.md, which no ticket may change — that is why finding 4 is deferred.",
+      "No new host is contacted and no new dependency is added, so env.api_allowlist is unaffected."
+    ],
+    "out_of_scope": [
+      "Finding 4 — the missing [AI]` prefix on PR #50's title. PR #50 is already merged (mergedAt 2026-10-03T14:41:18Z), so there is no diff that can carry this fix, and the rule lives under .github/**, which is forbidden to every ticket. The review notes PRs 37, 39, 40 and 49 all share this shape, so it is a pipeline-wide habit in how PRs are opened. A human can rename the merged PR if they want the history to read correctly. The PR this ticket produces must carry the prefix.",
+      "Pushing handles.push(db) into the eight tests of index.test.ts that call openDatabase() without registering (lines 42, 71, 111, 154, 199, 220, 261, 382). The review explicitly scopes this out and this ticket does the same: eight unclosed in-memory sql.js handles inside a test process that exits minutes later is not a leak worth a diff. This ticket corrects the comment instead — the reviewer's stated fix.",
+      "Making the handle leak visible at all, e.g. asserting no sql.js handle survives the suite. Nothing currently observes it and adding an observer would be a new mechanism for a non-defect.",
+      "Any change to production code. The fetch patch and the teardown are test-only; nothing under packages/loot-core/src/platform/server/sqlite/index.ts is touched."
+    ],
+    "kind": "chore",
+    "confidence": 93,
+    "confidence_rationale": "All three code findings were reproduced on the default branch with a controlled probe in both directions, and the fix was applied and re-run: the regression test fails without it and passes with it. The fourth finding is not a code change and is deferred with its reason stated. What remains uncertain is only whether the reviewer would have preferred pushing handles in the eight unregistered tests, which the review itself scopes out.",
+    "reproduced": true,
+    "evidence": [
+      "index.test.ts:35 vi.restoreAllMocks() — probe appended to the 'Web sqlite' describe printing vi.isMockFunction(globalThis.fetch): printed isMock=false with the line present, isMock=true with only that line removed. Suite 9 passed either way.",
+      "Applied the proposed fix (hoist baseURL, add beforeEach(() => patchFetchForSqlJS(baseURL))) and re-ran the same probe: isMock=true, 10 tests passed.",
+      "Regression test appended to the unmodified file: '× keeps the sql.js wasm fetch patched for every test, not just the first' with AssertionError: expected false to be true; 1 failed | 9 passed. Same test after adding the beforeEach re-arm: 10 passed (10).",
+      "grep -n 'expect(handles).toHaveLength(0)' index.electron.test.ts returns only the comment at 143 and the assertion at 151, in that order — the comment's 'above' is wrong.",
+      "grep -n 'handles.push|await openDatabase' index.test.ts returns 10 openDatabase() calls at 42, 71, 111, 154, 199, 220, 261, 341, 344, 382 but handles.push only at 342 and 345, both in the final test.",
+      "fs/index.test.ts:28-30 afterEach calls only sqlite._getModule().reset_filesystem(); no vi.restoreAllMocks(), so its beforeAll fetch patch survives every test and needs no equivalent fix.",
+      "Baseline before any change: yarn vitest --run --config vitest.web.config.ts from packages/loot-core gives 15 passed (9 sqlite + 6 fs).",
+      "gh pr view 50 --json state,title,mergedAt returns state MERGED, mergedAt 2026-10-03T14:41:18Z, title 'fix: Follow-ups from #35: 5 from the review'."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Narrow the afterEach's restore to the console spy alone, calling mockRestore() on the one spy AC-1 targets.",
+        "rejected_because": "The review names this as an option but prefers the re-arm, and I agree: it requires hand-tracking which spies exist at teardown time and breaks the deliberate mirroring of index.electron.test.ts's teardown(). The re-arm is four lines and needs no bookkeeping. Confirmed by applying it and re-running."
+      },
+      {
+        "approach": "Move patchFetchForSqlJS out of beforeAll entirely and into beforeEach only.",
+        "rejected_because": "init({ baseURL }) in the beforeAll loads the wasm through the patched fetch, and beforeAll runs before the first beforeEach, so init would run against an unpatched global and fail. The patch has to be in both, which is why AC-1 requires the suite to stay at 10 passed."
+      },
+      {
+        "approach": "Treat the fetch finding as already-done because the suite is green and init() only runs once, and close it with a comment instead of a code change.",
+        "rejected_because": "The review calls it latent rather than live and still asks for the fix, and the ticket says to check each finding. I reproduced it: isMock=false with line 35 present, true without. A test file whose wasm fetch silently stops being mocked after the first test is one sql.js cache invalidation from a confusing failure."
+      },
+      {
+        "approach": "Push handles in the eight unregistered tests so the original comment becomes true as written, instead of rewording the comment.",
+        "rejected_because": "This is the scope the review explicitly declined, in a PR whose work order was scoped to the mock half. It touches eight tests for no observable benefit and would make the diff harder to review than the defect it addresses. Recorded in out_of_scope so a human can ask for it separately."
+      },
+      {
+        "approach": "Add the beforeEach re-arm to fs/index.test.ts too, so the two sibling files match.",
+        "rejected_because": "fs/index.test.ts's afterEach calls only reset_filesystem() and never vi.restoreAllMocks(), so its beforeAll fetch patch survives every test and there is nothing to fix. The review flags the divergence from the sibling but not a defect in the sibling. AC-5 pins the sibling as unchanged."
+      },
+      {
+        "approach": "Fix the missing [AI] prefix by editing .github/agents/pr-and-commit-rules.md or the PR-creation hook to enforce it.",
+        "rejected_because": ".github/** is a forbidden path — the guard would refuse the whole plan — and PR #50 is merged, so there is no title left for this change to fix. The rule already exists; what is missing is a human renaming the merged PR or the pipeline applying the prefix at creation."
+      }
+    ],
+    "assumptions": [
+      "main is the base the implementer branches from, and the three code findings still hold there — reproduced on this checkout after yarn install, not from the reviewer's evidence.",
+      "patchFetchForSqlJS remains idempotent (vi.spyOn(...).mockImplementation with no restore inside it). If someone later makes it stateful, the beforeEach re-arm breaks and the new test is what catches it.",
+      "vitest isolates test files by default, so a beforeEach in index.test.ts cannot affect fs/index.test.ts running in the same project. If isolation were ever disabled, AC-5's fs run would show it.",
+      "The comment conventions in these files are load-bearing — index.electron.test.ts:129-137 argues at length about a test's position — so new comments here are expected to carry that reasoning."
+    ],
+    "unknowns": [
+      "Whether the reviewer would prefer the eight unregistered handles in index.test.ts to be registered after all. The review says out of scope and this plan follows it, but it is the reviewer's call to overturn.",
+      "Whether the [AI]` prefix omission is worth a pipeline change (a hook refusing a PR whose title lacks it) rather than a one-off rename. That lives entirely under .github/** and is outside any ticket's reach."
+    ],
+    "mode": "committed"
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-03T16:09:42.924Z",
+  "validated_ac_changes": []
 }
