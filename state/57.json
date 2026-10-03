@@ -238,8 +238,6 @@
   },
   "touch_paths": [
     "packages/desktop-client/e2e/command-bar.test.ts",
-    "packages/desktop-client/e2e/reports.test.ts",
-    "upcoming-release-notes/fix-command-bar-dialog-console-drain.md",
     "packages/desktop-client/e2e/command-bar.test.ts",
     "packages/desktop-client/e2e/reports.test.ts"
   ],
