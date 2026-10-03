@@ -411,7 +411,37 @@
         "detail": "The PR title does not carry the mandatory `[AI]` prefix. The rule is unconditional and the enforcement hook only guards commit subjects, so nothing caught it.\n\nEvidence: .github/agents/pr-and-commit-rules.md:9 — \"ALL pull request titles MUST be prefixed with `[AI]` — you have to apply it yourself.\" `gh pr view 33 --json title` returns \"fix: Follow-ups from #7: 4 from the review\" with no prefix. The branch's single commit (895bd3b [AI] Carry the schedule occurrence stamp with the schedule link) complies, and scripts/agent-hooks/git-guard.sh:102-141 blocks only `git commit`, so no gate covers the title.\n\nFix: Rename the PR to `[AI] Follow-ups from #7: 4 from the review` (keeping whatever `fix:` convention the project uses after the prefix)."
       }
     ],
-    "pr": "33"
+    "pr": "33",
+    "qa": [
+      {
+        "id": "BUG-1",
+        "severity": "major",
+        "title": "Unlinking a schedule leaves a stale occurrence stamp that a later relink pairs with the wrong schedule",
+        "area": "desktop-client — useTransactionBatchActions.onBatchUnlinkSchedule",
+        "expected": "Unlinking a schedule from a transaction clears both the schedule link and the schedule_occurrence stamp, so the transaction can never carry a stamp belonging to a schedule it is not linked to.",
+        "actual": "onBatchUnlinkSchedule sends only { id, schedule: null }. The schedule_occurrence stamp survives the unlink and is still sitting on the row the next time it is linked, so relinking that row to a different schedule produces a transaction linked to QA Sch B while stamped for QA Sch A's occurrence. Measured in the browser: after unlink {\"schedule\": null, \"schedule_occurrence\": \"2026-10-03\"}; after relinking to QA Sch B {\"schedule\": \"da6d2538-...\", \"schedule_occurrence\": \"2026-10-03\"} while B's next_date is 2026-12-15.",
+        "repro": [
+          "Open the app and click \"Try the demo\" to load a synthetic budget",
+          "Go to Schedules, click Add new schedule, name it QA Sch B with payee QA Payee B on account HSBC for 44.00, uncheck Repeats and set the date to 12/15/2026, then Add",
+          "Add a second schedule QA Sch A with payee QA Payee A on the same account for the same amount, leaving Repeats on, then Add",
+          "Right-click QA Sch A and choose Post transaction today; its status cell now reads Paid",
+          "Go to the HSBC register, hover the QA Payee A row, tick its select checkbox, click the \"1 transactions\" button and choose Unlink schedule",
+          "Read the transaction: schedule is null but schedule_occurrence is still 2026-10-03",
+          "Return to Schedules: QA Sch A correctly reads Due again, so nothing looks wrong yet",
+          "Back in the HSBC register, select the same QA Payee A row and choose Link schedule, then pick QA Sch B",
+          "Read the transaction again: it is linked to QA Sch B but still stamped 2026-10-03, A's occurrence date, not B's 2026-12-15"
+        ],
+        "evidence": [
+          "qa-evidence/T-3-relinked-mismatched-stamp.png",
+          "qa-evidence/T-3-after-unlink.png",
+          "qa-evidence/T-3-network.har",
+          "qa-evidence/test-results/00-ac-T-3-unlinking-a-sche-241ce-ce-stamp-on-the-transaction-chromium/trace.zip"
+        ],
+        "suspected_cause": "packages/desktop-client/src/hooks/useTransactionBatchActions.ts, onBatchUnlinkSchedule, sends { id, schedule: null } and never mentions schedule_occurrence. conform() drops undefined fields, so omitting it is what lets the old stamp survive — the mirror of the rule this PR just applied to updateTransfer. The fix is to send schedule_occurrence: null alongside schedule: null. Note the file is untouched by this PR's diff, so the defect predates it; the PR makes the surviving state reachable-but-wrong rather than creating it. Introduced by PR: no — this PR's own diff does not touch useTransactionBatchActions.ts.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "pass",
