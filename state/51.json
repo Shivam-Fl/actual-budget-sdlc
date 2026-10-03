@@ -412,7 +412,8 @@
         "detail": "The new beforeEach comment describes the unfixed state in the present indicative, so read as a statement about the shipped file it says the opposite of what the code four lines below now guarantees. The same defect class the teardown comment was rewritten in this same PR to remove.\n\n`packages/loot-core/src/platform/server/sqlite/index.test.ts:26`\n\nEvidence: Lines 23-30 read '...but from the second test on, global.fetch is the real jsdom fetch again.' In the shipped file that is false: the beforeEach at 31-33 reinstalls the patch before every test, so from the second test on global.fetch is the sql.js patch, not the real jsdom fetch. The sentence is a correct description of the pre-fix state carried over into a comment attached to the fix, in the same tense that made the old teardown comment wrong. I confirmed the fix does work — deleting only the beforeEach fails the new test with 'AssertionError: expected false to be true' / 'Tests 1 failed | 15 passed (16)' — so the code is right and only the comment's tense is stale.\n\nFix: Put the defect description in the past or conditional so it reads as the reason the beforeEach exists rather than as a claim about the file: '...but before this re-arm, from the second test on, global.fetch was the real jsdom fetch again.' The closing 'so calling it once per test is idempotent and the blanket restore can no longer outrun it' already reads correctly and needs no change."
       }
     ],
-    "pr": "55"
+    "pr": "55",
+    "filed": 58
   },
   "qa": {
     "verdict": "pass",
