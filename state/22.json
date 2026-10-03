@@ -386,8 +386,25 @@
   "stopped_at": null,
   "dispatched_stage": "root-cause",
   "validated_from": "root-cause",
-  "validated_at": "2026-10-03T03:17:31.566Z",
+  "validated_at": "2026-10-03T04:11:37.041Z",
   "validated_ac_changes": [
+    {
+      "id": "AC-2",
+      "was": {
+        "id": "AC-2",
+        "check": "/reports/custom and /reports/spending still load with a clean console and behave exactly as today; neither route mounts ReportCard, so this change cannot affect them and QA confirms it did not.",
+        "how_to_verify": "Navigate to /reports/custom and then /reports/spending in turn; watch for console warnings and confirm each page renders its report as it does today.",
+        "source": "IAC-2",
+        "verify": "browser"
+      },
+      "now": {
+        "id": "AC-2",
+        "check": "REWRITTEN. /reports/custom and /reports/spending load with a clean console, and neither route mounts ReportCard, so the nesting fix cannot affect them; QA confirms this change did not alter either route's report content, controls or console. This criterion is not about how long either route takes to render: whether an id-less report route finishes loading is governed by AC-8. Before this correction AC-2 also demanded /reports/spending 'behave exactly as today', which on the base commit means spinning forever — contradicting AC-8 on the same URL.",
+        "how_to_verify": "Navigate to /reports/custom and confirm it renders with no console errors. For /reports/spending confirm no console errors; whether the report itself appears follows AC-8, not this criterion. To confirm the scope claim, review the diff: ReportCard.tsx and useDashboardWidget.ts are the only product files changed and neither is on these routes' render path.",
+        "source": "IAC-2",
+        "verify": "browser"
+      }
+    },
     {
       "id": "AC-4",
       "was": {
@@ -398,11 +415,11 @@
         "verify": "test"
       },
       "now": {
-        "check": "The nesting is removed once at the shared card layer: ReportCard no longer renders a <button> around its children, so every dashboard widget is fixed by that one change and no widget is un-nested individually.",
-        "how_to_verify": "Run `yarn workspace @actual-app/web test` and confirm ReportCard.test.tsx and useDashboardWidget.test.tsx pass; review the diff to confirm the click surface is un-nested in ReportCard.tsx alone. The test asserts `button button` is empty in the rendered DOM, which makes the shared-layer claim testable rather than asserted.",
+        "id": "AC-4",
+        "check": "The nesting is removed once at the shared card layer: ReportCard no longer renders a <button> around its children, so every dashboard widget is fixed by that one change. The test gate covers both product files this revision touches — ReportCard.test.tsx and useDashboardWidget.test.tsx.",
+        "how_to_verify": "Run `yarn workspace @actual-app/web test` and confirm both suites pass; review the diff to confirm the click surface is un-nested in ReportCard.tsx alone and the loading fix is confined to useDashboardWidget.ts.",
         "source": "IAC-4",
-        "verify": "test",
-        "id": "AC-4"
+        "verify": "test"
       }
     },
     {
@@ -415,11 +432,28 @@
         "verify": "browser"
       },
       "now": {
-        "check": "The dashboard's visual layout does not shift: card heights, widths, spacing, hover shadow and inner chart rendering are unchanged. The replacement click surface is a flex column with alignItems stretch and inherits font-size and colour from FinancesApp rather than setting them; the old flex-row geometry (alignItems/justifyContent center, flexShrink 0, borderRadius 4) had no visible effect, because the card body inside it is width:100%/height:100% and fills it edge to edge. On hover the card's observable affordance is the one it has always had: the drop shadow deepens (0 2px 6px → 0 4px 6px) and the cursor becomes a pointer, while the card's painted background does not change — it is the card's own surface colour at rest and on hover. There is no hover background tint to restore: the old element declared one in its `&[data-hovered]` rule but also carried an inline `background: transparent`, and an inline declaration outranks a class rule, so it never painted — the opaque card body covered the wrapper regardless. A background tint appearing on hover is a regression, not a restoration. This is the one change most likely to move pixels, and it is verified by capture-and-compare in a browser, not by any automated gate.",
-        "how_to_verify": "Set the viewport to exactly 1280x720, load /reports with the demo budget, wait for the grid to settle, and capture a full-page screenshot. Do the same on the base commit at the same viewport and same budget, and compare. Then hover a card and confirm the only visual change is the deeper drop shadow and the pointer cursor, with no change to the painted background. Any single shifted card is a regression to fix, not to re-baseline. State plainly in the QA report that CI does NOT run this check: .sdlc/config.yml sets verify.e2e to an empty string.",
+        "id": "AC-5",
+        "check": "CORRECTED (premise was false, kept from the rejected revision). The dashboard's visual layout does not shift. On hover the card's observable affordance is the one it has always had: the drop shadow deepens (0 2px 6px → 0 4px 6px) and the cursor becomes a pointer, while the card's painted background does not change. There is no hover background tint to restore: the old element declared one in its `&[data-hovered]` rule but carried an inline `background: transparent`, and an inline declaration outranks a class rule, so it never painted. AC-9 states the hover half as a criterion of its own.",
+        "how_to_verify": "At exactly 1280x720, capture /reports full-page on this branch and on the base commit at the same viewport and budget, and compare. Any single shifted card is a regression. State plainly that CI does NOT run this check: .sdlc/config.yml sets verify.e2e to an empty string.",
         "source": "IAC-4",
-        "verify": "browser",
-        "id": "AC-5"
+        "verify": "browser"
+      }
+    },
+    {
+      "id": "AC-6",
+      "was": {
+        "id": "AC-6",
+        "check": "The card's inherited text colour and font-size are unchanged by dropping the Button. The old Button supplied color: theme.buttonBareText (--color-pageText) and fontSize 13 on the element wrapping the card body; the replacement View supplies neither, so the card body inherits both from FinancesApp's root View and the 13px html/body default. If either resolves differently under a non-default theme (midnight, palette), text in widget bodies that sets no colour of its own shifts.",
+        "how_to_verify": "Load /reports under each theme the app offers (light, dark, midnight, and any palette variant reachable from Settings) and compare a widget body that renders text without an explicit colour against the base commit at the same viewport. Report any colour or size difference as a regression to fix, not to accept.",
+        "source": "IAC-4",
+        "verify": "browser"
+      },
+      "now": {
+        "id": "AC-6",
+        "check": "The card's inherited text colour and font-size are unchanged by dropping the Button; the replacement View supplies neither, so the card body inherits both from FinancesApp's root View and the 13px default. If either resolves differently under a non-default theme, text in widget bodies that sets no colour of its own shifts.",
+        "how_to_verify": "Load /reports under each theme the app offers and compare a widget body rendering text without an explicit colour against the base commit at the same viewport. Report any difference as a regression.",
+        "source": "IAC-4",
+        "verify": "browser"
       }
     }
   ],
@@ -513,5 +547,211 @@
       "run": "37092715833",
       "at": "2026-10-03T03:33:44.616Z"
     }
+  },
+  "validated_work_order": {
+    "issue": 22,
+    "version": 2,
+    "understanding": "Two things were wrong with the revision that came back from the plan reviewer, and one of them is a factual error that would have shipped a regression to all twelve report routes.\n\nOBJECTION 1 (the useDashboardWidget predicate) is correct and I measured it. I ran react-query v5 in jsdom and recorded all four states: disabled+no data {pending, idle, isPending TRUE, isLoading false}; enabled first fetch {pending, fetching, true, true}; resolved {success, idle, false, false}; cached background refetch {success, fetching, isPending FALSE, isLoading false, isFetching TRUE}. The rejected revision reported isPending/isLoading as `query.fetchStatus !== 'idle'` and claimed in both `approach` and `risks` that the change was confined to the loading branch. The fourth row refutes that: fetchStatus is 'fetching' during a background refetch over cached data, so that predicate is true while the data is present and correct — every report route would blank to <LoadingIndicator /> and unmount its subtree on every dashboard-to-report navigation and every window refocus. Corrected to `const isFirstLoad = query.isPending && query.fetchStatus !== 'idle'`, which changes exactly one of the four states (row 1, isPending true → false) and leaves the other three untouched.\n\nOBJECTION 2 (AC-2 vs AC-8) is also correct: AC-2 demanded /reports/spending 'behave exactly as today', which on the base commit means spinning forever, while AC-8 requires it to render. AC-2 is rewritten in place to its real intent ('the nesting fix must not disturb these routes') and now names AC-8 as governing their loading behaviour; AC-8 is not weakened. The reviewer also asked for AC-2's before/after in plan/ac-diff.md — that file is generated by .sdlc/bin/plan-strategy.mjs from the ledger's validated_ac_changes, which post-work-order.mjs populates by diffing this acceptance[] against the posted one, so recording it is a consequence of making the change, not a separate edit.\n\nWhat survives unchanged, because 15 of 18 QA checks prove it: the v1 diagnosis. ReportCard wrapped every widget body in a literal <button>; the shared-wrapper fix is right and stays.\n\nWhat the rejected revision also got factually wrong: its recorded reason for not using usePress (\"did not fire at all for Enter or for mouse down/up on a div in this environment\"). I re-ran that probe and it does not reproduce — usePress on a div here fires for Enter, Space and mouse, once each, and suppresses repeats. The DECISION not to switch still stands, on timing and coverage instead: usePress moves activation to its own model (Space commits on keyup, Enter on keydown), QA's T-8 and T-17 both measure that timing, there is no browser here to verify against, and 15 passing checks depend on the current model. The alternative's recorded reason is rewritten to the one I actually acted on.\n\nBUG-002 is covered by AC-7 (added in the rejected revision, kept unchanged) — duplicating it would buy QA a second browser run and no coverage. BUG-001 gets a new criterion, AC-9, so the finding QA actually made has a criterion addressed to it.",
+    "root_cause": "Three separate causes. (1) ReportCard's click surface was rebuilt by hand — the previous attempt replaced react-aria's <Button> with a View plus a hand-written onKeyDown and carried over only the Button's geometry, dropping the press semantics the primitive owned. usePress suppresses key auto-repeat; this handler does not, so one Space press plus auto-repeats navigates once per repeat (T-17: 6 navigations). (2) AC-5 asserted that the old card showed a hover background. It never did: the Button's inline `background: transparent` outranks its own `&[data-hovered]` background-color rule in the cascade, and the opaque card body painted over the wrapper regardless, so the card's painted background has always been the card surface colour at rest and on hover (T-12 measured a property the product never had). (3) /reports/spending with no widget id spins forever because useDashboardWidget enables its query with `!!id && !!type` and a disabled react-query v5 query stays status 'pending' forever, while every report component returns <LoadingIndicator /> while pending. Pre-existing on main and untouched by PR #26, but the route must load, so it is fixed here — in the shared hook, by reporting isPending/isLoading from `query.isPending && query.fetchStatus !== 'idle'` so only a first load reads as loading and neither a disabled query nor a cached background refetch does. The rejected revision's fetchStatus-only predicate was also true during a background refetch over cached data and would have blanked all twelve report routes on every navigation and refocus; that is corrected.",
+    "approach": "Keep the div-based click surface that fixes the nesting (15 of 18 checks depend on it) and change three things; everything else in the rejected revision is kept. A: restore the press semantics explicitly and testably in ReportCard's keydown handler — return early on `e.repeat`, return early when `e.target !== e.currentTarget`, keep `e.preventDefault()` ahead of both so holding Space cannot scroll, keep activating on keydown for Enter and Space so T-7/T-8 do not change. Do not switch to usePress: the rejected revision's stated reason for rejecting it does not reproduce, but the decision stands on timing and coverage grounds (usePress commits Space on keyup, T-8 and T-17 both measure that timing, no browser here to verify the swap, 15 passing checks depend on the present model). B: leave the card's appearance exactly as it is — add no hover background; the card has never painted one and adding it is the appearance change this issue rules out of scope. C: fix the loading state narrowly in the shared hook — `const isFirstLoad = query.isPending && query.fetchStatus !== 'idle'`, returning `{ ...query, isPending: isFirstLoad, isLoading: isFirstLoad }`, which is react-query's own isLoading definition and changes exactly one of the four query states (a disabled query, isPending true → false). All twelve call sites destructure { data, isPending } or { data, isLoading } and already handle `widget === undefined`, so no report component changes.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/reports/ReportCard.tsx",
+        "action": "edit",
+        "change": "Guard the click surface's onKeyDown so one key press yields one navigation: return early when `e.repeat` is true, return early when `e.target !== e.currentTarget` (the key came from a control inside the widget body), and keep `e.preventDefault()` before both checks so holding Space does not scroll the dashboard. Leave the View, its role=\"button\", its tabIndex={0} and its style object exactly as they are — in particular add no hover background, because the card has never displayed one.",
+        "why": "BUG-002, the regression QA found as T-17: the hand-written keydown handler navigates on every auto-repeat keydown because the repeat guard that usePress supplied for free was not carried across in the swap."
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useDashboardWidget.ts",
+        "action": "edit",
+        "change": "Derive a first-load predicate from the conjunction and report it as both flags: `const query = useQuery({ ...dashboardQueries.listDashboardWidgets<W>(), select: widgets => widgets.find(w => w.id === id && w.type === type), enabled: !!id && !!type }); const isFirstLoad = query.isPending && query.fetchStatus !== 'idle'; return { ...query, isPending: isFirstLoad, isLoading: isFirstLoad };`. Keep isPending/isLoading true only while a first fetch with no cached data is in flight — do NOT report them from `query.fetchStatus !== 'idle'` alone, which is also true during a background refetch over cached data.",
+        "why": "T-5: `enabled: !!id && !!type` disables the query when the URL carries no widget id, and a disabled react-query v5 query stays status 'pending' forever, so every report component returned <LoadingIndicator /> indefinitely. The wrong isPending is manufactured in this hook. The conjunction — not fetchStatus alone — is what keeps a cached background refetch off the loading branch."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/ReportCard.test.tsx",
+        "action": "edit",
+        "change": "Keep the existing cases and add: one Space keypress followed by five keydown events with repeat: true navigates exactly once; the same for a held Enter; a keydown whose target is a control inside the widget body does not navigate the card; a held Space keydown has its default prevented so the page cannot scroll.",
+        "why": "A test proves the BUG-002 fix once. The previous suite never pressed and held a key, which is exactly the gap QA's synthetic repeats fell into."
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useDashboardWidget.test.tsx",
+        "action": "create",
+        "change": "New unit test covering all four query states: with no widget id the query is disabled (status pending, fetchStatus idle) and the hook reports isPending and isLoading false; with a widget id both true while the widgets list fetches with no data; once resolved, both false; and with a widget id and the list already cached, a background refetch via queryClient.refetchQueries() must report both false, with the component rendered from the hook never having shown a loading indicator during it — recorded by what rendered across the refetch, not only by the final value.",
+        "why": "Reproduces the mechanism behind T-5 and pins the correction the plan reviewer required: without the cached-background-refetch case, a future edit dropping the conjunction still passes this suite and the regression lands in all twelve report routes with nothing to catch it."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/components/reports/ReportCard.test.tsx",
+        "action": "edit",
+        "cases": [
+          "a card body containing a button renders with no validateDOMNesting warning and no button-in-button in the DOM (existing case, kept)",
+          "the card is exposed as a focusable role=button named from its contents (existing case, kept)",
+          "clicking the card body navigates to the card route (existing case, kept)",
+          "clicking a control inside the widget body does not navigate the card (existing case, kept)",
+          "one Space keypress followed by five keydown events with repeat: true navigates exactly once — reproduces QA T-17, the bug this PR introduced",
+          "one Enter keypress followed by five keydown events with repeat: true navigates exactly once",
+          "a keydown whose target is a control inside the widget body does not navigate the card",
+          "a keydown on the card surface is preventDefault'd, so holding Space cannot scroll the dashboard",
+          "the click surface renders no hover background of its own: its computed background-color is the same at rest as it is when a hover rule would apply"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useDashboardWidget.test.tsx",
+        "action": "create",
+        "cases": [
+          "with no widget id the query is disabled and the hook reports isPending false and isLoading false, so an id-less report route renders instead of spinning — reproduces the mechanism behind QA T-5",
+          "with a widget id the hook reports isPending true and isLoading true while the dashboard-widgets list is still fetching with no data, and false once it resolves",
+          "with a widget id and the widgets list already cached, a background refetch (queryClient.refetchQueries()) leaves isPending and isLoading false, and the component under test never renders a loading indicator during it — this case fails against the rejected revision's `fetchStatus !== 'idle'` predicate and passes against the conjunction"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "Loading /reports with a budget loaded produces no React validateDOMNesting warning about <button> inside <button>, with no interaction required — the console stays clean on first paint.",
+        "how_to_verify": "Open http://localhost:3001 with a demo budget loaded, navigate to /reports, watch the console without clicking. Repeat after a hard reload so the dashboard mounts from scratch.",
+        "source": "IAC-1",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "REWRITTEN. /reports/custom and /reports/spending load with a clean console, and neither route mounts ReportCard, so the nesting fix cannot affect them; QA confirms this change did not alter either route's report content, controls or console. This criterion is not about how long either route takes to render: whether an id-less report route finishes loading is governed by AC-8. Before this correction AC-2 also demanded /reports/spending 'behave exactly as today', which on the base commit means spinning forever — contradicting AC-8 on the same URL.",
+        "how_to_verify": "Navigate to /reports/custom and confirm it renders with no console errors. For /reports/spending confirm no console errors; whether the report itself appears follows AC-8, not this criterion. To confirm the scope claim, review the diff: ReportCard.tsx and useDashboardWidget.ts are the only product files changed and neither is on these routes' render path.",
+        "source": "IAC-2",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "Every dashboard widget stays reachable by mouse and keyboard: clicking a card body opens the report, clicking a calendar card's month name navigates to that month rather than to the card, a custom-report card opens its report, and in edit mode each card's menu button opens the context menu.",
+        "how_to_verify": "On /reports: click a card body; click a calendar card's month name and confirm the URL carries that month; Tab to a card and press Enter; focus a month name, press Enter and confirm only that navigation happens; click 'Edit dashboard' and open a card's menu.",
+        "source": "IAC-3",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-4",
+        "check": "The nesting is removed once at the shared card layer: ReportCard no longer renders a <button> around its children, so every dashboard widget is fixed by that one change. The test gate covers both product files this revision touches — ReportCard.test.tsx and useDashboardWidget.test.tsx.",
+        "how_to_verify": "Run `yarn workspace @actual-app/web test` and confirm both suites pass; review the diff to confirm the click surface is un-nested in ReportCard.tsx alone and the loading fix is confined to useDashboardWidget.ts.",
+        "source": "IAC-4",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "CORRECTED (premise was false, kept from the rejected revision). The dashboard's visual layout does not shift. On hover the card's observable affordance is the one it has always had: the drop shadow deepens (0 2px 6px → 0 4px 6px) and the cursor becomes a pointer, while the card's painted background does not change. There is no hover background tint to restore: the old element declared one in its `&[data-hovered]` rule but carried an inline `background: transparent`, and an inline declaration outranks a class rule, so it never painted. AC-9 states the hover half as a criterion of its own.",
+        "how_to_verify": "At exactly 1280x720, capture /reports full-page on this branch and on the base commit at the same viewport and budget, and compare. Any single shifted card is a regression. State plainly that CI does NOT run this check: .sdlc/config.yml sets verify.e2e to an empty string.",
+        "source": "IAC-4",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-6",
+        "check": "The card's inherited text colour and font-size are unchanged by dropping the Button; the replacement View supplies neither, so the card body inherits both from FinancesApp's root View and the 13px default. If either resolves differently under a non-default theme, text in widget bodies that sets no colour of its own shifts.",
+        "how_to_verify": "Load /reports under each theme the app offers and compare a widget body rendering text without an explicit colour against the base commit at the same viewport. Report any difference as a regression.",
+        "source": "IAC-4",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-7",
+        "check": "Pressing and holding Enter or Space on a focused dashboard card navigates exactly once — the behaviour of the native button this surface replaced. This criterion exists because PR #26 broke it: the hand-written keydown handler navigates once per repeat, so holding Space produced six history entries for one press.",
+        "how_to_verify": "On /reports, wrap history.pushState/replaceState. Focus a card, keyboard.down('Space'), dispatch five synthetic keydowns with repeat: true (Playwright does not synthesise repeats), keyboard.up('Space'); assert the count is at most 1. Repeat with Enter; confirm the page did not scroll while Space was held.",
+        "source": "IAC-3",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-8",
+        "check": "A report route opened without a widget id in the URL finishes loading and renders. /reports/spending with no trailing id shows the 'Monthly Spending' report instead of a loading indicator that never resolves. Pre-existing on main, not introduced by PR #26, and the criterion that governs whether an id-less route loads; AC-2 does not.",
+        "how_to_verify": "Navigate directly to /reports/spending with no widget id, wait up to 30s, confirm the report renders rather than spinning; the console should be clean. Repeat for any other id-less report route.",
+        "source": "IAC-2",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-9",
+        "check": "NEW — for BUG-001. Hovering a dashboard card leaves its painted background unchanged and deepens its drop shadow: the surface's computed background-color is the same before and during hover, its box-shadow changes from 0 2px 6px to 0 4px 6px, and the cursor is a pointer. A background that changes on hover is a regression to report, not a restored affordance. Added because QA's T-12 reported the missing tint as a bug against AC-5's predecessor wording.",
+        "how_to_verify": "On /reports with the demo budget, read a card's computed background-color and box-shadow at rest, move the pointer to its centre, wait ~1.2s, read both again. Assert the background-color is identical and the shadow is deeper. Repeat under dark and midnight so an unchanged result cannot come from two near-identical whites. Record data-hovered state as an annotation.",
+        "source": "IAC-4",
+        "verify": "browser"
+      }
+    ],
+    "qa_script": [
+      "T-17 (regression, AC-7): on /reports, wrap history.pushState/replaceState and count calls. Focus a card, keyboard.down('Space'), dispatch 5 synthetic KeyboardEvents with {key:' ', code:'Space', repeat:true, bubbles:true, cancelable:true}, keyboard.up('Space'). Assert the navigation count is <= 1. Repeat with Enter. Also assert the dashboard did not scroll while Space was held.",
+      "T-12 (replaced, AC-9): hover a card and read the card surface's computed background-color and box-shadow at rest and on hover. Expect the background identical and the shadow deeper. A changed background is a regression, not a restored tint. Run under light, dark and midnight rather than light only, so an unchanged-looking result cannot come from two near-identical whites.",
+      "T-5 (regression, AC-8): navigate directly to /reports/spending with no widget id, wait up to 30s, assert 'Monthly Spending' becomes visible and no spinner remains mounted.",
+      "T-4 (AC-2): navigate to /reports/custom, confirm it renders and the console is clean. Do NOT judge /reports/spending's loading from AC-2 — that is AC-8.",
+      "Re-run the checks that already pass unchanged — T-1, T-2, T-3, T-6/T-7/T-8, T-9/T-10, T-11, T-13/T-14, T-15, T-18 — because this change must not disturb any of them.",
+      "New: with a report already open, navigate from /reports to that report and back, then refocus the window, and confirm the report content stays mounted and visible throughout — no blank to a spinner. This is the check the rejected revision's fetchStatus-only predicate would have failed on every one of the twelve report routes, and it has no coverage otherwise.",
+      "Unit gate: `yarn workspace @actual-app/web test` — ReportCard.test.tsx (including the new key-repeat cases) and useDashboardWidget.test.tsx (including the cached-background-refetch case) must pass."
+    ],
+    "risks": [
+      "The corrected predicate is confined to one state of one query, and that confinement is the point. `query.isPending && query.fetchStatus !== 'idle'` is true only for an enabled query whose first fetch is in flight with no cached data. Measured against react-query v5 in this repo it changes exactly one of four states: disabled + no data goes from isPending true to false (the T-5 fix). Enabled first fetch with no data stays true; enabled and resolved stays false; enabled with cached data undergoing a background refetch was already false and stays false, because isPending derives from status and a successful status persists through a refetch. Nothing reaches a route that has a widget id and is not mid-refetch, and nothing outside the loading branch of any of the twelve call sites changes.",
+      "The `e.target !== e.currentTarget` guard suppresses a card activation when a key event originates from a descendant. That is the intent, but if a future widget renders a focusable child that relied on bubbling to open the card, Enter on it would stop working — the month-name checks (T-9, T-10) will catch that.",
+      "Changing useDashboardWidget touches twelve report components at once. They all destructure { data, isPending } or { data, isLoading } and all already handle widget === undefined, so the change reaches the loading branch only; the new hook test asserts all four query states directly, including that a cached background refetch never puts a loading indicator on screen.",
+      "The AC-5 and AC-9 corrections rest on the cascade: an inline `background: transparent` outranks the Button's `&[data-hovered]` background-color rule, so the tint never painted. Measured by rendering the real <Button variant=\"bare\"> with and without the inline style and reading getComputedStyle with data-hovered set (rgba(0,0,0,0) with it, var(--color-buttonBareBackgroundHover) without). If a later change gives the click surface a painted background of its own, a hover tint would become visible and AC-5 and AC-9 would need revisiting."
+    ],
+    "out_of_scope": [
+      "Changing the dashboard's layout, widget set or widget ordering.",
+      "Redesigning the card's appearance beyond removing the nested button — including adding a hover background tint, which the card has never displayed.",
+      "The command-palette DialogTitle warning.",
+      "Un-nesting interactive content inside a role=button card. AC-3's month-name checks and QA's T-16 record the known ARIA trade-off (two tab stops to the same destination); removing it means restructuring the Calendar widget body, which is a separate change.",
+      "Re-running the plan workflow by hand to write plan/ac-diff.md. That file is generated by .sdlc/bin/plan-strategy.mjs from the ledger's validated_ac_changes, which post-work-order.mjs populates by diffing this acceptance[] against the posted one; AC-2's rewrite appears there as a consequence of making it."
+    ],
+    "kind": "bug",
+    "confidence": 88,
+    "confidence_rationale": "The T-17 mechanism is read directly off the diff and is the only path from keydown to navigate. The T-5 mechanism is now measured across all four query states rather than inferred from one, and the corrected predicate was chosen against that table rather than from a rule of thumb. Both plan-reviewer objections were upheld and both fixes are mechanical. Remaining uncertainty is the AC-9 hover judgement, which rests on a direct experiment on the real Button plus the independent fact that the opaque card body covers the wrapper — hence it is stated as an observable claim in the criterion with its reasoning recorded, and the QA script asks for it under three themes rather than one.",
+    "reproduced": true,
+    "evidence": [
+      "qa-evidence/qa-evidence/qa-evidence/results.json — 18 specs, 15 pass. T-5: '/reports/spending never finished loading … element(s) not found' after 30s. T-12: 'card background is rgba(0, 0, 0, 0) both at rest (rgba(0, 0, 0, 0)) and on hover'. T-17: 'one Space press plus 5 auto-repeats produced 6 navigations'.",
+      "git show origin/sdlc/issue-22:packages/desktop-client/src/components/reports/ReportCard.tsx — the click surface is now `<View role=\"button\" tabIndex={0} onClick={goToReport} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goToReport(); } }}>` with no repeat guard and no hover styling.",
+      "git show main:packages/desktop-client/src/components/reports/ReportCard.tsx — the surface it replaced was `<Button variant=\"bare\" style={{ …, background: 'transparent', … }}>`, and packages/component-library/src/Button.tsx gives that button `&[data-hovered] { backgroundColor: theme.buttonBareBackgroundHover; … }`. Inline beats the class rule.",
+      "jsdom experiment, throwaway and since deleted (__scratch_hover.test.tsx): rendered the real <Button variant=\"bare\"> twice and read getComputedStyle with data-hovered set. With the inline `background: 'transparent'`: bg rgba(0, 0, 0, 0), inlineStyle 'background: transparent;'. Without it: bg var(--color-buttonBareBackgroundHover). The old card's hover background never painted.",
+      "jsdom experiment, throwaway and since deleted (__scratch_rq.test.tsx): react-query v5 four-state matrix for the hook's query — disabled+noData {status pending, fetchStatus idle, isPending true, isLoading false, isFetching false}; enabled first fetch {pending, fetching, true, true, true}; resolved {success, idle, false, false, false}; cached background refetch {success, fetching, FALSE, false, TRUE}. The fourth row is what refutes `fetchStatus !== 'idle'` as a loading predicate and confirms the plan reviewer's objection.",
+      "jsdom experiment, throwaway and since deleted (__scratch_press.test.tsx): usePress on a plain div gives onPress calls {afterEnter: 1, afterSpace: 2 total, afterClick: 3 total, afterRepeat: 3 total} — Enter, Space and mouse all fire, and a repeat keydown adds nothing. The rejected revision recorded the opposite; that recorded result does not reproduce. A second probe confirmed a keydown on an inner <button> does propagate to an ancestor onKeyDown ('outer-keydown' then 'inner-click'), which is why the e.target !== e.currentTarget guard is needed rather than merely defensive.",
+      "Read of all twelve useDashboardWidget call sites (Summary, CashFlow, Crossover, Calendar, Formula, BudgetAnalysis, Spending, MonteCarlo, NetWorth, Sankey, BalanceForecast, AgeOfMoney): each destructures { data, isPending } or { data, isLoading } and returns <LoadingIndicator /> while loading, and each already tolerates widget === undefined (the meta reads are behind widget?. guards, e.g. Crossover:135, BudgetAnalysis:102).",
+      "packages/desktop-client/src/hooks/useDashboardWidget.ts — the query is built with `enabled: !!id && !!type`, so an id-less report URL disables it permanently.",
+      "No Playwright browsers are installed in this container (~/.cache/ms-playwright is absent) and the app was not booted, so the failing specs were not re-run here; the failures were verified at unit level as described."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Drive the click surface with react-aria's usePress (or useButton) instead of a hand-written keydown handler, which is what the old <Button> used.",
+        "rejected_because": "Not on the grounds the rejected revision recorded — it claimed usePress 'did not fire at all for Enter or for mouse down/up on a div in this environment', and re-running that probe contradicts it: usePress on a div here fires for Enter, Space and mouse, once each, and suppresses repeats. The decision still stands, on timing and coverage instead. usePress moves activation to its own model (Space commits on keyup, Enter on keydown), QA's T-8 and T-17 both measure that timing, there is no browser in this container to verify the swap against, and 15 currently-passing checks depend on the present onClick-plus-keydown model. A two-line repeat guard in the handler that is already there gives the same result by inspection and is provable in a unit test."
+      },
+      {
+        "approach": "Report isPending and isLoading from `query.fetchStatus !== 'idle'` alone, as the rejected revision proposed.",
+        "rejected_because": "That predicate is also true during a background refetch over already-cached data (measured: status success, fetchStatus fetching, isPending false), so all twelve report routes would blank to <LoadingIndicator /> and unmount their subtrees on every dashboard-to-report navigation and on every window refocus. It fixes T-5 by creating a larger bug."
+      },
+      {
+        "approach": "Add a `:hover` background of theme.buttonBareBackgroundHover to the click surface, so QA's T-12 passes as written.",
+        "rejected_because": "It would paint a tint the card has never displayed — the inline transparent background meant it never rendered, confirmed by rendering the real Button with and without the inline style — and the issue explicitly places 'redesigning the card's appearance beyond the nesting fix' out of scope. It also contradicts AC-5's actual rule, that the dashboard's visual layout must not shift."
+      },
+      {
+        "approach": "Rewrite AC-2 so /reports/spending loading is no longer required, and leave the endless spinner in place.",
+        "rejected_because": "The route genuinely does not load: a disabled react-query query stays pending forever and every report component spins on it. Rewriting a criterion to match a defect is the worst artefact this pipeline can produce, because every future QA run then certifies the defect. AC-8 keeps the requirement; the code is fixed instead."
+      },
+      {
+        "approach": "Fix the id-less spinner per report component (change the isPending check in each of the twelve reports) rather than in the shared hook.",
+        "rejected_because": "Twelve edits instead of one, and the hook is where the wrong isPending is manufactured. The shared change also matches the issue's own principle of fixing at the shared layer."
+      },
+      {
+        "approach": "Revert to rendering a <Button> and un-nest by removing the inner buttons from widget bodies instead.",
+        "rejected_because": "The shared card layer is the right place to fix this (IAC-4), and the inner controls come from widget bodies the card does not own. T-1/T-2/T-3 pass today because of that change."
+      }
+    ],
+    "assumptions": [
+      "QA's own `card(page, i)` helper (the nth `[role=\"button\"]`) stays on the QA side of the split; the product change does not depend on it.",
+      "The demo budget used by QA renders more than five `[role=\"button\"]` surfaces on /reports, as the existing T-3 asserts.",
+      "No caller of useDashboardWidget depends on the identity of the object the hook returns — all twelve destructure it.",
+      "The report components other than Spending are reachable with a widget id in normal use, so the shared hook change only affects the id-less case.",
+      "Returning `{ ...query, isPending, isLoading }` is type-compatible with what the twelve call sites destructure; the hook's inferred return type widens but every call site takes only data/isPending/isLoading/refetch."
+    ],
+    "unknowns": [
+      "Whether QA accepts the AC-5 and AC-9 hover correction. The reasoning and the jsdom experiment are recorded so the judgement can be audited rather than taken on trust.",
+      "Whether a widget body other than Calendar renders its own focusable control inside a card; the existing T-16 assumes Calendar is the only one, and the `e.target` guard depends on inner controls not needing to bubble to the card.",
+      "How long the browser takes to settle the dashboard at 1280x720 for the AC-5 capture comparison; QA has used 9s waits and 1.2s after hover so far.",
+      "Whether any of the twelve report components re-render destructively when data goes from undefined to defined on a first load — the change only alters the disabled state, and a browser run of a report route with an id is the direct check."
+    ],
+    "residual_risks": [
+      "If the hover tint's premise is right after all — if the bare Button's background really did paint on main — then this change knowingly leaves a lost affordance in place. Two independent arguments say otherwise, and AC-9 asks QA to read the box-shadow as well so the answer is not decided by a background that looked the same anyway.",
+      "The id-less report route fix is in the shared hook, which touches twelve report components at once. The unit test covers all four query states directly; the browser check (AC-8) covers the visible symptom on one route, and the new qa_script step covers the background-refetch case the rejected revision's predicate would have broken.",
+      "Nothing was verified in a real browser in this environment, so the press-repeat fix rests on reading the handler and on a jsdom probe of equivalent usePress behaviour. AC-7 exists so the next QA run checks it against a live page."
+    ],
+    "mode": "committed"
   }
 }
