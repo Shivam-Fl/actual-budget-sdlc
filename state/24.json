@@ -166,7 +166,12 @@
     ],
     "debate_summary": "No council ran — this was a single-agent plan, so debate_summary is empty. The plan rests on reproduction rather than argument: I wrote both proposed tests, ran them, and then hoisted the dedupe Set back to module scope in each source file to confirm each test fails ('expected 1 to be 2'). I also found and corrected a defect in my own first draft — a direct './index.electron' import that `yarn lint` rejects under the no-restricted-imports '**/*.electron' pattern — and verified the '#platform/server/sqlite' alias instead."
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
