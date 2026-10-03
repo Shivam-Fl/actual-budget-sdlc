@@ -65,7 +65,7 @@
         ],
         "kind": "bug",
         "risk": "Money. This is the guard that decides whether one occurrence can be paid twice, and it is a widening of a query's row set on the write path. The direction is safe — a broader guard sees more rows and never fewer — but it can make an occurrence that a user genuinely still owes read as already posted, so the test must cover the split-parent case and not only the duplicate case.",
-        "issue": null
+        "issue": 42
       },
       {
         "title": "Schedule actions from an upcoming row affect the occurrence you clicked",
@@ -124,5 +124,7 @@
     ],
     "deferred": []
   },
-  "children": []
+  "children": [
+    42
+  ]
 }
