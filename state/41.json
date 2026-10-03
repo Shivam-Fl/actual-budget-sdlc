@@ -119,7 +119,7 @@
         ],
         "kind": "chore",
         "risk": "setNextDate is date arithmetic in the schedule write path. The two forms are semantically identical, so the risk is a bad mechanical revert rather than a design mistake — compare against `git show main:packages/loot-core/src/server/schedules/app.ts` and let the existing schedules tests be the check.",
-        "issue": null
+        "issue": 46
       }
     ],
     "deferred": []
@@ -128,6 +128,7 @@
     42,
     43,
     44,
-    45
+    45,
+    46
   ]
 }
