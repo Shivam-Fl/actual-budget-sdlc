@@ -175,7 +175,12 @@
       "If it.fails is rejected at review, the afterEach and the isMockFunction assertion still stand on their own — but the ticket's falsifiability claim weakens, and the leak would only be caught by the next person who happens to break an assertion in that file."
     ]
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.electron.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
