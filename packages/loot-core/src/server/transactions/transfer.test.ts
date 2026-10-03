@@ -43,6 +43,8 @@ type Transaction = {
   id?: string;
   notes?: string;
   payee: string;
+  schedule?: string | null;
+  schedule_occurrence?: string | null;
   transfer_id?: string;
   is_parent?: boolean;
   is_child?: boolean;
@@ -217,5 +219,171 @@ describe('Transfer', () => {
     child = await db.getTransaction(child.id);
     expect(child.transfer_id).not.toBe(parent.transfer_id);
     expect(child.payee).toBe(transferOne.id);
+  });
+});
+
+// A schedule link and its occurrence stamp only mean anything together, so
+// the mirror leg has to carry BOTH from its main leg. These assert on plain
+// db.all rows rather than a snapshot: a .snap file IS the expected value, so
+// a green run could not show it had not been churned.
+//
+// `schedule_occurrence` off a db.all row is the RAW INTEGER; db.getTransaction
+// goes through the AQL schema and returns a 'YYYY-MM-DD' string. Insert it as a
+// plain 'YYYY-MM-DD' string either way.
+describe('Transfer schedule occurrence', () => {
+  beforeEach(global.emptyDatabase());
+
+  // The main leg must sit in an account that HAS a transfer_acct payee:
+  // addTransfer looks one up by the main leg's account and destructures the
+  // result with no null check. This helper sets up its own accounts and
+  // payees rather than reusing the shared one the snapshot tests rely on.
+  async function prepareScheduleDatabase() {
+    await db.insertAccount({ id: 'one', name: 'one' });
+    await db.insertAccount({ id: 'two', name: 'two' });
+    await db.insertPayee({ name: '', transfer_acct: 'one' });
+    await db.insertPayee({ name: '', transfer_acct: 'two' });
+  }
+
+  // The main leg pays INTO account 'two', so addTransfer looks up the payee
+  // whose transfer_acct is 'one' for the mirror.
+  async function getTransferTwo() {
+    const payee = await db.first<db.DbPayee>(
+      "SELECT * FROM payees WHERE transfer_acct = 'two'",
+    );
+    return payee.id;
+  }
+
+  // `schedule_occurrence` is a real column on v_transactions but is absent
+  // from the DbViewTransaction type, so it is intersected in locally rather
+  // than widening the shared type from a test file.
+  type ScheduledTransaction = Transaction & {
+    schedule: string;
+    schedule_occurrence: string;
+  };
+
+  function getMirrorRows(mainLegId: string) {
+    return db.all<
+      db.DbViewTransaction & { schedule_occurrence: number | null }
+    >('SELECT * FROM v_transactions WHERE transfer_id = ?', [mainLegId]);
+  }
+
+  it('gives the mirror leg the schedule and stamp of its main leg', async () => {
+    await prepareScheduleDatabase();
+
+    const transaction: ScheduledTransaction = {
+      account: 'one',
+      amount: 5000,
+      payee: await getTransferTwo(),
+      date: '2017-01-01',
+      schedule: 'schedule-1',
+      schedule_occurrence: '2017-01-01',
+    };
+    transaction.id = await db.insertTransaction(transaction);
+    // The SAME object that was inserted, plus its id — a hand-built object
+    // missing `payee` resolves no transferred account and addTransfer never runs.
+    await transfer.onInsert(transaction);
+
+    const mirrors = await getMirrorRows(transaction.id);
+    expect(mirrors).toHaveLength(1);
+    expect(mirrors[0]).toMatchObject({
+      schedule: 'schedule-1',
+      schedule_occurrence: 20170101,
+    });
+  });
+
+  it('keeps the mirror stamp when the main leg is updated', async () => {
+    // `date` is deliberately not asserted: updateTransfer has never copied it
+    // to the mirror, so tracking the date is not this change's contract.
+    await prepareScheduleDatabase();
+
+    const transaction: ScheduledTransaction = {
+      account: 'one',
+      amount: 5000,
+      payee: await getTransferTwo(),
+      date: '2017-01-01',
+      schedule: 'schedule-1',
+      schedule_occurrence: '2017-01-01',
+    };
+    transaction.id = await db.insertTransaction(transaction);
+    await transfer.onInsert(transaction);
+
+    // Re-read so the payload carries its real transfer_id; without it onUpdate
+    // re-routes to addTransfer and creates a duplicate mirror.
+    const payload = await db.getTransaction(transaction.id);
+    const updated = { ...payload, date: '2017-01-05' };
+    await db.updateTransaction(updated);
+    // The payload actually written, not the pre-update entity — passing the
+    // latter makes the assertions vacuous.
+    await transfer.onUpdate(updated);
+
+    const mirrors = await getMirrorRows(transaction.id);
+    expect(mirrors).toHaveLength(1);
+    expect(mirrors[0]).toMatchObject({
+      schedule: 'schedule-1',
+      schedule_occurrence: 20170101,
+    });
+  });
+
+  it('leaves the mirror stamp alone when a partial update omits the field', async () => {
+    // The case that makes `?? null` wrong: an explicit null would be WRITTEN,
+    // unstamping the mirror on every partial update that never mentions the
+    // field. `schedule` sits directly above it and behaves identically, so the
+    // realistic shape omits both together.
+    await prepareScheduleDatabase();
+
+    const transaction: ScheduledTransaction = {
+      account: 'one',
+      amount: 5000,
+      payee: await getTransferTwo(),
+      date: '2017-01-01',
+      schedule: 'schedule-1',
+      schedule_occurrence: '2017-01-01',
+    };
+    transaction.id = await db.insertTransaction(transaction);
+    await transfer.onInsert(transaction);
+
+    const payload = await db.getTransaction(transaction.id);
+    const { schedule, schedule_occurrence, ...withoutSchedule } = payload;
+    expect(schedule).toBe('schedule-1');
+    expect(schedule_occurrence).toBe('2017-01-01');
+
+    await db.updateTransaction(withoutSchedule);
+    await transfer.onUpdate(withoutSchedule);
+
+    const mirrors = await getMirrorRows(transaction.id);
+    expect(mirrors).toHaveLength(1);
+    expect(mirrors[0]).toMatchObject({
+      schedule: 'schedule-1',
+      schedule_occurrence: 20170101,
+    });
+  });
+
+  it('clears the mirror stamp when the schedule link is removed', async () => {
+    await prepareScheduleDatabase();
+
+    const transaction: ScheduledTransaction = {
+      account: 'one',
+      amount: 5000,
+      payee: await getTransferTwo(),
+      date: '2017-01-01',
+      schedule: 'schedule-1',
+      schedule_occurrence: '2017-01-01',
+    };
+    transaction.id = await db.insertTransaction(transaction);
+    await transfer.onInsert(transaction);
+
+    const payload = await db.getTransaction(transaction.id);
+    const cleared = {
+      ...payload,
+      schedule: null,
+      schedule_occurrence: null,
+    };
+    await db.updateTransaction(cleared);
+    await transfer.onUpdate(cleared);
+
+    const mirrors = await getMirrorRows(transaction.id);
+    expect(mirrors).toHaveLength(1);
+    expect(mirrors[0].schedule).toBeNull();
+    expect(mirrors[0].schedule_occurrence).toBeNull();
   });
 });

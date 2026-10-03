@@ -113,6 +113,14 @@ export async function mergeTransactionsNoTransfer(
 ): Promise<TransactionEntity['id']> {
   const { keep, drop } = determineKeepDrop(a, b);
 
+  // The occurrence stamp identifies WHICH occurrence of the schedule this
+  // transaction paid, so it only means anything next to that same schedule's
+  // link. Pick the side once and read both fields off it: picking them
+  // independently can leave the survivor linked to one schedule and stamped
+  // for another, which matches neither branch of getHasTransactionsQuery and
+  // flips the occurrence back to unpaid.
+  const scheduleSource = keep.schedule ? keep : drop;
+
   // Load subtransactions with a single query, then split by parent_id in memory
   const keepSubtransactions: TransactionEntity[] = [];
   const dropSubtransactions: TransactionEntity[] = [];
@@ -162,7 +170,8 @@ export async function mergeTransactionsNoTransfer(
       notes: keep.notes || drop.notes,
       cleared: keep.cleared || drop.cleared,
       reconciled: keep.reconciled || drop.reconciled,
-      schedule: keep.schedule || drop.schedule,
+      schedule: scheduleSource.schedule,
+      schedule_occurrence: scheduleSource.schedule_occurrence,
     } as unknown as TransactionEntity);
   } else {
     // Normal merge without subtransactions
@@ -173,7 +182,8 @@ export async function mergeTransactionsNoTransfer(
       notes: keep.notes || drop.notes,
       cleared: keep.cleared || drop.cleared,
       reconciled: keep.reconciled || drop.reconciled,
-      schedule: keep.schedule || drop.schedule,
+      schedule: scheduleSource.schedule,
+      schedule_occurrence: scheduleSource.schedule_occurrence,
     } as TransactionEntity);
   }
 
