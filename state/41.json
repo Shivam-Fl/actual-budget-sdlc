@@ -92,7 +92,7 @@
           "The existing useSchedules and usePreviewTransactions tests still pass"
         ],
         "kind": "bug",
-        "issue": null
+        "issue": 44
       },
       {
         "title": "A schedule's unpaid occurrences all stay listed when occurrences are close together",
@@ -126,6 +126,7 @@
   },
   "children": [
     42,
-    43
+    43,
+    44
   ]
 }
