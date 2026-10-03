@@ -6,4 +6,9 @@ searches for, not the cause.
 Each entry states: the symptom as observed, the actual cause, how it was found, and how to
 check for it quickly. Written by the Librarian after a bug turns out to be non-obvious.
 
-Empty for now. It fills as the system works.
+- `aql-or-branches-join-with-or.md` — an AQL filter matches far more rows than intended.
+- `sql-string-escaping-hides-test-failures.md` — a negative test stays green after the guard it
+  protects is deleted.
+
+Each of these cost a merged PR and a follow-up review pass to find. They are not derivable from
+reading the code, which is why they are here.
