@@ -68,5 +68,206 @@
     "decided_at": "2026-10-03T04:12:39.822Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "debug"
+  "dispatched_stage": "debug",
+  "validated_work_order": {
+    "issue": 31,
+    "version": 1,
+    "kind": "bug",
+    "mode": "proposal",
+    "reproduced": true,
+    "confidence": 88,
+    "confidence_rationale": "Every defect in this order was reproduced from scratch in my own sandbox against a real git remote, and every fix was applied there and re-measured — including the latin1 change's own regression risk (a valid UTF-8 filename), and the C fixture's falsifiability by removing the 'C' arm and watching that one case fail. The AC-8 regression comparison and the AC-10 catch were run across every branch. Held below 90 by four things I could not run in this checkout: there is no node_modules, so I could not run yarn typecheck, yarn lint, or the package's own vitest run (I executed the parser directly against stubbed gray-matter/listify instead, which covers the C fixture but not the full suite as the runner will execute it); I ran on Node 22 while CI pins Node 24; and no live Actions run was observed. The typecheck surface is also worth a second look — the root tsconfig sets allowJs with checkJs false, so the Buffer flowing through bin/*.mjs is unlikely to be typechecked at all, but I did not run the compiler to confirm.",
+    "understanding": "PR #30 hardened the release-notes gate's reporting path but left several of its assumptions about the environment standing, and the parser kept an untested branch. I re-reproduced every finding independently in a clean sandbox (/tmp/arb33, bare remote, real `git fetch origin baseRef` + `git diff origin/base...HEAD`) against the current script on main, applied the proposed fixes there, and measured the before/after myself.\n\nCRASHES — an uncaught throw where a ::error:: line belongs. (1) Line 20's module-level `fs.realpathSync(NOTES_DIR)` runs before any error handling: `git rm -r upcoming-release-notes` dies at module evaluation with `Error: ENOENT ... lstat`, exit 1, zero ::error:: lines. Two reviewers filed this as separate findings; it is one defect. (2) `fs.createWriteStream(GITHUB_STEP_SUMMARY)` registers only a `close` listener, so an unopenable summary path kills the process with `Unhandled 'error' event`. Its two sibling calls were guarded in #30; this one was not.\n\nSILENT TRUNCATION. (3) `process.exit(1)` immediately after a `console.log` that can emit the whole README (a PR author controls those bytes). `process.stdout` to a pipe is async, so the write is discarded mid-flight. I measured 65688 bytes against a 200113-byte README, and 65586 against a 160128-byte ::error:: line — both cut at the 64KB pipe buffer. The same root cause truncates the ::error:: line itself, so QA's separate truncation report is not a separate bug.\n\nFALSE REJECTION. (4) `promisify(execFile)` decodes git's stdout as UTF-8, discarding the byte fidelity `-z` buys one step later. I confirmed with a hexdump that git emits the raw byte `6e e9 2d` in the path field; UTF-8 decoding turns it into U+FFFD, so `fs.existsSync` misses a file that is genuinely there and the gate reports 'was added but does not exist on HEAD'.\n\nUNTESTED BRANCH. (5) The C arm's only fixture was deleted in #30. I confirmed unreachability by running git rather than reasoning: under the production invocation a byte-identical copy arrives as `A`, and adding `--find-copies-harder` drops the row entirely at `--diff-filter=AMR` — unreachable for two independent mechanisms. The reviewer pre-blessed keeping the literal C, so this is coverage, not behaviour.\n\nFIFTH DEFECT — found by me, in neither the ticket nor the proposal. `await execFile('git', ['fetch', 'origin', baseRef])` at line 107 is the first statement of an async IIFE with no `.catch`. If the fetch fails (base branch deleted or renamed, transient network), the rejection is unhandled and the gate dies with a raw `Error: Command failed: git fetch origin ...` stack trace and zero ::error:: lines — the exact contract violation the other four findings are about. A branch deleted out from under an open PR is ordinary, not exotic. I added it here because it is the same class in the same function and I verified the fix is non-regressive; it is disclosed rather than folded in silently.\n\nThe PR title finding is a `gh pr edit` on an already-merged PR, not a code change; recorded in out_of_scope with the exact command rather than dropped.",
+    "root_cause": "Three assumptions, all in the gate's reporting path rather than its validation logic. (a) It treats its environment as guaranteed — the presence of `upcoming-release-notes/`, of `GITHUB_STEP_SUMMARY`'s parent directory, and of a reachable base ref — so ordinary situations reach I/O that throws instead of reporting; #30 fixed two such calls inside reportError and left the other three. (b) It treats `process.exit` as a way to finish writing: on a pipe `console.log` is asynchronous, so exiting synchronously discards whatever had not drained, which is why the truncation scales with how much a PR author controls. (c) It reads git's stdout through a UTF-8 decoder that cannot represent every byte a POSIX filename may hold, throwing away the byte-exactness `-z` was adopted for.",
+    "approach": "Five changes to release-notes-check.mjs, one fixture to util.test.js, plus a release note.\n\n(1) Delete the module-level `realpathSync` line outright rather than guarding it — it is debug output nothing reads (`grep -rn 'Looking in'` finds no other reference) and every message already names the directory. A deleted directory then reaches `git diff`, reports the deletions, and takes the normal reportError path.\n\n(2) Wrap the `git fetch` in try/catch inside the async IIFE, routing a failure to `reportError` and returning. This is the same 'report an error rather than throw one' contract reportError already states for its own reads.\n\n(3) Replace both `process.exit(1)` calls in reportError with `process.exitCode = 1` and `return`, so the process ends naturally once stdout drains — the same async path the summary-set branch already used, making the branches consistent rather than adding a third exit style.\n\n(4) Attach an `error` listener to the summary stream alongside `close`, both setting exitCode, and call `summary.end(readme)` last so the listener is registered before the open is attempted. The verdict is already on stdout; only the unhandled event kills the process.\n\n(5) Ask git for latin1 rather than UTF-8 and rebuild each path with `Buffer.from(name, 'latin1')` before it reaches the filesystem. latin1 is byte-preserving, so it is an exact inverse (I verified the round trip is byte-identical), and `path.toString('utf-8')` recovers the display string so valid UTF-8 names still print correctly — confirmed with `café.md`, which validates and whose error message shows no replacement characters. `validateFile` takes the display label as a second argument; note there are **seven** reportError calls in it, not six — grep for them rather than trusting a count.\n\n`selectReleaseNotePaths` is untouched apart from the added fixture: its filters are ASCII (`endsWith('.md')`, the README comparison) and its status column is ASCII, so all are already correct on a latin1 view. Changing its signature would churn 32 tests for no behavioural gain, as would touching SELECTED_STATUSES or the diff filter — both pre-blessed and verified correct.\n\nThe new C fixture is falsifiable, not decorative: I removed the `'C'` from `hasTwoPaths` and confirmed the new case fails while the rest pass, then restored it.",
+    "files": [
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.mjs",
+        "action": "edit",
+        "change": "Delete the module-level `fs.realpathSync(NOTES_DIR)` log line at 20. Wrap the `git fetch` in try/catch inside the async IIFE and route the failure to reportError with the ref and the underlying message, then return. Replace both `process.exit(1)` calls inside reportError with `process.exitCode = 1` followed by a return. Hold the summary stream in a local, register an `error` listener alongside the existing `close` one (both setting exitCode), and call `summary.end(readme)` last. Pass `{ encoding: 'latin1' }` as execFile's options on the `git diff` call only, and rebuild each selected path with `Buffer.from(name, 'latin1')` in the validation loop, passing both the Buffer (for `fs.existsSync`/`fs.readFileSync`) and a `path.toString('utf-8')` label into `validateFile`, whose seven reportError calls interpolate the label rather than the Buffer.",
+        "why": "Holds all five reproduced defects: line 20 is the earliest unguarded read #30 left; the fetch is an unguarded throw in the same contract; exitCode is the only way to let piped stdout finish; the error listener is the stream call #30 skipped; latin1 is the decode -z needed."
+      },
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "change": "Add one case to the selectReleaseNotePaths block: a `C100` row with two paths followed by an `A` row, asserting only real.md is added and changed, with a comment stating that git cannot currently emit a C row under this invocation and that the case exists so two-path field consumption stays correct.",
+        "why": "Restores coverage for the branch that survived #30's fixture deletion — the stronger of the two options the reviewer offered, since it makes the invariant falsifiable rather than asserted."
+      },
+      {
+        "path": "upcoming-release-notes/fix-release-notes-gate-io-paths.md",
+        "action": "create",
+        "change": "Release note, category Bugfix, authors [Shivam-Fl], one-line body describing that the check no longer crashes when the notes directory, the summary path or the base ref is unavailable, no longer truncates its output, and no longer rejects non-UTF-8 filenames.",
+        "why": "Every PR needs one, and the gate this ticket hardens is what enforces it. No slug collision with the existing fix-release-notes-gate-crashes.md."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "cases": [
+          "does not let a copy row desynchronise the row after it"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "A branch deleting upcoming-release-notes/ entirely makes the gate print '::error::No release note added under upcoming-release-notes/.' and exit 1, with no ENOENT, stack trace or 'Unhandled' output.",
+        "verify": "test",
+        "how_to_verify": "Sandbox with a real git remote; git rm -r the directory, commit, run with BASE_REF=base and GITHUB_STEP_SUMMARY set. grep -c ENOENT = 0. I measured exactly this output; before the fix it was an ENOENT stack trace."
+      },
+      {
+        "id": "AC-2",
+        "check": "With GITHUB_STEP_SUMMARY pointing into a nonexistent directory, the gate prints its ::error:: and ::notice:: lines and exits 1 without an unhandled 'error' event.",
+        "verify": "test",
+        "how_to_verify": "Run with GITHUB_STEP_SUMMARY=/tmp/nope/deep/s.md after rm -rf /tmp/nope; expect grep -c Unhandled = 0 and exit 1. I measured Unhandled = 1 before the fix and 0 after, exit 1 both times."
+      },
+      {
+        "id": "AC-3",
+        "check": "With GITHUB_STEP_SUMMARY unset and a README exceeding the 64KB pipe buffer, the full output reaches the pipe instead of stopping near 65536 bytes.",
+        "verify": "test",
+        "how_to_verify": "200000-byte README piped to wc -c; expect above 190000. I measured 200113 after the fix, 65688 before."
+      },
+      {
+        "id": "AC-4",
+        "check": "A long ::error:: is not truncated: a note crediting 20000 bot authors emits the whole author list rather than cutting mid-author.",
+        "verify": "test",
+        "how_to_verify": "wc -c on the unset-summary path; expect above 150000. I measured 160128 after the fix, 65586 before."
+      },
+      {
+        "id": "AC-5",
+        "check": "A note whose filename holds a non-UTF-8 byte is selected and validated (exit 0), and with an invalid category is rejected naming the file rather than 'does not exist on HEAD'.",
+        "verify": "test",
+        "how_to_verify": "Create the file with raw 0xE9 bytes via python, commit, run with BASE_REF=base. I measured 'Validated 1 release note(s) 🎉' exit 0 after the fix, and a false 'does not exist on HEAD' before it."
+      },
+      {
+        "id": "AC-6",
+        "check": "A valid UTF-8 filename (café.md) still validates and still appears correctly in an error message — the latin1 decode must not mangle names the old code handled.",
+        "verify": "test",
+        "how_to_verify": "Commit café.md valid, then with an invalid category; confirm the ::error:: shows 'upcoming-release-notes/café.md' with no replacement characters. I verified both, exit 0 and exit 1 respectively."
+      },
+      {
+        "id": "AC-7",
+        "check": "A C row does not desynchronise the row after it: given a C100 row with two paths followed by an A row, only real.md is reported as added and changed.",
+        "verify": "test",
+        "how_to_verify": "Run `yarn workspace @actual-app/ci-actions run test`; expect 33 passing. To prove the case is falsifiable, temporarily delete `'C'` from hasTwoPaths in util.mjs, confirm exactly that case fails and the other 32 pass, then restore and re-run for 33/33. I confirmed the fixture fails with C removed and passes with it restored."
+      },
+      {
+        "id": "AC-8",
+        "check": "Ordinary verdicts are unchanged: valid note exits 0, invalid category produces the same ::error:: text, a rename validates the new path, no note added exits 1, and a deleted README still reports its category error with an empty ::notice::. Output is identical to the unmodified script apart from the removed 'Looking in' debug line.",
+        "verify": "test",
+        "how_to_verify": "Five sandbox branches diffed against the same branches run on the unmodified script, with the deleted debug line filtered out of both sides. I ran this comparison and every branch differed only by that line or by one of the two fixed defects."
+      },
+      {
+        "id": "AC-9",
+        "check": "Exit code is 1 on every error path, including the two that previously exited before draining and the newly caught fetch failure — a truncated or crashed message must never come with exit 0.",
+        "verify": "test",
+        "how_to_verify": "echo $? after each AC-2/3/4/8 run, and after the AC-10 run."
+      },
+      {
+        "id": "AC-10",
+        "check": "A base ref that cannot be fetched produces a ::error:: line naming the ref and exits 1, rather than an unhandled promise rejection with a raw stack trace.",
+        "verify": "test",
+        "how_to_verify": "Run with BASE_REF=nonexistent-branch against the sandbox remote. Expect a ::error:: line mentioning the ref and exit 1, and no 'Command failed' stack trace reaching the log uncaught. I verified this is a crash today and that the try/catch produces the ::error:: line at exit 1."
+      }
+    ],
+    "qa_script": [
+      "Sandbox setup: the gate runs `git fetch origin <baseRef>` and diffs origin/<baseRef>...HEAD, so it needs a real remote. Clone to a scratch dir, create a bare repo, `git remote set-url origin <bare>`, push a base branch holding upcoming-release-notes/ (README.md plus a seed note). Set GIT_AUTHOR_*/GIT_COMMITTER_*; commit messages must start with [AI] or the repo's git guard rejects them.",
+      "AC-1: branch off base, `git rm -r upcoming-release-notes`, commit. Run with BASE_REF=base and GITHUB_STEP_SUMMARY set. Expect exit 1, the ::error:: line, grep -c ENOENT = 0, no stack trace. Before the change this dies at line 20 during module evaluation.",
+      "AC-2: on a branch with `category: Nonsense`, `rm -rf /tmp/nope`, run with GITHUB_STEP_SUMMARY=/tmp/nope/deep/s.md. Expect exit 1, both message lines present, grep -c Unhandled = 0.",
+      "AC-3: replace README.md with 200000 'x' bytes, commit. `env -u GITHUB_STEP_SUMMARY ... | wc -c` — expect above 190000 (I measured 200113 fixed, 65688 unfixed).",
+      "AC-4: commit a note whose authors list is 20000 comma-separated claude entries. Same piped byte count — expect above 150000 (I measured 160128 fixed, 65586 unfixed).",
+      "AC-5: create the note with raw bytes via python (0xE9 in the filename), commit, run with BASE_REF=base. Expect 'Validated 1 release note(s) 🎉' and exit 0. Then rewrite with `category: Nonsense` and confirm the error names the file and does not say 'does not exist on HEAD'.",
+      "AC-6: commit café.md valid, expect exit 0; then set `category: Nonsense` and confirm the ::error:: shows 'upcoming-release-notes/café.md' with no replacement characters.",
+      "AC-7: run `yarn workspace @actual-app/ci-actions run test`, expect 33 passing. To prove the case is falsifiable, temporarily delete `'C'` from hasTwoPaths in util.mjs, confirm exactly that case fails and the other 32 pass, then restore and re-run for 33/33.",
+      "AC-8: five regression branches off base, each run with BASE_REF=base and GITHUB_STEP_SUMMARY set — valid note; `category: Nonsense`; `git mv good.md renamed.md`; no note added; README deleted plus a Nonsense note. Diff each against the same branch on the unmodified script, filtering the removed 'Looking in' line from both sides.",
+      "AC-9: in every AC-2/3/4/8/10 run, echo $? immediately after and confirm 1.",
+      "AC-10: run with BASE_REF=nonexistent-branch. Expect a ::error:: line naming the ref, exit 1, and no uncaught 'Command failed: git fetch' stack trace.",
+      "Finally: `yarn lint` and `yarn typecheck` from the repo root, and confirm the new release note passes the gate this change touched."
+    ],
+    "risks": [
+      "The latin1 decode is the one change reaching past a crash fix into a semantic choice. A future caller of selectReleaseNotePaths passing genuinely UTF-8 strings rather than the latin1 view this gate produces would double-encode its paths. The comment at the loop must explain the invariant; there is no other production caller today (grep confirms release-notes-check.mjs:123 and util.test.js are the only two), but the contract is inherited silently.",
+      "Changing process.exit(1) to process.exitCode = 1 relies on nothing else keeping the event loop alive on those paths. True today (reportError returns; on the summary path the stream keeps the loop alive until close, which is what the old code waited for), but a future edit leaving a pending handle on the unset-summary path would hang instead of exit — worse than truncation, though harder rather than easier to introduce.",
+      "Deleting the 'Looking in' line removes the only absolute path the gate prints; anyone debugging a checkout-symlink or case-sensitivity problem from the job log loses that hint.",
+      "The C fixture encodes today's git behaviour as a passing test but feeds the parser a synthetic row rather than running git — it proves the consumption logic, not the invocation's reachability, which is what the reviewer asked for but worth stating plainly.",
+      "The fetch-failure catch is an addition beyond the nine items in the ticket. It is the same defect class in the same function and I verified it changes no other branch's output, but it is not something the issue asked for and a reviewer may reasonably ask why it is here."
+    ],
+    "out_of_scope": [
+      "PR #30's missing [AI] title prefix (review finding 5): merged PR, repository-metadata change, no file to edit. A human runs `gh pr edit 30 --title '[AI] Follow-ups from #17: 7 from the review, 1 from QA'`.",
+      "Rewording the C justification in the doc comment — this plan takes the fixture option instead; the comment's factual claims all hold.",
+      "SELECTED_STATUSES and the --diff-filter=AMR invocation: verified correct in both directions and pre-blessed in AC-13.",
+      "parseReleaseNotes and formatNotes in the same util.mjs: used by release-notes-generate.mjs and packages/docs/scripts, untouched by these findings and never decoding a diff, so the latin1 concern does not reach them.",
+      "A unit-test harness for bin/release-notes-check.mjs: the script is module-level and side-effecting and vitest includes only src/**/*.test.*, so the bin fixes are verified by the qa_script rather than a checked-in test. The one piece of pure logic touched does get a fixture.",
+      "The pre-existing process.exit(1) at line 25 for an unset BASE_REF: left alone deliberately. Its message is a fixed 85 bytes, so unlike the README notice it cannot be truncated by the pipe buffer, and it runs before anything else is pending. Changing it would be cosmetic."
+    ],
+    "debate_summary": "The critique is empty — plan/critique.json is `{}`, so there was nothing to judge. Per the arbiter spec I did not treat that as a reason to stop; I re-derived the proposal's claims against the code and reproduced all of them myself, then ruled on the proposal alone. Every load-bearing claim held up: the ENOENT crash at line 20, the unhandled stream error, the 64KB truncation (I measured 65688 and 65586 against 200113 and 160128 fixed), the false rejection of a 0xE9 filename (confirmed with a hexdump of git's own output that the raw byte survives), and the C arm's double unreachability. I found no unfounded claim to dismiss, but I did find two places where the proposal is wrong in its details.\n\nFirst, the proposal tells the implementer to thread a display label through validateFile's 'six reportError calls'. There are seven. Small, but it is a literal instruction an implementer could follow by counting and would silently leave one message printing a Buffer. I corrected it and told the implementer to grep.\n\nSecond, and more substantively: the proposal's AC-8 claims the regression branches produce byte-identical output to the unmodified script. They do not — deleting the 'Looking in' line changes every one of them. That is the intended consequence of a fix the proposal itself argues for, so this is a wording defect rather than a wrong plan, but an acceptance criterion that cannot pass as written is worse than none, since it would send QA looking for a behaviour change that was never intended. I restated it as 'identical apart from the removed debug line', which is what I actually measured.\n\nWhere I departed from both the ticket and the proposal: I added a fifth defect neither mentions. Line 107's `git fetch` sits at the top of an async IIFE with no `.catch`, so an unfetchable base ref — a deleted branch, a rename, a transient network failure — kills the gate with an unhandled rejection and a raw `Error: Command failed` stack, zero ::error:: lines. I verified this crashes today and that wrapping it in try/catch routing to reportError produces a proper ::error:: at exit 1, with no other branch's output changing. I included it because it is the same defect class in the same function as the four the ticket is about, and because leaving a known crash of exactly the kind this ticket exists to remove seemed worse than a disclosed addition. It is listed in risks so a reviewer can strike it if they disagree; nothing else in the work depends on it.\n\nTwo smaller judgements. The ticket says 'Split this if they were unrelated' — they are not; all nine items are the same three assumptions in one 143-line file, and one root-cause fix covers them. And the ticket's QA entries were written against PR #30 as it stood; I re-ran all four rather than trusting them, and all four still reproduce on current main. Note that the two reviewer findings about line 20 are one defect, not two, despite being filed separately — the ticket's title counts them as distinct.\n\nNo decisions in plan/brief.md contradict anything here; the brief records nothing, and the issue has no '## Acceptance (from the split)' section, so there are no IAC-n obligations to satisfy or defer.",
+    "residual_risks": [
+      "No checked-in test covers the five bin/ fixes; they are verified only by the qa_script, run by hand. The crash and truncation classes are exactly the kind that regress silently — a future module-scope fs call, a fetch without a catch, or process.exitCode swapped back for process.exit, passes every test in the repo. Moving reportError into src/ to make it unit-testable is the real fix and a larger refactor than these findings justify.",
+      "The 200KB-README and 20000-author truncation scenarios need a deliberately pathological PR and will not occur naturally in review, so a regression there would not be caught until someone constructed one.",
+      "If GitHub normalises non-UTF-8 paths on checkout, the AC-5 scenario may be unreachable through Actions and only exercised locally — the fix is still correct, but AC-5 could be quietly skipped as unreproducible in CI.",
+      "The 64KB figure is what a pipe buffer gives on this platform; the threshold is environment-dependent, so QA should compare against the pre-change number on the same machine rather than against 65536.",
+      "Nothing here changes which notes the gate selects or how it judges them — SELECTED_STATUSES, the diff filter and every validation rule are untouched. A reviewer skimming may read the latin1 line as a behaviour change to path selection; it is not, and AC-8 is the check for that.",
+      "The fetch-failure message embeds git's own stderr, which is sanitized for workflow-command syntax but is otherwise passed through. That matches how every other reportError message is built, but it does mean a base-ref name chosen by a PR author appears in the log."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Guard line 20 with `if (fs.existsSync(NOTES_DIR))` instead of deleting it, as one reviewer suggested.",
+        "rejected_because": "It keeps a module-scope fs call alive to preserve a debug line nothing reads — grep -rn 'Looking in' finds no other reference, and every message already names the directory. Deleting removes the class rather than one instance; I verified the deleted-directory case still produces the ::error:: line, because git diff reports the deletions and added.length === 0 takes the normal path."
+      },
+      {
+        "approach": "Switch execFile to `{ encoding: 'buffer' }` and parse NUL-separated output as bytes inside selectReleaseNotePaths, returning Buffers.",
+        "rejected_because": "Correct and strictly more faithful than latin1, but it changes the parser's signature and all 32 fixtures plus the docs-facing caller for no behavioural gain: the parser's only path operations are ASCII (endsWith('.md'), the README comparison) and its status column is ASCII, so all are already correct on a latin1 view. latin1 buys byte fidelity at the two call sites that touch the filesystem, and I confirmed the Buffer/Buffer.from round trip is byte-exact."
+      },
+      {
+        "approach": "Use fs.writeFileSync in a try/catch for the summary instead of a stream with an error listener.",
+        "rejected_because": "It would make a ~200KB README write block the event loop and reshape the branch that already works in Actions. Attaching the missing 'error' listener is the minimal change that removes the unhandled event."
+      },
+      {
+        "approach": "Remove the C arm from hasTwoPaths and reword the doc comment — the reviewer's other offered option.",
+        "rejected_because": "It makes the parser wrong if git's invocation ever requests copy detection, and the reviewer explicitly pre-blessed keeping the literal C (AC-13). The fixture restores coverage of a branch that is staying, and I verified it is falsifiable rather than decorative."
+      },
+      {
+        "approach": "Fix the PR #30 title lapse as part of this work order.",
+        "rejected_because": "It is a command against an already-merged PR, not a change to any file, so there is nothing for the implement stage to write. Recorded in out_of_scope with the exact command so it is not lost."
+      },
+      {
+        "approach": "Add a top-level `.catch()` to the async IIFE that converts any unhandled rejection into a ::error:: line, rather than wrapping only the git fetch.",
+        "rejected_because": "Broader than the defect needs and it would also swallow genuine programming errors as workflow annotations — a mistake in the gate's own logic would then read as a reportable PR problem rather than a crash worth noticing. Wrapping the one call that fails for environmental reasons is the narrower fix; the catch-all is the right follow-up if a sixth crash of this shape turns up."
+      }
+    ],
+    "assumptions": [
+      "Actions always sets GITHUB_STEP_SUMMARY, so the unset-summary path is local-only — taken from the existing comment at lines 44-46, not re-verified against a live runner. It does not affect the fix: both branches now use exitCode.",
+      "The 64KB truncation is specific to a pipe. Reproduced through `| wc -c` and independently isolated to process.exit on a pipe; a TTY or file redirect was not tested and I do not claim the numbers transfer.",
+      "latin1 round-trips exactly for any byte a POSIX filename may hold. Verified for 0xE9 (invalid UTF-8) and café.md (valid UTF-8), where both the lookup and the printed message are correct; I did not enumerate every byte value.",
+      "The gate's exit code is what fails the Action step, so exit 1 must be preserved on every error path. Confirmed for each path exercised; I did not inspect the Action's own error handling.",
+      "util.mjs stays free of the filesystem, so passing a Buffer from the check script does not drag fs into it — confirmed by reading the module's imports.",
+      "Removing the debug line breaks nothing that greps the job log. Only the in-repo grep was checked; an external dashboard matching on it would not be caught."
+    ],
+    "unknowns": [
+      "Whether a non-UTF-8 filename can reach this gate at all in practice. Git stores raw bytes and I confirmed 0xE9 surviving both git and the -z output, but GitHub's checkout and API may normalise or reject such a path first; QA reached it by pushing to a local remote. The fix is correct either way, but I cannot say how often this fires.",
+      "Whether CI typechecks bin/*.mjs in a way that would object to a Buffer flowing through release-notes-check.mjs. The root tsconfig sets allowJs true with checkJs false, which suggests .mjs is not typechecked, but yarn typecheck could not be run here — no node_modules in this checkout.",
+      "Whether the ~200KB README scenario is reachable through GitHub. Actions has its own step-summary and log size limits I did not look up; the truncation I fixed is in the gate's own stdout before those apply.",
+      "How often an unfetchable base ref occurs in practice on this repo's Actions setup. I verified the crash and the fix in a sandbox, not from a real failed fetch in a real run."
+    ],
+    "evidence": [
+      "My own sandbox /tmp/arb33 (bare remote, base branch pushed) on the current script, not the proposer's /tmp/rn31.",
+      "Claim 1 — `git rm -r upcoming-release-notes` then the gate: `Error: ENOENT: no such file or directory, lstat '/tmp/arb33/work/upcoming-release-notes'` at Module.realpathSync, exit 1, zero ::error:: lines. After the fix: '::error::No release note added under upcoming-release-notes/. Add a *.md file describing your change.'",
+      "Claim 2 — GITHUB_STEP_SUMMARY=/tmp/arb33/nope/deep/s.md with /tmp/nope absent: ::error:: and ::notice:: print, then `Unhandled 'error' event`, exit 1. grep -c Unhandled was 1 before the fix and 0 after, exit 1 in both cases.",
+      "Claim 3, isolated — `node -e \"process.stdout.write('x'.repeat(200000)); process.exit(1)\" | wc -c` gives 65536; the same with process.exitCode=1 gives 200000.",
+      "Claim 3, in the gate — 200000-byte README with GITHUB_STEP_SUMMARY unset: 65688 bytes before the fix, 200113 after. 20000 comma-separated claude authors: 65586 bytes before, 160128 after, cut mid-author on the unfixed path.",
+      "Claim 4 — hexdump of `git diff --name-status -z` for a note named latin<0xE9>-note.md shows the raw byte surviving: `6c 61 74 69 6e e9 2d 6e 6f 74 65 2e 6d 64`. The unmodified gate prints '::error::Release note upcoming-release-notes/latin<U+FFFD>-note.md was added but does not exist on HEAD.' and exits 1; with the latin1 fix it prints 'Validated 1 release note(s). 🎉' and exits 0.",
+      "Claim 4, isolated — existsSync(Buffer.from(latin1String,'latin1')) is true for the raw-byte path while existsSync of the UTF-8-decoded string is false, which is the bug in one line.",
+      "Claim 5 — `git diff --name-status -z --diff-filter=AMR` on a byte-identical copy emits `A\\0<path>\\0`; adding `--find-copies-harder` emits nothing for the copy at all. Unreachable for two independent mechanisms, confirmed by running git rather than reasoning about it.",
+      "Claim 5, falsifiability — with 'C' removed from hasTwoPaths, `C100\\0old.md\\0copy.md\\0A\\0real.md\\0` yields {added: [], changed: []} instead of {added: ['...real.md'], changed: ['...real.md']}, so the proposed fixture fails exactly as it should; restoring 'C' returns the correct result.",
+      "Claim 6 — café.md validates at exit 0 and, with `category: Nonsense`, the error reads '::error::Release note upcoming-release-notes/café.md category \"Nonsense\" is not one of ...' with no replacement characters.",
+      "AC-8 regression — across seven branches (valid note, invalid category, no note added, rename, README present, non-UTF-8 note, deleted directory) the fixed and unmodified scripts differ only by the removed 'Looking in' line and by the two defects being fixed.",
+      "Fifth defect, found by me — BASE_REF=nonexistent-branch on the unmodified script: `Error: Command failed: git fetch origin nonexistent-branch`, exit 1, no ::error:: line. The async IIFE at line 106 has no `.catch` and grep confirms no catch anywhere in the file. With a try/catch routing to reportError: '::error::Could not fetch base ref \"nonexistent-branch\" from origin: ...' and exit 1, with all seven regression branches byte-identical to the four-fix version.",
+      "Callers grepped — selectReleaseNotePaths is called only by release-notes-check.mjs:123 and util.test.js; parseReleaseNotes and formatNotes are used by release-notes-generate.mjs and packages/docs/scripts and are untouched. `grep -rn 'Looking in'` finds the deleted line in no other file.",
+      "Scope check — no file in this work order touches .sdlc/memory/**, docs/spec/**, docs/prd.md, docs/trd.md, docs/ui.md, .github/** or .sdlc/**.",
+      "Baseline test count in util.test.js is 32 `it(` blocks, matching the proposal's 32-before/33-after arithmetic."
+    ]
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-03T04:47:50.039Z",
+  "validated_ac_changes": []
 }
