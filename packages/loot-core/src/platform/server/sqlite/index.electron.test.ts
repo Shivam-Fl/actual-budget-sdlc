@@ -26,18 +26,30 @@ describe('Native sqlite REGEXP guard', () => {
   // ../connection/index.api.test.ts:6-8.
   const handles: Database[] = [];
 
-  afterEach(() => {
+  // Named rather than inline so the last test in this describe can call it
+  // directly. A teardown proved only by a later test noticing its aftermath is
+  // a claim about whichever test happens to run next, not about this function.
+  function teardown() {
     vi.restoreAllMocks();
     for (const handle of handles.splice(0)) {
       handle.close();
     }
-  });
+  }
+
+  afterEach(teardown);
 
   // The failure below is deliberate — this test is meant to fail, so that the
   // afterEach above is the only thing standing between it and the next test.
   // Its aftermath is observed by the test below, which asserts it starts from
   // an unmocked console.log; this one cannot observe its own teardown, because
   // it passes whether or not the afterEach exists.
+  //
+  // it.fails passes on ANY failure in the body, so this guard only establishes
+  // the scenario — cleanup has to survive an assertion failing partway through
+  // a test — and verifies nothing about whether teardown happened. It is kept
+  // because it is the only exercise of that scenario. The last test in this
+  // describe is what actually proves the teardown: it calls teardown() itself,
+  // so it stays falsifiable under `-t` filtering and reordering.
   it.fails('leaves nothing behind when an assertion fails mid-test', () => {
     vi.spyOn(console, 'log').mockImplementation(() => null);
     const db = openDatabase(':memory:');
@@ -50,6 +62,10 @@ describe('Native sqlite REGEXP guard', () => {
   it('reports an unparseable pattern once per database handle, not once per process', () => {
     // Only meaningful above this test's own spy: below it, this would observe
     // the mock installed two statements down and pass unconditionally.
+    // It is also vacuous whenever the guard above did not run — under `-t`
+    // filtering or reordering nothing has mocked console.log yet, so this is
+    // true for the wrong reason. That is why it is not the only assertion on
+    // the teardown; the last test in this describe covers what this cannot.
     expect(vi.isMockFunction(console.log)).toBe(false);
 
     // SQLite calls the REGEXP function once per candidate row, so a single-row
@@ -110,5 +126,29 @@ describe('Native sqlite REGEXP guard', () => {
     // And a valid pattern still matches every row, silently.
     expect(query(db1, '#mortgage')).toHaveLength(3);
     expect(invalidRegexLogs()).toBe(3);
+  });
+
+  // Last on purpose. This drives teardown() itself instead of reading another
+  // test's aftermath, so it proves both halves of the teardown no matter which
+  // tests ran before it — and, unlike the assertion above, it stays falsifiable
+  // when it is the only test selected.
+  //
+  // Its position is load-bearing. It has to follow the guard and the test that
+  // observes it: teardown() here would otherwise clean up the guard's leaked
+  // mock and handle before that observer looks, and deleting the
+  // afterEach(teardown) registration would then leave the suite green.
+  it('closes every handle it collected and restores the console', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => null);
+    const db = openDatabase(':memory:');
+    handles.push(db);
+
+    teardown();
+
+    // Nothing left for the next test to trip over.
+    expect(handles).toHaveLength(0);
+    expect(vi.isMockFunction(console.log)).toBe(false);
+    // better-sqlite3 exposes its own closed state, so this is the handle's
+    // report rather than an inference from the array being empty.
+    expect(db.open).toBe(false);
   });
 });
