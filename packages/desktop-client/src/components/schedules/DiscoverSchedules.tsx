@@ -26,6 +26,7 @@ import {
 import { useSendPlatformRequest } from '#hooks/useSendPlatformRequest';
 import { aqlQuery } from '#queries/aqlQuery';
 import { getRecurringDescription } from '#util/schedule';
+import { linkScheduleUpdate } from '#util/schedule-actions';
 
 import { ScheduleAmountCell } from './SchedulesTable';
 
@@ -182,10 +183,7 @@ export function DiscoverSchedules() {
         );
 
         await send('transactions-batch-update', {
-          updated: transactions.map(t => ({
-            id: t.id,
-            schedule: scheduleId,
-          })),
+          updated: transactions.map(t => linkScheduleUpdate(t.id, scheduleId)),
         });
       }
     }

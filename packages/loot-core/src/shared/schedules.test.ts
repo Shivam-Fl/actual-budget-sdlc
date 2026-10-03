@@ -436,6 +436,13 @@ describe('schedules', () => {
           'OR (schedule_occurrence IS NULL AND date >= 20161202)))))',
       );
     });
+
+    // The direction the browser signal comes from is already pinned by the two
+    // cases above and by the `isScheduleOccurrencePosted` block: a stamp naming
+    // some other date satisfies neither arm, so the schedule reads Due until the
+    // stamp is cleared. Re-deriving that here would only add a third encoding
+    // of the predicate, expressed through positional assumptions about arm
+    // order that the production code is free to change.
   });
 
   describe('getPostedScheduleTransactionsQuery', () => {

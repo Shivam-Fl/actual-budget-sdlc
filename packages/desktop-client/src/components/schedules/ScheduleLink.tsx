@@ -16,6 +16,7 @@ import { useSchedules } from '#hooks/useSchedules';
 import { pushModal } from '#modals/modalsSlice';
 import type { Modal as ModalType } from '#modals/modalsSlice';
 import { useDispatch } from '#redux';
+import { linkScheduleUpdate } from '#util/schedule-actions';
 
 import { ROW_HEIGHT, SchedulesTable } from './SchedulesTable';
 
@@ -49,7 +50,7 @@ export function ScheduleLink({
   async function onSelect(scheduleId: string) {
     if (ids?.length > 0) {
       await send('transactions-batch-update', {
-        updated: ids.map(id => ({ id, schedule: scheduleId })),
+        updated: ids.map(id => linkScheduleUpdate(id, scheduleId)),
       });
       onScheduleLinked?.(schedules.find(s => s.id === scheduleId));
     }

@@ -20,6 +20,10 @@ import { pushModal } from '#modals/modalsSlice';
 import type { Modal as ModalType } from '#modals/modalsSlice';
 import { aqlQuery } from '#queries/aqlQuery';
 import { useDispatch } from '#redux';
+import {
+  linkScheduleUpdate,
+  unlinkScheduleUpdate,
+} from '#util/schedule-actions';
 
 import { updateScheduleConditions } from './schedule-edit-utils';
 import { ScheduleEditForm } from './ScheduleEditForm';
@@ -179,18 +183,18 @@ export function ScheduleEditModal({ id, transaction }: ScheduleEditModalProps) {
   }
 
   async function onLinkTransactions(ids: string[], scheduleId?: string) {
+    if (scheduleId == null) {
+      return;
+    }
     await send('transactions-batch-update', {
-      updated: ids.map(id => ({
-        id,
-        schedule: scheduleId,
-      })),
+      updated: ids.map(id => linkScheduleUpdate(id, scheduleId)),
     });
     selectedInst.dispatch({ type: 'select-none' });
   }
 
   async function onUnlinkTransactions(ids: string[]) {
     await send('transactions-batch-update', {
-      updated: ids.map(id => ({ id, schedule: null })),
+      updated: ids.map(unlinkScheduleUpdate),
     });
     selectedInst.dispatch({ type: 'select-none' });
   }
