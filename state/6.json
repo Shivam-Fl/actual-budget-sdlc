@@ -27,97 +27,20 @@
     "at": "2026-10-03T04:44:55.522Z"
   },
   "work_order": {
-    "issue": 6,
-    "version": 1,
-    "kind": "bug",
-    "mode": "committed",
-    "reproduced": true,
-    "confidence": 92,
-    "confidence_rationale": "Reproduced end to end in the live app against $PREVIEW_URL, and v1's rejection was then verified at the unit level with a scratch probe that placed a correctly-dated transaction on a later occurrence and showed the preview row survives, so v1's approach as written provably cannot satisfy AC-1. The fix mechanism is chosen by measurement rather than inference (three variants run, preview outputs compared), not by argument. The residual ~8% is implementation detail inside the chosen mechanism (loop bound when advancing next_date), not risk to the diagnosis.",
-    "understanding": "An upcoming schedule occurrence is rendered in the account register as a synthetic row whose id is `preview/<scheduleId>/<YYYY-MM-DD>` (packages/loot-core/src/shared/schedules.ts:500, computeSchedulePreviewTransactions). The occurrence date lives ONLY in that third id segment. Every 'Post transaction' path throws it away: `Account.onScheduleAction` maps `ids.map(id => id.split('/')[1])` (packages/desktop-client/src/components/accounts/Account.tsx:1561) and the four mobile `onPost` handlers do the same `parts[1]`-only truncation, each sending `schedule/post-transaction` with `{ id }`. The server handler `postTransactionForSchedule` (packages/loot-core/src/server/schedules/app.ts:550) accepts only `{ id, today }` and dates the transaction `today ? currentDay() : schedule.next_date`. Since next_date is the schedule's FIRST un-posted occurrence, every upcoming row posts as the first one. There is a second, independent defect v1 missed: even with the date threaded through correctly, the schedule's next_date is never advanced past the occurrence the user just posted, so the register keeps rendering an Upcoming preview for a date that now has a real transaction. Both halves must be fixed for the reported symptom to go away.",
-    "root_cause": "Two causes on the same path. (1) The clicked occurrence date is unrecoverable by the time the write happens: it exists only as the third segment of the synthetic row id, which every caller truncates with `split('/')[1]` before calling a handler that has no date parameter. (2) `postTransactionForSchedule` never moves the schedule's next_date, and the preview list removes at most ONE leading entry (`if (status === 'paid') { dates.shift(); }`, schedules.ts:495-497), so posting a later occurrence leaves its preview row in place next to the new real transaction.",
-    "approach": "Thread the occurrence date through the existing call chain AND advance the schedule to that occurrence. Two parts, both required.\n\n(1) DATE. Parse the date out of the preview id where ids are already being split, and pass it as an optional `date` parameter to `schedule/post-transaction`. `postTransactionForSchedule` uses it when supplied and keeps `today ? currentDay() : schedule.next_date` when absent. The parameter must stay OPTIONAL: advanceSchedulesService calls the handler in-process with a bare id (app.ts:717) and the Schedules page sends a bare id, so a fix assuming a date is always present would break auto-posting.\n\n(2) ADVANCE — this is what removes the duplicate preview row, and it is the part v1 omitted. When, and only when, an explicit occurrence `date` is supplied and is later than `schedule.next_date`, the handler moves `next_date` forward TO that occurrence before returning, by repeatedly calling the existing `setNextDate({ id, conditions: schedule._conditions, advance: true })` primitive (the same path skipNextDate uses) until next_date reaches the posted date, bounded by a small attempt cap with an early exit if next_date stops changing. Setting next_date to exactly the posted occurrence — not past it — is deliberate: getHasTransactionsQuery's lower bound for a posts_transaction schedule is exactly next_date (getScheduleOccurrenceMatchStartDate, schedules.ts:88-97), so the new transaction makes status 'paid', and the EXISTING dates.shift() in computeSchedulePreviewTransactions then drops the posted date from the preview list. No change to the shared preview computation and no change to the matching-window logic is needed. Measured, not assumed.\n\nThe advance must be gated on an explicit `date`, because advanceSchedulesService calls postTransactionForSchedule({ id }) and then advances the recurring schedule itself via advanceRecurringScheduleFromNextDate (app.ts:717 followed by app.ts:735). An ungated advance would double-advance every auto-posted occurrence.\n\n`today: true` must NOT advance next_date and must keep precedence over any passed date: posting 'today' pays an occurrence early and deliberately leaves the scheduled date pending, which is existing behaviour AC-3 pins. skipNextDate and 'Mark as completed' are left alone — they already advance or complete and are not part of this symptom.\n\nOUT-OF-ORDER POSTING, stated so the implementer is not surprised: previews are always built from next_date forward, so every previewed date is >= next_date. Posting a later occurrence therefore moves next_date past any EARLIER occurrence that was never posted, and that earlier occurrence stops being previewed. That is the same window semantics the app already has for the first occurrence (posting it drops its preview), it is the behaviour the reviewer named as acceptable, and it is not silently different from variant C — both hide the earlier occurrence. Making posting strictly in order the only way to keep every earlier occurrence visible is a product decision beyond this ticket.",
-    "files": [
-      {
-        "path": "packages/loot-core/src/server/schedules/app.ts",
-        "action": "edit",
-        "change": "Both halves of the fix live in postTransactionForSchedule (line 550). (a) Accept an optional `date` and use it as the transaction date when supplied, keeping `today ? currentDay() : schedule.next_date` as the fallback; `today: true` still wins. (b) NEW AND ESSENTIAL: after the transaction is added, when — and only when — `date` was supplied, is not `today`, and is strictly later than schedule.next_date, advance next_date to exactly that occurrence by looping the existing `setNextDate({ id, conditions: schedule._conditions, advance: true })` (same primitive skipNextDate calls at line 466) until next_date reaches the posted date; stop on a no-change advance and cap the loop so a date not on the schedule's recurrence cannot spin. This advance is what removes the duplicate preview row: it makes getHasTransactionsQuery match the new transaction, status becomes 'paid', and the existing dates.shift() drops the posted date. Do NOT advance when `date` is absent — advanceSchedulesService (line 717) calls this handler with a bare id and advances the schedule itself at line 735, so an ungated advance double-advances every auto-post. Both writes happen inside the same `undoable` mutator as addTransactions, so undo restores the transaction and next_date together.",
-        "why": "The single place the date is decided and the only place next_date can be moved; keeping both halves here covers every caller."
-      },
-      {
-        "path": "packages/loot-core/src/shared/transactions.ts",
-        "action": "edit",
-        "change": "Add an exported helper next to the existing isPreviewId (line 12) that parses `preview/<scheduleId>/<YYYY-MM-DD>` into { scheduleId, date }, returning no date for a bare id. All eight call sites already import from this module and already split on '/', so one helper owns the id shape instead of repeating split('/')[2] in each file. The helper must agree with isPreviewId for both preview and non-preview ids.",
-        "why": "One helper owns the preview-id shape rather than each call site re-deriving it with raw split('/')."
-      },
-      {
-        "path": "packages/desktop-client/src/components/accounts/Account.tsx",
-        "action": "edit",
-        "change": "In onScheduleAction (line 1557), replace `ids.map(id => id.split('/')[1])` (line 1561) with the shared preview-id helper so each selected id yields both scheduleId and date, and pass the date on the post-transaction branch. post-transaction-today keeps `{ id, today: true }` and no date. Bare schedule ids must behave exactly as before.",
-        "why": "The desktop register is the surface the bug was reported on; this is where the date is discarded."
-      },
-      {
-        "path": "packages/desktop-client/src/components/mobile/accounts/AccountTransactions.tsx",
-        "action": "edit",
-        "change": "In the onPost handler (line 192), use the shared helper instead of `transactionId.split('/')[1]` so the occurrence date reaches schedule/post-transaction for the post action. Keep `today` in the payload as today so the post-today path is unchanged.",
-        "why": "Same truncation on mobile; missing one leaves the bug live on that surface only."
-      },
-      {
-        "path": "packages/desktop-client/src/components/mobile/accounts/OnBudgetAccountTransactions.tsx",
-        "action": "edit",
-        "change": "Same fix as AccountTransactions in the onPost handler (line 88): pass the preview id's occurrence date through so posting an upcoming row does not fall back to the schedule's first next_date.",
-        "why": "Same truncation on mobile."
-      },
-      {
-        "path": "packages/desktop-client/src/components/mobile/accounts/OffBudgetAccountTransactions.tsx",
-        "action": "edit",
-        "change": "Same fix as AccountTransactions in the onPost handler (line 88): pass the preview id's occurrence date through so posting an upcoming row does not fall back to the schedule's first next_date.",
-        "why": "Same truncation on mobile."
-      },
-      {
-        "path": "packages/desktop-client/src/components/mobile/accounts/AllAccountTransactions.tsx",
-        "action": "edit",
-        "change": "Same fix as AccountTransactions in the onPost handler (line 114): pass the preview id's occurrence date through so posting an upcoming row does not fall back to the schedule's first next_date.",
-        "why": "Same truncation on mobile."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/loot-core/src/server/schedules/app.test.ts",
-        "action": "edit",
-        "cases": [
-          "THE CASE v1 WAS MISSING AND THE REVIEWER REQUIRED: after posting occurrence #1 (the schedule's own next_date) and then occurrence #2, the schedule's next_date has moved ONTO the posted occurrence date, computeSchedulePreviewTransactions no longer returns any preview row for that posted date, and the later occurrence dates are all still previewed unchanged — only one occurrence is consumed, not the whole window. Fails on current code and must fail before the fix.",
-          "posting a recurring schedule with an explicit future occurrence date creates the transaction on THAT date, not on the schedule's first next_date — the exact failure reproduced in the browser",
-          "posting without a date argument still creates the transaction on schedule.next_date AND leaves next_date unchanged, so the Schedules-page and auto-post paths are unaffected by the new advance",
-          "posting with `today: true` still creates the transaction on the current day and leaves next_date unchanged even when an occurrence date is also supplied",
-          "posting a later occurrence of a schedule whose first occurrence is already posted creates a second transaction on the later date rather than duplicating the first date",
-          "advanceSchedulesService still auto-posts each missed occurrence exactly once and lands next_date on the expected date — this guards the double-advance hazard, since that service posts and then advances the schedule itself"
-        ]
-      },
-      {
-        "path": "packages/loot-core/src/shared/transactions.test.ts",
-        "action": "edit",
-        "cases": [
-          "the preview id helper returns both the schedule id and the occurrence date for `preview/<scheduleId>/2026-10-09`",
-          "the helper returns no date for a bare (non-preview) id, so callers keep their existing next_date fallback",
-          "the helper agrees with the existing isPreviewId predicate for both preview and non-preview ids"
-        ]
-      }
-    ],
     "acceptance": [
       {
         "id": "AC-1",
         "check": "In the account register, selecting an Upcoming preview row dated 10/09/2026 and choosing 'Post transaction' creates a transaction dated 10/09/2026 — not 10/02/2026, and not a second 10/02 row — and the 10/09 Upcoming preview row is gone from the register.",
+        "how_to_verify": "Create a weekly +100 schedule starting today with upcoming length set to 1 month, so the register shows 10/02 Due and 10/09/10/16/10/23/10/30 Upcoming. Post 10/02, then post 10/09. The register must show one 10/09 transaction and NO 10/09 Upcoming preview. On current code a second 10/02 transaction appears and the 10/09 preview remains — both halves of the bug, so both halves are asserted here.",
         "source": "TR-1",
-        "verify": "browser",
-        "how_to_verify": "Create a weekly +100 schedule starting today with upcoming length set to 1 month, so the register shows 10/02 Due and 10/09/10/16/10/23/10/30 Upcoming. Post 10/02, then post 10/09. The register must show one 10/09 transaction and NO 10/09 Upcoming preview. On current code a second 10/02 transaction appears and the 10/09 preview remains — both halves of the bug, so both halves are asserted here."
+        "verify": "browser"
       },
       {
         "id": "AC-2",
         "check": "After posting 10/09, the later occurrences 10/16, 10/23 and 10/30 are still listed as Upcoming and undamaged — exactly one occurrence is consumed by the post.",
+        "how_to_verify": "Same setup as AC-1. After posting 10/02 and 10/09, the register must still show 10/16, 10/23 and 10/30 as Upcoming previews. A fix that over-advances would consume more than one occurrence and fail here.",
         "source": "TR-1",
-        "verify": "browser",
-        "how_to_verify": "Same setup as AC-1. After posting 10/02 and 10/09, the register must still show 10/16, 10/23 and 10/30 as Upcoming previews. A fix that over-advances would consume more than one occurrence and fail here."
+        "verify": "browser"
       },
       {
         "id": "AC-3",
@@ -134,9 +57,9 @@
       {
         "id": "AC-5",
         "check": "The mobile scheduled-transaction menu posts the clicked occurrence date and consumes that occurrence, matching the desktop behaviour on all four mobile surfaces.",
+        "how_to_verify": "Open the same account at a mobile viewport, open an Upcoming row's menu, and post it; the transaction must land on that row's date and that row's preview must be gone.",
         "source": "TR-1",
-        "verify": "browser",
-        "how_to_verify": "Open the same account at a mobile viewport, open an Upcoming row's menu, and post it; the transaction must land on that row's date and that row's preview must be gone."
+        "verify": "browser"
       },
       {
         "id": "AC-6",
@@ -147,84 +70,203 @@
       {
         "id": "AC-7",
         "check": "The schedule still shows a coherent state on the Schedules page after posting a later occurrence — it is 'Paid' at the posted date rather than pointing at an already-posted earlier occurrence, and a later sync does not double-advance it.",
+        "how_to_verify": "Post a later occurrence, reload the Schedules page, then trigger a sync. The schedule's next date and status must be stable, and the next auto-post must land on the following occurrence, not skip one.",
         "source": "TR-2",
-        "verify": "test",
-        "how_to_verify": "Post a later occurrence, reload the Schedules page, then trigger a sync. The schedule's next date and status must be stable, and the next auto-post must land on the following occurrence, not skip one."
+        "verify": "test"
+      },
+      {
+        "id": "AC-8",
+        "check": "Posting a LATER occurrence while an EARLIER occurrence is still unpaid does not consume the earlier one: the earlier occurrence is still shown in the register with its own date, is still selectable, and posting it then creates a transaction on its own date. Exactly one occurrence — the one selected — is consumed per post, in any order.",
+        "how_to_verify": "NEW — this is QA's T-12, which failed on PR #15. Fresh budget, no server. Set upcoming length to 30 days. On-budget account with a weekly +100.00 schedule starting today, 'Automatically add transaction' ticked. The register shows today Due plus 10/10, 10/17, 10/24, 10/31 Upcoming. Select the 10/10 Upcoming row and choose 'Post transaction' — do NOT post the Due row first. Assert all three: (a) exactly one transaction exists, dated 10/10; (b) the Due row dated today is STILL listed and still selectable; (c) posting that Due row then creates a transaction dated today, not a duplicate of 10/10. On the PR head, (a) passes and (b) fails — the Due row is gone and its date never appears in the transaction list at all — which is how QA found it.",
+        "source": "TR-1",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-9",
+        "check": "Posting the same schedule occurrence twice creates exactly one transaction. Two 'Post transaction' messages for the same schedule id and occurrence date dispatched together — the double-click or retry case — leave a single transaction carrying a single `schedule_occurrence` stamp.",
+        "how_to_verify": "NEW — this is QA's T-10, a minor pre-existing bug in the function this ticket rewrites, not something the PR introduced, so it carries no AC of its own elsewhere. Set up the weekly schedule as in AC-8 and dispatch `schedule/post-transaction` twice for the same id and the same occurrence date without awaiting the first. Query `transactions` filtered on that schedule id: there must be exactly one row, dated on the occurrence date, with `schedule_occurrence` equal to that occurrence. Also confirm the sequential double-post behaves identically. `schedule/post-transaction` is a mutator and `runMutator` is `sequential`, so the second call must not begin until the first has written.",
+        "source": "TR-1",
+        "verify": "api"
       }
+    ],
+    "approach": "Delete the advance; consume occurrences per occurrence. This is the alternative v1 listed first and rejected as \"the larger change\" — it is larger, and it is also the only one that satisfies AC-2.\n\n1. Server (`server/schedules/app.ts`): keep `postTransactionForSchedule({ id, date, today })` accepting an explicit occurrence date and keep stamping `schedule_occurrence: today ? next_date : (date ?? next_date)`. Remove `advanceScheduleToDate` entirely and revert `setNextDate` to its main-branch shape (drop the `nextDate` parameter and its `nextDate ?? ...` expression — no caller will need it once the advance is gone). `postTransactionForSchedule` no longer touches `next_date` at all.\n\n2. Register preview (`shared/schedules.ts`): give `computeSchedulePreviewTransactions` an optional fifth parameter `postedTransactionsBySchedule?: Map<string, PostedScheduleTransaction[]>`, defaulting to an empty Map. After the forward generation and the existing `status === 'paid'` shift, drop every remaining date for which `isScheduleOccurrencePosted({ schedule, scheduleId, occurrenceDate, postedTransactions })` is true. Do NOT delete the `dates.shift()`: it covers the unstamped-legacy case where `getHasTransactionsQuery`'s lower-bound arm matched a transaction dated after the occurrence, which `isScheduleOccurrencePosted`'s two-sided window deliberately does not match. Keep both.\n\n3. New query builder `getPostedScheduleTransactionsQuery(schedules)`: every transaction carrying one of the given `schedule` ids, selecting `['schedule','date','schedule_occurrence']`, `.options({ splits: 'all' })`, with the same `{ id: null }` no-match guard for an empty list. This is a NEW function — do not widen `getHasTransactionsQuery`, which is load-bearing for `hasTransactionForSchedule` and `advanceSchedulesService`: broadening it would make a later posted occurrence mark an earlier one paid, which is BUG-1 again, in the auto-post path.\n\n4. Plumbing: `hooks/useSchedules.ts` opens a second live query over `getPostedScheduleTransactionsQuery(schedules)`, indexes with `indexPostedScheduleTransactions`, exposes `postedTransactionsBySchedule` on `ScheduleData` (hence `UseSchedulesResult`, which is the context value type, so `useCachedSchedules` needs no edit), tearing it down alongside `statusQueryRef` in both the re-subscribe path and the unmount cleanup. `hooks/usePreviewTransactions.ts` passes it through as the fifth argument.\n\n5. BUG-2, in the same handler: when `!today`, before `addTransactions`, query for an existing transaction with this `schedule` id and this `schedule_occurrence`; if one exists, return without writing. The handler is a mutator and mutators are `sequential`, so this is race-safe against concurrent dispatch. Guard only the `!today` path: `today` deliberately discharges `next_date` and can legitimately be invoked more than once, and changing it would move AC-3.\n\nNet behaviour on QA's repro: post 10/10 with 10/03 unpaid → one transaction stamped 10/10 dated 10/10; `next_date` stays 10/03 with status 'due'; previews are 10/03 (Due) + 10/17/10/24/10/31 (Upcoming). 10/03 remains previewed and payable. AC-1 still holds: post 10/02 then 10/09 → two transactions on their own dates, both occurrences consumed by the per-occurrence filter, later occurrences untouched.",
+    "assumptions": [
+      "The `schedule_occurrence` stamp introduced by the earlier work on this issue (commit 9065a36) is present on every transaction this PR creates, and older transactions without it keep working through the unstamped date-comparison fallback — the fix does not depend on a backfill.",
+      "`computeSchedulePreviewTransactions` has exactly one production caller (`usePreviewTransactions`), so a fifth positional parameter cannot silently change behaviour elsewhere. Callers that omit it get an empty map and today's behaviour.",
+      "`useCachedSchedules`' context value type is `UseSchedulesResult`, so adding a field to the hook result requires no edit in `useCachedSchedules.tsx`.",
+      "The `date` sent from the register is always an occurrence of that schedule. `advanceScheduleToDate` used to guard against a date that was not on the recurrence; the new code does not need to, because such a date never matches a generated preview date and so cannot be clicked — but a caller supplying one programmatically would stamp a transaction for an occurrence the schedule never had.",
+      "`mutator()` wrapping plus `sequential` means two concurrent `schedule/post-transaction` calls do not interleave, which is what makes the BUG-2 guard safe without a lock."
+    ],
+    "confidence": 84,
+    "confidence_rationale": "The mechanism is fully traced and deterministic: the one-deep `dates.shift()` at shared/schedules.ts:532, the `next_date`-only filter in `getHasTransactionsQuery` at line 192, and the advance in app.ts that QA's error-context matches exactly. The replacement mechanism is not invented — it is the per-occurrence dedup `forecast-schedules.ts:205` already runs in production. The 16-point deduction is for execution, not design: `node_modules` is not installed in this checkout, so I could not run a single test, build the app, or watch the failure happen. The three-way interaction between the retained shift, the new occurrence filter, and `getHasTransactionsQuery`'s one-sided lower bound for unstamped transactions is what I most want CI to confirm first.",
+    "debate_summary": "",
+    "evidence": [
+      "QA report qa-evidence/qa-report.json: BUG-1, major, introduced_by_pr: true, reproducible always, covers_ac [AC-2], T-12 failed at head 2da2a51.",
+      "qa-evidence error-context.md for T-12: Expected value \"2026-10-03\", Received array [\"2026-10-17\",\"2026-10-24\",\"2026-10-31\"] — the unpaid Due occurrence is absent from the register while only LATER occurrences remain, the signature of a pointer walked forward past it.",
+      "The T-12 spec asserts both that only the clicked occurrence produced a transaction (passes) and that the earlier unpaid date is still in the register (fails).",
+      "Source trace: shared/schedules.ts:502 builds dates from [schedule.next_date] forward; :532 `if (status === 'paid') dates.shift()` is the only removal; :192 getHasTransactionsQuery filters on schedule_occurrence: schedule.next_date and can only report on the pointer's own date.",
+      "Source trace: the PR's advanceScheduleToDate loops getNextDateAfter from schedule.next_date up to the posted date and calls setNextDate once at the end — intermediate occurrences receive no write of any kind.",
+      "BUG-2 T-10 failed with two transactions for one id + occurrence date; postTransactionForSchedule calls addTransactions unconditionally. Registered as mutator(undoable(postTransactionForSchedule)) at app.ts:812, and runMutator = sequential(_runMutator) at mutators.ts:97 — so a check-then-write inside the handler is serialised and needs no lock.",
+      "Precedent for the replacement: forecast/forecast-schedules.ts:186-212 indexes posted transactions and calls isScheduleOccurrencePosted per generated occurrence date, skipping exactly those already discharged — the register preview path never adopted this.",
+      "v1's own approach text naming the exact failure and declaring it a product decision beyond the ticket, quoted in full in `understanding`.",
+      "I could not run anything: `test -d node_modules` fails in this checkout and node is v22.23.3, so there is no vitest, no build and no browser here. `reproduced` is false for that reason, not because the trace is weak."
+    ],
+    "files": [
+      {
+        "action": "edit",
+        "change": "Delete `advanceScheduleToDate` and revert `setNextDate` to its main-branch signature (drop the `nextDate?: string` param and the `nextDate ?? ...` fallback). Keep `postTransactionForSchedule`'s `date?: string` parameter and its `date: today ? currentDay() : (date ?? schedule.next_date)` and `schedule_occurrence: today ? schedule.next_date : (date ?? schedule.next_date)` lines exactly as the PR has them, and delete the trailing `if (!today && date != null && ...) await advanceScheduleToDate(...)` block. Add the BUG-2 guard: when `!today`, resolve `occurrence = date ?? schedule.next_date`, query `id` from `q('transactions').filter({ schedule: schedule.id, schedule_occurrence: occurrence })`, and return early if any row comes back — before `addTransactions`, inside the handler body so the mutator queue serialises it. Do not filter `is_child`, matching getHasTransactionsQuery, so a split parent still counts.",
+        "path": "packages/loot-core/src/server/schedules/app.ts",
+        "why": "This is the whole of BUG-1: the advance walks next_date over unpaid occurrences and records nothing for them. advanceSchedulesService already calls postTransactionForSchedule({ id }) with a bare id and advances the schedule itself, so removing the advance restores a single owner for next_date."
+      },
+      {
+        "action": "edit",
+        "change": "Add `export function getPostedScheduleTransactionsQuery(schedules)` returning `q('transactions').options({ splits: 'all' }).filter({ $or: schedules.map(s => ({ schedule: s.id })) }).select(['schedule','date','schedule_occurrence'])`, with the `{ id: null }` no-match guard when the list is empty. Add an optional fifth parameter `postedTransactionsBySchedule: Map<string, PostedScheduleTransaction[]> = new Map()` to computeSchedulePreviewTransactions, keeping `filter` as the fourth. After the existing `if (status === 'paid') dates.shift()`, filter dates through isScheduleOccurrencePosted({ schedule, scheduleId: schedule.id, occurrenceDate: date, postedTransactions: postedTransactionsBySchedule.get(schedule.id) ?? [] }). Keep the shift — do not remove it. Leave getHasTransactionsQuery, getStatus, isForPreview and forceUpcoming untouched.",
+        "path": "packages/loot-core/src/shared/schedules.ts",
+        "why": "The preview list must be able to drop a specific occurrence without moving the pointer it is anchored to. This is the same per-occurrence dedup buildFutureScheduleOccurrences already performs in forecast/forecast-schedules.ts:205."
+      },
+      {
+        "action": "edit",
+        "change": "Add `postedTransactionsBySchedule: Map<string, PostedScheduleTransaction[]>` to ScheduleData, initialised to an empty Map. Add a `postedQueryRef` next to `statusQueryRef` and open `liveQuery<TransactionEntity>(getPostedScheduleTransactionsQuery(schedules), { onData, onError })` inside the existing `scheduleQuery.onData`, unsubscribing the previous one before re-opening (the existing comment at line 110 explains why an orphaned live query is a leak) and in the effect cleanup. Pass the map into setData alongside statuses. Leave the existing status query and loadStatuses alone.",
+        "path": "packages/desktop-client/src/hooks/useSchedules.ts",
+        "why": "The register needs to know which individual occurrences are already paid; statuses is one bit per schedule and cannot express that. The context value type is UseSchedulesResult, so this flows to useCachedSchedules consumers with no edit there."
+      },
+      {
+        "action": "edit",
+        "change": "Destructure `postedTransactionsBySchedule` from `useCachedSchedules()` and pass it as the fifth argument to computeSchedulePreviewTransactions; add it to the useMemo dependency array so a newly posted occurrence recomputes the previews.",
+        "path": "packages/desktop-client/src/hooks/usePreviewTransactions.ts",
+        "why": "This is the only production caller of computeSchedulePreviewTransactions, so it is the only place the new argument must be supplied."
+      },
+      {
+        "action": "edit",
+        "change": "KEEP AS IS. `parsePreviewId(id)` returning `{ scheduleId, date? }`, built on the existing isPreviewId, is correct and is what carries the chosen occurrence from the register to the server. No change.",
+        "path": "packages/loot-core/src/shared/transactions.ts",
+        "why": "v1 got this half right; this revision removes the advance beneath it, not the id parsing above it."
+      },
+      {
+        "action": "edit",
+        "change": "KEEP AS IS. `onScheduleAction` parsing each selected id with parsePreviewId, sending `{ id: scheduleId, date }` for 'post-transaction', `{ id: scheduleId, today: true }` for 'post-transaction-today', and a bare `{ id: scheduleId }` for 'skip' and 'complete'. No change.",
+        "path": "packages/desktop-client/src/components/accounts/Account.tsx",
+        "why": "The call site is the other half of v1 that was right; the server now consumes what it sends."
+      },
+      {
+        "action": "edit",
+        "change": "KEEP AS IS — the PR's parsePreviewId call site for on-budget accounts. No change.",
+        "path": "packages/desktop-client/src/components/mobile/accounts/AccountTransactions.tsx",
+        "why": "Same as Account.tsx; AC-5 pins all four mobile surfaces to the desktop behaviour."
+      },
+      {
+        "action": "edit",
+        "change": "KEEP AS IS — the PR's parsePreviewId call site. No change.",
+        "path": "packages/desktop-client/src/components/mobile/accounts/OnBudgetAccountTransactions.tsx",
+        "why": "Same as Account.tsx."
+      },
+      {
+        "action": "edit",
+        "change": "KEEP AS IS — the PR's parsePreviewId call site. No change.",
+        "path": "packages/desktop-client/src/components/mobile/accounts/OffBudgetAccountTransactions.tsx",
+        "why": "Same as Account.tsx."
+      },
+      {
+        "action": "edit",
+        "change": "KEEP AS IS — the PR's parsePreviewId call site. No change.",
+        "path": "packages/desktop-client/src/components/mobile/accounts/AllAccountTransactions.tsx",
+        "why": "Same as Account.tsx."
+      }
+    ],
+    "issue": 6,
+    "kind": "bug",
+    "mode": "committed",
+    "out_of_scope": [
+      "`ScheduledTransactionMenuModal.tsx` renders `schedule.next_date` in its 'Scheduled date' header for every occurrence, so opening a later occurrence's menu shows the schedule's earliest pending date. Pre-existing, not in this PR's diff, and QA explicitly did not assert on it — but under this fix next_date stays on the unpaid occurrence more often, so the header is stale more often. Left alone here rather than folded into a bug fix; file it separately if it is worth fixing.",
+      "Multi-device sync, Electron and the Firefox/WebKit e2e runs were not exercised by QA on PR #15 (both CI gates were action_required on that head). Nothing here is device-specific, but nothing here has been proven across a sync round-trip either."
     ],
     "qa_script": [
       "1. Fresh budget, no server ('Start budgeting'). Create account 'Checking'.",
       "2. Schedules page -> 'Change upcoming length' -> '1 month' -> Save. Dismiss the tour toast.",
       "3. Schedules page -> 'Add new schedule'. Name 'Paycheck', payee 'Employer', account 'Checking', amount +100.00 (use 'Make positive'), Date -> 'Every week on' Friday starting today, Apply. Tick 'Automatically add transaction'. Add.",
       "4. Open the Checking account. Confirm five rows: today 'Due' plus four 'Upcoming' at +7/+14/+21/+28 days.",
-      "5. REGRESSION BASELINE — the check that failed on current code, and the one v1's plan could not satisfy. Select the row dated today+7 (not the Due row), open the select button -> 'Post transaction'. Assert BOTH: (a) a transaction is created dated today+7, and (b) the today+7 Upcoming preview is GONE. On current code a second transaction dated TODAY appears instead AND the today+7 preview remains.",
-      "6. Repeat step 5 for today+14, today+21 and today+28. Assert each creates its own transaction on its own date, that each of those previews is gone, and that no two transactions share a date.",
-      "7. Assert that after posting today+7 the later occurrences are still listed — this catches an over-advancing fix that consumes more than one occurrence.",
-      "8. Assert the account balance equals 400.00 after all four posts (100 each) and there are no uncategorized duplicates.",
-      "9. Assert 'Post transaction today' on a remaining Upcoming row still dates it today AND that row's preview is still there afterwards (early payment must not consume the occurrence).",
-      "10. On the Schedules PAGE, post a schedule via its bare-id action and assert it lands on that schedule's next_date and that the schedule's next date has not jumped, so auto-posting is unaffected.",
-      "11. Reload the page and confirm the posted transactions and the remaining Upcoming previews persist — the fix must survive a reload (a store-only fix would not).",
-      "12. Trigger a sync with the schedule still due. Assert the auto-posted transaction lands on the FOLLOWING occurrence, not one further along — this is the double-advance guard."
+      "5. OUT-OF-ORDER, THE CHECK THAT FAILED ON PR #15 — run this FIRST. Do NOT post the Due row. Select the row dated today+7 and choose 'Post transaction'. Assert: (a) exactly one transaction exists, dated today+7; (b) the Due row dated today is STILL listed and still selectable; (c) 10/16, 10/23, 10/30 are still Upcoming. On the PR head (b) fails outright.",
+      "6. Continuing from step 5, now post the Due row (today). Assert a transaction dated today is created, and that 10/16/10/23/10/30 are still Upcoming. Two posts, two transactions, two distinct dates, two occurrences consumed — nothing else.",
+      "7. IN-ORDER REGRESSION (AC-1, AC-2). Fresh budget, repeat steps 1-4. Post today, then today+7, +14, +21, +28 in order. After each, assert a transaction on that row's own date, that row's preview gone, and every LATER occurrence still Upcoming. Assert no two transactions share a date.",
+      "8. Assert the account balance equals 500.00 after step 7 (100 each) and there are no uncategorized duplicates.",
+      "9. Assert 'Post transaction today' on a remaining Upcoming row still dates it today AND that row's preview is still there afterwards.",
+      "10. On the Schedules PAGE, post a schedule via its bare-id action and assert it lands on that schedule's next_date and that the schedule's next date has not jumped.",
+      "11. IDEMPOTENCE (AC-9). Dispatch schedule/post-transaction twice for the same id and occurrence date without awaiting the first, then query the account's transactions: exactly one row, dated on the occurrence date.",
+      "12. Reload the page and confirm the posted transactions and the remaining Upcoming previews persist.",
+      "13. Trigger a sync with a schedule still due at an occurrence the user passed over in step 5. Assert the auto-posted transaction lands on THAT occurrence, and that after it the following occurrences line up with no gap."
+    ],
+    "reproduced": false,
+    "residual_risks": [
+      "A schedule left at an unpaid next_date by an out-of-order post WILL be auto-posted on the next sync. That is the correct reading — the occurrence was never paid — but it means an out-of-order post now reliably produces a second transaction on the next sync, which a user could reasonably find surprising. This is a product behaviour, not a defect, and no acceptance criterion asserts it; if QA objects, it is a conversation about intent, not a bug to patch.",
+      "ScheduledTransactionMenuModal.tsx shows schedule.next_date in the 'Scheduled date' header for every occurrence, so that header is stale for a later occurrence's menu — more visibly stale now that next_date stays put. Pre-existing, out of scope here, and deliberately not asserted.",
+      "Coverage the QA run never reached and this work order does not restore: multi-device sync round-trips, Electron, and Firefox/WebKit. The fix adds a live query whose re-run behaviour across a sync is the one thing most likely to differ from what CI proves locally.",
+      "The occurrence stamp is the identity the whole design rests on, and this is the second issue in a row to depend on it. Any future write path that creates a schedule-linked transaction without stamping schedule_occurrence will silently resurrect the legacy lower-bound behaviour for that transaction."
     ],
     "risks": [
-      "The advance loop is the one genuinely new mechanism. It reuses `setNextDate({ advance: true })`, which computes getNextDateAfter(dateCond, nextDate) — one occurrence forward from the CURRENT next_date — so repeated calls converge on the posted date as long as it is on the schedule's recurrence, which it is by construction (the preview came from that same recurrence). It must still stop on a no-change advance and on an attempt cap, or a date not on the recurrence would spin forever.",
-      "Bare-id callers are the load-bearing risk. advanceSchedulesService (app.ts:717), the Schedules page, and the mobile Schedules list all pass a bare schedule id. The `date` parameter must stay optional and the advance must stay gated, or auto-posting silently skips an occurrence on every sync.",
-      "`today: true` must keep precedence over any passed date and must not advance next_date. 'Post transaction today' pays an occurrence early and deliberately leaves the scheduled date pending; AC-3 pins this and the implementation must not fold it into the advance.",
-      "Threading a parameter through five call sites (the desktop Account handler plus four mobile onPost handlers) means a missed one leaves the bug live on that surface only, which is why the tests[] and acceptance criteria are deliberately per-surface.",
-      "The advance is a real mutation on a syncing table and will sync to other devices. That is the same mutation skipNextDate already performs from the same UI, so it is consistent with existing sync behaviour, but it does mean a post from one device changes the schedule's next date everywhere.",
-      "skipNextDate and 'Mark as completed' share the same id-truncation shape in the same handlers. They are NOT part of this symptom (skip already advances next_date, correct for a bare schedule id) but the implementer should confirm they were considered rather than assume they are unaffected."
+      "The new occurrence index changes which preview rows exist for EVERY schedule, not just the one in QA's repro, because getPostedScheduleTransactionsQuery returns transactions getHasTransactionsQuery never saw. Any place where a preview's presence was incidental rather than intended will shift.",
+      "isScheduleOccurrencePosted falls back to a two-sided date comparison for UNSTAMMED transactions while getHasTransactionsQuery uses only a lower bound. A legacy unstamped transaction dated after an occurrence will keep that occurrence previewed under the new filter while status still reads 'paid' via the lower bound. The retained dates.shift() covers the head; a mid-list legacy mismatch would show an extra preview row rather than a missing one — the safe direction, but a visible change.",
+      "packages/desktop-client/src/hooks/useSchedules.test.ts asserts exact liveQuery call counts. A third live query breaks them, and the fix must be to raise the counts — weakening or deleting those assertions would hide a genuine subscription leak.",
+      "A second live query on the register is a real per-sync cost on large budgets, since it is not narrowed by date the way the status query is. It selects only three columns and is filtered to the schedules in view, but it is no longer bounded by the upcoming window.",
+      "Removing the advance means a schedule left behind at an unpaid next_date after an out-of-order post will be auto-posted by advanceSchedulesService on the next sync. That is correct but new on that path, and must be covered by a test rather than discovered in a budget."
     ],
-    "out_of_scope": [
-      "The `getHasTransactionsQuery` / `isScheduleOccurrencePosted` matching-window logic in packages/loot-core/src/shared/schedules.ts. Deliberately NOT changed: the chosen fix makes the existing window correct for this case by moving next_date onto the posted occurrence, so the preview disappears through the existing `status === 'paid'` shift() with no edit to either function. Changing the window would alter forecast and status behaviour well beyond this ticket. (If the maintainer instead picks the per-occurrence dedupe alternative, this exclusion must be dropped and AC-1 restated — the two must not disagree.)",
-      "`computeSchedulePreviewTransactions` itself — its signature and its single `dates.shift()` are left untouched for the same reason.",
-      "The stale `transactions-select-button` / `transactions-select-tooltip` test ids in packages/desktop-client/e2e/page-models/account-page.ts, which no longer exist in the component source. The live pattern is `data-testid={id}-select-button`. Worth a separate issue; not required for this fix.",
-      "Requiring occurrences to be posted in chronological order, and any redesign of the preview window. See the last alternatives_considered entry."
-    ],
-    "assumptions": [
-      "Posting a future occurrence is a supported action (the reporter treats it as such and the UI offers it on every preview row); the fix makes it correct rather than removing it.",
-      "'Post transaction today' is a distinct, deliberately-early payment that leaves the scheduled occurrence pending. The existing code and AC-3 agree on this and the fix preserves it."
-    ],
-    "unknowns": [
-      "Whether posting out of chronological order should hide an earlier un-posted occurrence. Both candidate mechanisms hide it, the reviewer explicitly named the advance as acceptable, and the current app already behaves this way for the first occurrence — but if the maintainer wants out-of-order posting to keep earlier occurrences visible, that is a preview-window change and a separate ticket.",
-      "Whether a future occurrence post should surface the Paid state on the Schedules page differently. The chosen mechanism reproduces the state the app already shows after posting an occurrence, so this is a UX confirmation rather than a correctness question."
-    ],
-    "evidence": [
-      "REPRODUCTION (live app, $PREVIEW_URL http://localhost:3001, compose mode, local-only, Playwright + chromium, fresh budget): created account 'Checking', set upcoming length to '1 month', created schedule 'Paycheck' (payee Employer, +100.00, weekly on Friday from today 2026-10-02, Automatically add transaction on) — the reporter's setup. The register showed 10/02 Due and 10/09, 10/16, 10/23, 10/30 Upcoming. Step 1 — selected the 10/02 Due row, 'Post transaction': 10/02 became a real transaction ('Categorize'). Correct. Step 2 — selected the 10/09 Upcoming row, same menu: a SECOND 10/02 transaction appeared, the 10/09 row was still 'Upcoming', and the balance read 200.00. Observed rows (verbatim):\\n   10/30/2026 | Employer | Paycheck | Upcoming | 0.00\\n   10/23/2026 | Employer | Paycheck | Upcoming | 0.00\\n   10/16/2026 | Employer | Paycheck | Upcoming | 0.00\\n   10/09/2026 | Employer | Paycheck | Upcoming | 0.00\\n   10/02/2026 | Employer | Categorize | 0.00\\n   10/02/2026 | Employer | Categorize | 0.00\\n\\nThat is the reporter's exact screenshot ('two entries for 11/25/2025 and the upcoming transaction is still there'). No console errors and no failed requests accompanied it — the write succeeded with the wrong date, which is why it is invisible to error-based detection. The run was driven by a scratch Playwright script (written to the repo root, run with node, and deleted; not part of the diff). A stale react-aria tooltip overlay left over from the 'Change upcoming length' modal intercepted pointer events on the rows and had to be removed from the DOM before the select cells could be clicked; a test-harness artefact, unrelated to this bug.",
-      "THE v1 OBJECTION, VERIFIED AT UNIT LEVEL (why v1 was rejected and v2 differs). A scratch vitest probe in packages/loot-core/src/server/schedules/probe.test.ts (created, run, and deleted; not part of the diff) set up a weekly posts_transaction schedule with next_date 2016-12-05 and read the real state after each step. Verbatim output:\\n\\n  [initial] next_date=2016-12-05 status=missed  real tx dates: (none)\\n            preview rows: 2016-12-05, 12-12, 12-19, 12-26, 2017-01-02, 01-09, 01-16, 01-23, 01-30\\n  [after posting occurrence #1] next_date=2016-12-05 status=paid  real tx: 2016-12-05\\n            preview rows: 2016-12-12, 12-19, 12-26, ...\\n  [A: tx on 12-12, next_date UNCHANGED (v1 plan as written)] next_date=2016-12-05 status=paid\\n            real tx dates: 2016-12-05, 2016-12-12\\n            preview rows: 2016-12-12, 12-19, 12-26, ...   <-- DUPLICATE\\n\\nVariant A simulates exactly what v1's files[] produce — the transaction correctly dated on the later occurrence — and the 2016-12-12 preview survives alongside the real 2016-12-12 transaction. v1's approach cannot satisfy AC-1. The reviewer is right.",
-      "FIX MECHANISM CHOSEN BY MEASUREMENT, NOT INFERENCE. The same probe ran two further variants over identical state:\\n\\n  [B: next_date advanced ONTO the posted occurrence, 2016-12-12] status=paid\\n      preview rows: 2016-12-19, 12-26, 2017-01-02, ...   <-- posted date GONE\\n  [C: next_date advanced PAST it, 2016-12-19]\\n      preview rows: 2016-12-19, 12-26, 2017-01-02, ...   <-- posted date gone, but the\\n      schedule loses its Paid state and points at an un-posted future occurrence\\n\\nB is chosen. It reuses the existing `status === 'paid'` shift() unchanged, needs no edit to the shared preview computation and no edit to the matching-window logic (so the out_of_scope exclusion stays valid), and leaves the schedule in the same coherent state the app is already in after posting the first occurrence.",
-      "DOUBLE-ADVANCE HAZARD FOUND WHILE CHOOSING THE MECHANISM (not in v1). advanceSchedulesService calls `postTransactionForSchedule({ id: currentSchedule.id })` with a BARE id at packages/loot-core/src/server/schedules/app.ts:717 and then advances the recurring schedule itself via advanceRecurringScheduleFromNextDate at line 735. An advance inside postTransactionForSchedule not gated on an explicit `date` would skip an occurrence on every auto-post. Hence the gate, and hence the parameter must be optional.",
-      "MECHANISM CONFIRMED IN SOURCE. computeSchedulePreviewTransactions builds ids as 'preview/' + schedule.id + '/' + date (schedules.ts:500) and removes exactly one leading entry via `if (status === 'paid') { dates.shift(); }` (schedules.ts:495-497). `status` is getStatus(next_date, completed, hasTrans, upcomingLength) and `hasTrans` comes from getHasTransactionsQuery, whose lower bound for a posts_transaction schedule is exactly next_date via getScheduleOccurrenceMatchStartDate (schedules.ts:88-97). postTransactionForSchedule never touches next_date (app.ts:550-575), and advanceSchedulesService cannot rescue the case because it runs only on sync success/error/unauthorized (app.ts:822-846) and breaks immediately when `currentSchedule.next_date === currentDay()` (app.ts:690-694) — exactly the reported setup, where the schedule starts today. The same file's onViewSchedule correctly reads `parts[1]` for the schedule id, so the date-parsing asymmetry is visible in one place; all four mobile onPost handlers do the same parts[1]-only truncation."
-    ],
-    "alternatives_considered": [
+    "root_cause": "Occurrence consumption and the schedule's `next_date` pointer are the same variable. `computeSchedulePreviewTransactions` (packages/loot-core/src/shared/schedules.ts:473) builds every schedule's preview dates forward from the single `next_date` pointer, and the only way it ever removes one is `if (status === 'paid') dates.shift()` at line 532 — one deep, and gated on `status`, which comes from `getHasTransactionsQuery` (line 192), which only ever asks about `next_date`. The data model therefore has exactly one slot to record \"this occurrence is paid\": the slot `next_date` points at. Posting occurrence 10/10 while 10/03 is still unpaid requires recording two facts at once — 10/10 paid, 10/03 still owed — and there is nowhere to put the first without destroying the second. `advanceScheduleToDate` is the mechanism that destroys it: it walks `next_date` forward over every occurrence between the old pointer and the posted date, writing nothing for any of them, so each of those occurrences simultaneously (a) stops being previewed, because the preview list starts at the new pointer, and (b) can never be posted, because `getHasTransactionsQuery` only ever asks about `next_date`. Hence BUG-1: the 10/03 Due row vanishes from the register and is unpayable forever. The stamp the PR already writes (`schedule_occurrence: date`) carries precisely the information being thrown away — the schedule system already has the right per-occurrence representation (`isScheduleOccurrencePosted`, `indexPostedScheduleTransactions`), and `forecast-schedules.ts` already uses it; only the register preview path never adopted it.",
+    "tests": [
       {
-        "approach": "Leave next_date alone and deduplicate the preview list per occurrence in computeSchedulePreviewTransactions, using the existing isScheduleOccurrencePosted / indexPostedScheduleTransactions that forecast already applies (packages/loot-core/src/server/forecast/forecast-schedules.ts:188-210).",
-        "rejected_because": "Correct in principle and explicitly offered by the reviewer, but the larger change. computeSchedulePreviewTransactions takes only (schedules, statuses, upcomingLength, filter) — it has no access to posted transactions, so this means threading the posted-transaction index through SchedulesProvider/useCachedSchedules into every preview consumer, changing a signature shared with forecast and the register hooks. It also forces reopening the getHasTransactionsQuery/isScheduleOccurrencePosted matching window this ticket deliberately leaves alone, because the two mechanisms would then have to agree on the window. The advance approach needs none of that. Recorded as the runner-up if the maintainer prefers not to mutate schedule state on a post."
+        "action": "edit",
+        "cases": [
+          "REPRODUCES QA T-12, THE BUG THAT FAILED THE RUN — posting a later occurrence while an EARLIER occurrence is still unpaid creates exactly one transaction, dated on the posted occurrence, and leaves schedule.next_date unchanged on the earlier unpaid occurrence, so the earlier occurrence stays payable. Fails on the PR head and must fail before the fix.",
+          "the same scenario through computeSchedulePreviewTransactions: with occurrence #2 posted and #1 unpaid, the previews are #1 and #3..#n — #1 still previewed, #2 consumed, later occurrences undamaged. This is the assertion v1's unit test could not make because it always posted #1 first.",
+          "posting occurrence #1 and then #2 still yields exactly one transaction per post, both dates distinct, later occurrences untouched — the in-order case v1 did cover, kept so this revision cannot regress it",
+          "posting without a `date` argument still creates the transaction on schedule.next_date and leaves next_date unchanged, so the Schedules-page path and advanceSchedulesService are unaffected",
+          "posting with `today: true` still dates it today, stamps schedule_occurrence as next_date, and leaves next_date unchanged even when a `date` is supplied",
+          "posting occurrence #2 then #1 out of order gives two transactions stamped to their own occurrences, and after both only #3..#n remain previewed",
+          "advanceSchedulesService still auto-posts each missed occurrence exactly once and lands next_date on the expected date; a schedule left at an unpaid next_date because of an out-of-order post must auto-post that occurrence on the next sync rather than skipping past it",
+          "BUG-2: posting the same schedule id and occurrence date twice, sequentially, produces exactly one transaction and one schedule_occurrence stamp",
+          "BUG-2 under concurrency: two schedule/post-transaction calls for the same id and occurrence dispatched together produce exactly one transaction. Safe because runMutator is sequential (mutators.ts:97). If it fails, the guard is in the wrong place — do not weaken the test",
+          "the BUG-2 guard does not apply to `today`: posting the same future occurrence twice with today: true still writes twice, so the early-payment path AC-3 depends on is unchanged"
+        ],
+        "path": "packages/loot-core/src/server/schedules/app.test.ts"
       },
       {
-        "approach": "Advance next_date PAST the posted occurrence rather than onto it (variant C in the probe).",
-        "rejected_because": "Also removes the duplicate preview, but it discards the Paid state the app already shows after posting an occurrence, and makes the schedule point at an un-posted future date while a transaction exists for an earlier one — a state the app never produces today. Advancing onto the posted date reproduces the existing post-occurrence-#1 state exactly, so it is the smaller behavioural change."
+        "action": "edit",
+        "cases": [
+          "computeSchedulePreviewTransactions drops an occurrence date that has a stamped transaction for it, wherever it sits in the generated list — not just at the head, which is the only case the existing dates.shift() handled",
+          "it drops several occurrences of the same schedule at once, not only the earliest one",
+          "it does NOT drop an occurrence when the schedule has no posted transactions, and drops nothing when the map is omitted entirely — the parameter defaults to empty so every existing caller and test keeps its behaviour",
+          "it still drops next_date when status === 'paid', so the existing shift-based cases continue to pass",
+          "an occurrence stamped as paid is dropped even when the transaction carries a different date (the re-dating case isScheduleOccurrencePosted exists for)",
+          "getPostedScheduleTransactionsQuery returns every transaction linked to any of the given schedule ids, including one stamped for an occurrence other than next_date — the query the old one could not express",
+          "getPostedScheduleTransactionsQuery with an empty schedule list compiles to a query that matches nothing rather than scanning every transaction",
+          "getHasTransactionsQuery is unchanged and still only asks about next_date — assert directly, since widening it would reintroduce BUG-1 inside advanceSchedulesService"
+        ],
+        "path": "packages/loot-core/src/shared/schedules.test.ts"
       },
       {
-        "approach": "Advance next_date unconditionally inside postTransactionForSchedule, whether or not a date was passed.",
-        "rejected_because": "Double-advances every auto-post: advanceSchedulesService posts with a bare id (app.ts:717) and then advances the schedule itself (app.ts:735). The advance must be gated on an explicit occurrence date."
+        "action": "edit",
+        "cases": [
+          "the hook exposes postedTransactionsBySchedule, indexed by schedule id",
+          "opening a posted-transactions live query and unmounting unsubscribes it, so no live query is orphaned across a schedules refresh",
+          "UPDATED, NOT DELETED: the existing liveQuery call-count and unsubscribe assertions must be updated for the additional query. They currently assert exact counts (1, 2, 3) and will fail when a second status-side query is opened. Raise the expected counts to match the new reality and keep every other assertion — do not relax them into toBeGreaterThan or drop them"
+        ],
+        "path": "packages/desktop-client/src/hooks/useSchedules.test.ts"
       },
       {
-        "approach": "Re-derive the occurrence date on the server from next_date plus the recurrence when a bare schedule id is posted.",
-        "rejected_because": "It cannot work — the server is never told WHICH occurrence the user clicked, so there is nothing to derive from. It would also re-implement the recurrence and the upcoming-length window that computeSchedulePreviewTransactions already owns, and could disagree with it."
-      },
-      {
-        "approach": "Change the preview row id to carry the date somewhere else (a query param, or a separate field on the synthetic transaction).",
-        "rejected_because": "The date is already in the id and every consumer can reach it. Re-encoding it would churn the id format that Balance.tsx, ScheduledTransactionMenuModal and the context-menu code all parse with split('/'), with no behavioural gain."
-      },
-      {
-        "approach": "Disable 'Post transaction' on rows that are not the first upcoming occurrence.",
-        "rejected_because": "Hides the feature rather than fixing it. The user can legitimately want to post a future occurrence early, and the report is that doing so picks the wrong date."
-      },
-      {
-        "approach": "Make posting strictly in order mandatory so no earlier un-posted occurrence is ever skipped.",
-        "rejected_because": "The advance hides an earlier un-posted occurrence when the user posts out of order, in both variant B and variant C — inherent to next_date being the head of the preview window, and it matches what the app already does for the first occurrence. Changing that is a product decision about the preview window, not part of this bug; widening the ticket to cover it would repeat v1's sin of the plan and the acceptance criteria disagreeing."
+        "action": "edit",
+        "cases": [
+          "the hook passes postedTransactionsBySchedule through to computeSchedulePreviewTransactions, so a newly posted occurrence removes only its own preview row",
+          "a posted occurrence arriving in the context recomputes the previews (the dependency array includes the new map)"
+        ],
+        "path": "packages/desktop-client/src/hooks/usePreviewTransactions.test.ts"
       }
-    ]
+    ],
+    "understanding": "The previous plan was wrong, and it said so itself. Its `approach` read: \"previews are always built from next_date forward ... Posting a later occurrence therefore moves `next_date` past any EARLIER occurrence that was never posted, and that earlier occurrence stops being previewed ... Making posting strictly in order the only way to keep every earlier occurrence visible is a product decision beyond this ticket.\" It then put `computeSchedulePreviewTransactions` and `isScheduleOccurrencePosted` in `out_of_scope` and shipped `advanceScheduleToDate`. That is not a product decision the ticket declines to make — it is the ticket's own AC-2 (\"exactly one occurrence is consumed by the post\") being declared out of scope one paragraph after being asserted. QA's T-12 is a faithful reading of AC-2, not a moved goalpost, and it failed for exactly the reason the plan predicted and then declined to fix. BUG-1 is not a missing edge case around `advanceScheduleToDate`; it is the whole design of that helper. v1 also had a coverage blind spot that let it through: its unit test posts occurrence #1 (the schedule's own `next_date`) and then #2, so `next_date` never has to cross an UNPAID occurrence — precisely the only case the new code was wrong in.\n\nWhat is right in v1 and must survive this rewrite: the `date?` argument threaded from the five client call sites, `parsePreviewId`, and the `schedule_occurrence` stamp. Those are correct and they are the foundation of the real fix — v1 just failed to notice that the stamp alone was enough.\n\nBUG-2 (`schedule/post-transaction` is not idempotent: two messages for the same schedule id + occurrence date create two transactions) is real, reproduces every time, and QA judged it pre-existing rather than introduced. I am fixing it anyway, and the reason is not politeness: the occurrence stamp is the identity this whole ticket is built on, and a handler that can write the same occurrence twice makes that identity meaningless. The fix is three lines, and `schedule/post-transaction` is registered as `mutator(undoable(postTransactionForSchedule))` with `runMutator = sequential(_runMutator)` (packages/loot-core/src/server/mutators.ts:97), so a check-then-write inside the handler body is serialised by construction — the concurrent-double-dispatch case does not need a lock.\n\nI could not execute the failure. `node_modules` is not installed in this checkout (verified twice; node v22.23.3), so no vitest run, no browser, no repro of my own. `reproduced` is therefore false, and what follows is read off the source plus QA's trace and error-context rather than off my own observation.",
+    "unknowns": [
+      "Whether the retained dates.shift() and the new occurrence filter can disagree about a mid-list occurrence for a legacy unstamped transaction. The failure direction (an extra preview row rather than a missing one) is the safe one, but I could not construct the case end to end.",
+      "Whether any component outside the register consumes statuses in a way that assumes 'paid' means the head preview is gone. useCachedSchedules is the only context consumer of statuses I traced; I did not audit every getStatus caller.",
+      "Whether the per-sync cost of the additional undate-bounded live query is acceptable on a large budget. No measurement was possible without node_modules.",
+      "Whether next_date staying on an unpaid occurrence after an out-of-order post changes anything user-visible on the Schedules page beyond the status. AC-7's test covers next_date and status stability; the rendered row was not checked."
+    ],
+    "version": 2
   },
   "touch_paths": [
     "packages/loot-core/src/server/schedules/app.ts",
@@ -533,10 +575,10 @@
   "validated_at": "2026-10-02T12:15:24.893Z",
   "validated_ac_changes": [],
   "approved_too_high": false,
-  "work_order_version": 1,
-  "work_order_posted_at": "2026-10-02T12:42:04.411Z",
-  "work_order_from": "debug",
-  "work_order_comment": "5952564883",
+  "work_order_version": 2,
+  "work_order_posted_at": "2026-10-03T05:28:57.657Z",
+  "work_order_from": "root-cause",
+  "work_order_comment": "5965957297",
   "implemented_version": 1,
   "failure_packet": {
     "issue": 6,
