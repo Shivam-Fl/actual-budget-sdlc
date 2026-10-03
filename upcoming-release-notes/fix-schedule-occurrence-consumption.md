@@ -3,4 +3,4 @@ category: Bugfixes
 authors: [Shivam-Fl]
 ---
 
-Fix scheduled transactions being skipped when you post a later occurrence before an earlier one. Posting a schedule from a later "Upcoming" row no longer advances the schedule past the occurrence you skipped: that earlier occurrence stays listed and stays payable, and the later ones stay upcoming. Each occurrence is now recorded individually, so posting the same occurrence twice only ever creates one transaction.
+Fix scheduled transactions being skipped when you post a later occurrence before an earlier one. Posting a scheduled transaction from an account register now records that one occurrence: the transaction lands on the date of the occurrence you clicked and the Upcoming row it came from leaves the register, the occurrence you skipped past stays listed and stays payable, and posting the same occurrence twice only ever creates one transaction.

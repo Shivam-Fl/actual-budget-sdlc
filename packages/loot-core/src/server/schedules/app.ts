@@ -230,41 +230,41 @@ export async function setNextDate({
 
   const { date: dateCond } = extractScheduleConds(conditions);
 
-  const { data: currentNextDate } = await aqlQuery(
+  const { data: nextDate } = await aqlQuery(
     q('schedules').filter({ id }).calculate('next_date'),
   );
 
-  // Only derive one if a date condition exists
-  const newNextDate = dateCond
-    ? advance
-      ? getNextDateAfter(dateCond, currentNextDate)
-      : getNextDate(dateCond, new Date())
-    : null;
+  // Only do this if a date condition exists
+  if (dateCond) {
+    const newNextDate = advance
+      ? getNextDateAfter(dateCond, nextDate)
+      : getNextDate(dateCond, new Date());
 
-  if (newNextDate != null && newNextDate !== currentNextDate) {
-    // Our `update` functon requires the id of the item and we don't
-    // have it, so we need to query it
-    const nd = await db.first<
-      Pick<db.DbScheduleNextDate, 'id' | 'base_next_date_ts'>
-    >(
-      'SELECT id, base_next_date_ts FROM schedules_next_date WHERE schedule_id = ?',
-      [id],
-    );
+    if (newNextDate != null && newNextDate !== nextDate) {
+      // Our `update` functon requires the id of the item and we don't
+      // have it, so we need to query it
+      const nd = await db.first<
+        Pick<db.DbScheduleNextDate, 'id' | 'base_next_date_ts'>
+      >(
+        'SELECT id, base_next_date_ts FROM schedules_next_date WHERE schedule_id = ?',
+        [id],
+      );
 
-    await db.update(
-      'schedules_next_date',
-      reset
-        ? {
-            id: nd.id,
-            base_next_date: toDateRepr(newNextDate),
-            base_next_date_ts: Date.now(),
-          }
-        : {
-            id: nd.id,
-            local_next_date: toDateRepr(newNextDate),
-            local_next_date_ts: nd.base_next_date_ts,
-          },
-    );
+      await db.update(
+        'schedules_next_date',
+        reset
+          ? {
+              id: nd.id,
+              base_next_date: toDateRepr(newNextDate),
+              base_next_date_ts: Date.now(),
+            }
+          : {
+              id: nd.id,
+              local_next_date: toDateRepr(newNextDate),
+              local_next_date_ts: nd.base_next_date_ts,
+            },
+      );
+    }
   }
 }
 
