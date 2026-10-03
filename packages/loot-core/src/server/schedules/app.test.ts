@@ -1373,6 +1373,119 @@ describe('schedule app', () => {
       expect((await getSchedule(id)).next_date).toBe(OCCURRENCES[0]);
     });
 
+    // The shape a person creates by hand: recurring, posting nothing itself,
+    // matching its date with `isapprox`. Every fixture above is
+    // `posts_transaction: true` with `op: 'is'`, and both of those collapse the
+    // occurrence match window to a single day, so none of them can reach the
+    // 2-day lookback where one payment discharges several occurrences.
+    async function createManualWeeklySchedule(
+      frequency: 'daily' | 'weekly' = 'weekly',
+    ) {
+      const accountId = await db.insertAccount({
+        name: 'Checking',
+        offbudget: 0,
+        closed: 0,
+      });
+      const payeeId = await db.insertPayee({ name: 'Landlord' });
+
+      const id = await createSchedule({
+        schedule: { posts_transaction: false },
+        conditions: [
+          { op: 'is', field: 'account', value: accountId },
+          { op: 'is', field: 'payee', value: payeeId },
+          { op: 'is', field: 'amount', value: -10000 },
+          {
+            op: 'isapprox',
+            field: 'date',
+            value: {
+              start: OCCURRENCES[0],
+              frequency,
+              patterns: [],
+            },
+          },
+        ],
+      });
+
+      return { id, accountId, payeeId };
+    }
+
+    it('posting a manual schedule through the real link rule', async () => {
+      // The status is DERIVED, not asserted: `getPreviewDates` runs the real
+      // `getHasTransactionsQuery`, so the payment below makes this schedule
+      // read 'paid' because the query says so.
+      const { id, accountId, payeeId } = await createManualWeeklySchedule();
+
+      expect(await getPreviewDates(id)).toEqual(OCCURRENCES);
+
+      // The Saturday before the following Monday: inside the lookback, so the
+      // rule links it, and `link-schedule` never writes a stamp.
+      await db.insertTransaction({
+        account: accountId,
+        payee: payeeId,
+        amount: -10000,
+        date: '2017-01-07',
+        schedule: id,
+        schedule_occurrence: null,
+      });
+
+      expect(await getPreviewDates(id)).toEqual([
+        '2017-01-16',
+        '2017-01-23',
+        '2017-01-30',
+      ]);
+    });
+
+    it('leaves listed the occurrence a manual payment was three days early for', async () => {
+      // `schedule: id` is inserted directly here, which forces a link the rule
+      // would not make at this date — deliberate, and what makes this a test of
+      // the matcher rather than of the rule. The lookback is two days, so a
+      // payment three days out discharges nothing and only the status shift
+      // consumes the head.
+      const { id, accountId, payeeId } = await createManualWeeklySchedule();
+
+      await db.insertTransaction({
+        account: accountId,
+        payee: payeeId,
+        amount: -10000,
+        date: '2017-01-06',
+        schedule: id,
+        schedule_occurrence: null,
+      });
+
+      expect(await getPreviewDates(id)).toEqual([
+        '2017-01-09',
+        '2017-01-16',
+        '2017-01-23',
+        '2017-01-30',
+      ]);
+    });
+
+    it('a daily manual schedule keeps every occurrence but the one paid', async () => {
+      // The count this whole change exists to move, on the fixture the shipped
+      // `posts_transaction: true` cases could never reach.
+      const { id, accountId, payeeId } =
+        await createManualWeeklySchedule('daily');
+      const nextDate = (await getSchedule(id)).next_date;
+
+      expect(await getPreviewDates(id)).toContain('2017-01-04');
+
+      await db.insertTransaction({
+        account: accountId,
+        payee: payeeId,
+        amount: -10000,
+        date: nextDate,
+        schedule: id,
+        schedule_occurrence: null,
+      });
+
+      const preview = await getPreviewDates(id);
+
+      expect(preview).not.toContain(nextDate);
+      expect(preview).toContain('2017-01-03');
+      expect(preview).toContain('2017-01-04');
+      expect(preview).toContain('2017-01-05');
+    });
+
     it('posts on next_date and leaves it alone when no date is given', async () => {
       // The Schedules page and auto-posting both send a bare id, and neither
       // may advance the schedule: `advanceSchedulesService` owns `next_date`.

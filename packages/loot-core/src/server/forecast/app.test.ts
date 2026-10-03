@@ -122,6 +122,61 @@ async function createForecastWithPostedDailySchedule({
   };
 }
 
+// Identical to `createForecastWithPostedDailySchedule` except that the date
+// condition is `isapprox` — the shape a person creates by hand, whose match
+// window is two days either side of the occurrence — and the transaction
+// carries no occurrence stamp, as `link-schedule` never writes one.
+async function createForecastWithPostedManualDailySchedule({
+  txId,
+  txDate,
+}: {
+  txId: string;
+  txDate: string;
+}) {
+  const accountId = await db.insertAccount({ id: 'acct', name: 'Checking' });
+  const amount = -5_000;
+
+  const scheduleId = await createSchedule({
+    conditions: [
+      { op: 'is', field: 'account', value: accountId },
+      { op: 'is', field: 'amount', value: amount },
+      {
+        op: 'isapprox',
+        field: 'date',
+        value: {
+          start: '2024-03-10',
+          frequency: 'daily',
+        },
+      },
+    ] satisfies RuleConditionEntity[],
+  });
+
+  await db.insertTransaction({
+    id: txId,
+    account: accountId,
+    amount,
+    date: txDate,
+    schedule: scheduleId,
+    schedule_occurrence: null,
+  });
+
+  const result = await generateForecast({
+    accountIds: [accountId],
+    startDate: '2024-03-10',
+    endDate: '2024-03-12',
+  });
+
+  return {
+    amount,
+    balanceByDate: Object.fromEntries(
+      result.dataPoints.map(({ date, balance }) => [date, balance]),
+    ),
+    dataPointByDate: Object.fromEntries(
+      result.dataPoints.map(dataPoint => [dataPoint.date, dataPoint]),
+    ),
+  };
+}
+
 beforeEach(async () => {
   await emptyDatabase()();
   await loadMappings();
@@ -563,6 +618,24 @@ describe('forecast app', () => {
     expect(dataPointByDate['2024-03-12']).toMatchObject({
       balance: amount * 3,
       transactions: [{ amount }],
+    });
+  });
+
+  it('a manual recurring daily schedule with one early payment still forecasts the following occurrences', async () => {
+    // The same fixture with `isapprox` instead of `is`. A daily schedule's
+    // occurrences are one day apart and the lookback is two, so an unstamped
+    // payment used to match all three of them and the projection came out flat
+    // at the amount already paid.
+    const { amount, balanceByDate } =
+      await createForecastWithPostedManualDailySchedule({
+        txId: 'posted-manual-daily',
+        txDate: '2024-03-10',
+      });
+
+    expect(balanceByDate).toEqual({
+      '2024-03-10': amount,
+      '2024-03-11': amount * 2,
+      '2024-03-12': amount * 3,
     });
   });
 

@@ -10,7 +10,7 @@ import {
   getNextDate,
   getScheduledAmount,
   indexPostedScheduleTransactions,
-  isScheduleOccurrencePosted,
+  matchPostedScheduleOccurrences,
 } from '#shared/schedules';
 import type { RuleConditionEntity, TransactionEntity } from '#types/models';
 import type { RecurConfig } from '#types/models/schedule';
@@ -202,15 +202,18 @@ export async function buildFutureScheduleOccurrences(
   for (const schedule of schedules) {
     const scheduleName = schedule.name ?? 'Unknown';
 
-    for (const date of getFutureOccurrenceDates(schedule, endDateObj)) {
-      if (
-        isScheduleOccurrencePosted({
-          schedule,
-          scheduleId: schedule.id,
-          occurrenceDate: date,
-          postedTransactions: postedByScheduleId.get(schedule.id) ?? [],
-        })
-      ) {
+    const futureDates = getFutureOccurrenceDates(schedule, endDateObj);
+    // The forecast has no status bit and no shift to reconcile, so there is no
+    // coarse claim to spend here — every occurrence is matched one-to-one.
+    const paidOccurrences = matchPostedScheduleOccurrences({
+      schedule,
+      scheduleId: schedule.id,
+      occurrenceDates: futureDates,
+      postedTransactions: postedByScheduleId.get(schedule.id) ?? [],
+    });
+
+    for (const date of futureDates) {
+      if (paidOccurrences.has(date)) {
         continue;
       }
 

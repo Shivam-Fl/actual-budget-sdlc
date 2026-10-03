@@ -172,6 +172,99 @@ export function isScheduleOccurrencePosted({
 }
 
 /**
+ * Which occurrences of a schedule the posted transactions discharge, one to one.
+ *
+ * `isScheduleOccurrencePosted` is a per-occurrence predicate over an unbounded
+ * list, so nothing stops one transaction from being counted for several
+ * occurrences whenever the window overlaps — which it does whenever consecutive
+ * occurrences are less than the lookback apart. A daily manual schedule pays
+ * three rows for one transaction.
+ *
+ * This is the same comparison applied one-to-one: every transaction claims at
+ * most one occurrence, and no occurrence is claimed by more than one
+ * transaction.
+ *
+ * Stamped transactions are matched by stamp first, whatever their date — the
+ * stamp names the occurrence, and the date is the user's to edit. Unstamped ones
+ * fall back to the same two-sided date comparison, each taking the first
+ * occurrence it fits that no earlier transaction has already claimed.
+ *
+ * `paidByStatusDate` is the coarse, per-schedule claim a caller has already
+ * withdrawn from its own list: the status bit only ever describes `next_date`,
+ * and it is matched here against the head's own two-sided window so a payment
+ * made for a later occurrence goes on to discharge the occurrence it was dated
+ * for. It is deliberately NOT added to the returned set — the caller has
+ * already shifted that row away.
+ */
+export function matchPostedScheduleOccurrences({
+  schedule,
+  scheduleId,
+  occurrenceDates,
+  postedTransactions,
+  paidByStatusDate,
+}: {
+  schedule: ScheduleOccurrenceMatchInput;
+  scheduleId: string;
+  occurrenceDates: readonly string[];
+  postedTransactions: readonly PostedScheduleTransaction[];
+  paidByStatusDate?: string;
+}): Set<string> {
+  // yyyy-MM-dd sorts lexicographically into chronological order.
+  const ordered = [...occurrenceDates].sort();
+  const paid = new Set<string>();
+
+  // `getPostedScheduleTransactionsQuery` has no ORDER BY, so tie-break on the
+  // original position to keep the result deterministic.
+  const claimable = postedTransactions
+    .map((tx, index) => ({ tx, index }))
+    .filter(({ tx }) => tx.schedule === scheduleId)
+    .sort((a, b) => a.tx.date.localeCompare(b.tx.date) || a.index - b.index);
+
+  const headDate = paidByStatusDate;
+  if (headDate !== undefined) {
+    const headIndex = claimable.findIndex(({ tx }) =>
+      tx.schedule_occurrence != null
+        ? tx.schedule_occurrence === headDate
+        : tx.date >= getScheduleOccurrenceMatchStartDate(schedule, headDate) &&
+          tx.date <= headDate,
+    );
+
+    // Nothing qualifying is a legitimate case: the posted transactions may not
+    // have loaded yet, and the caller's own shift still has to fire.
+    if (headIndex !== -1) {
+      claimable.splice(headIndex, 1);
+    }
+  }
+
+  for (const occurrenceDate of ordered) {
+    if (claimable.some(({ tx }) => tx.schedule_occurrence === occurrenceDate)) {
+      paid.add(occurrenceDate);
+    }
+  }
+
+  for (const { tx } of claimable) {
+    if (tx.schedule_occurrence != null) {
+      continue;
+    }
+
+    // Each transaction is visited once, so it claims at most one occurrence;
+    // `!paid.has(date)` stops it claiming one another transaction took.
+    const occurrenceDate = ordered.find(
+      date =>
+        !paid.has(date) &&
+        tx.date >= getScheduleOccurrenceMatchStartDate(schedule, date) &&
+        tx.date <= date,
+    );
+
+    if (occurrenceDate !== undefined) {
+      paid.add(occurrenceDate);
+    }
+  }
+
+  return paid;
+}
+
+/**
  * Builds a query to check if each schedule already has a matching transaction.
  *
  * Each schedule matches on its `schedule_occurrence` stamp first — an exact
@@ -593,15 +686,14 @@ export function computeSchedulePreviewTransactions(
       // filter subsumes the other.
       const postedTransactions =
         postedTransactionsBySchedule.get(schedule.id) ?? [];
-      const unpaidDates = dates.filter(
-        date =>
-          !isScheduleOccurrencePosted({
-            schedule,
-            scheduleId: schedule.id,
-            occurrenceDate: date,
-            postedTransactions,
-          }),
-      );
+      const paidDates = matchPostedScheduleOccurrences({
+        schedule,
+        scheduleId: schedule.id,
+        occurrenceDates: dates,
+        postedTransactions,
+        paidByStatusDate: status === 'paid' ? schedule.next_date : undefined,
+      });
+      const unpaidDates = dates.filter(date => !paidDates.has(date));
 
       return unpaidDates.map(date => ({
         id: 'preview/' + schedule.id + `/${date}`,
