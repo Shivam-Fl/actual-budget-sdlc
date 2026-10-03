@@ -18,7 +18,289 @@
   },
   "halted": null,
   "pending": null,
-  "work_order": null,
+  "work_order": {
+    "issue": 38,
+    "version": 1,
+    "kind": "bug",
+    "mode": "committed",
+    "reproduced": true,
+    "understanding": "One invariant underlies every finding in this ticket: a schedule_occurrence stamp only means anything next to the schedule link it was minted for. conform() (loot-core/src/server/aql/schema-helpers.ts:134-144) drops a key whose value is undefined and only skips nulls when skipNull is set; convertForInsert (:184) passes { skipNull: true } while convertForUpdate (:187-195) passes no options; db.update() (server/db/index.ts:209-227) emits one sync message per Object.keys(params).filter(k => k !== 'id'). So on UPDATE an omitted field is never written and the column KEEPS its old value, while on INSERT the same omission falls back to column DEFAULT NULL. Seven production client sites send { id, schedule } or { id, schedule: null } and nothing else, so unlinking clears the link and strands the stamp, and relinking pairs that stamp with a schedule it was never minted for — which then blocks BOTH arms of getHasTransactionsQuery (shared/schedules.ts:194-222), so the schedule reads Due when it was in fact paid. batchUpdateTransactions (server/transactions/index.ts:130-138) re-reads every changed row in full before transfer logic runs, so the server cannot distinguish an intentional stamp from an omitted one — which is why the fix belongs on the senders. addTransfer (server/transactions/transfer.ts:61-86) is the server-side instance: it runs the mirror through runRules, accepts a reassigned schedule at :73, writes it to both legs, and derives the occurrence zero times. I re-derived the whole chain from the source rather than accepting it, and ran a standalone tsc probe to settle the one question the previous draft left as a coin-flip, which removed a file from the change.",
+    "root_cause": "schedule and schedule_occurrence are written independently on every path that does not pick both off one source, and conform() makes insert and update disagree about what an omitted field means: on UPDATE a dropped key is never written so the stamp is PRESERVED, on INSERT it falls back to the column default NULL. Seven production client sites each hand-roll the same one-field literal, which is why there is no single place to fix the invariant and no existing test that can observe more than one site. addTransfer is the server-side instance: it writes the schedule to two legs and derives the occurrence zero times, so a rule that relinks the transfer leaves both legs stamped for the old schedule.",
+    "approach": "Fix 1 — one shared builder, seven callers. Add linkScheduleUpdate(id, scheduleId) and unlinkScheduleUpdate(id) to the EXISTING desktop-client/src/util/schedule-actions.ts, each returning the pair with schedule_occurrence: null. All seven sites call one of them. Params typed string, NOT string | undefined. The two producers that today declare `scheduleId?: string` keep that declaration and add a local null guard instead of narrowing, so ScheduleEditForm.tsx needs NO edit.\n\nFix 2 — addTransfer derives the stamp once, next to matchedSchedule (transfer.ts:73): const matchedOccurrence = matchedSchedule === transaction.schedule ? transaction.schedule_occurrence : undefined. Use it in both writes. Mirror insert: put schedule_occurrence AFTER the ...transferTransaction spread alongside schedule (the literal at :61-71 already carries it and would otherwise win); undefined is dropped by skipNull and falls back to DEFAULT NULL. Main-leg update: explicit ?? null, load-bearing because convertForUpdate passes no options so a dropped key never reaches update()'s Object.keys(params) loop and the column would PRESERVE the old stamp.\n\nFix 3 — reword the comment at transfer.ts:133-136 to the real contract.\n\nFix 4 — keep transfer.test.ts:361-388 and relabel it a GUARD rather than deleting it; add one more labelled guard through batchUpdateTransactions and one genuinely discriminating relink case.\n\nFix 5 — the browser steps are staged so each discriminates, and each now carries its own op precondition. A Schedules-page Repeats-OFF schedule carries date op 'isapprox' and posts_transaction false, so getScheduleOccurrenceMatchStartDate falls through to subDays(occurrenceDate, 2). QA Sch B dated 5 days out has a window starting today+3 (payment dated today sits outside) so it reads Paid BEFORE the fix and must NOT after. QA Sch C dated tomorrow has a window starting today-1 (payment inside, with a day of margin) so it reads not-Paid before and Paid after. Both steps first assert the rule's date condition reads `date is approx <date>`, because under op 'is' the window collapses onto the occurrence date and both steps would stop discriminating — the assertion the recorded rejection asked for.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/util/schedule-actions.ts",
+        "action": "edit",
+        "change": "Add two exported pure builders: linkScheduleUpdate(id: string, scheduleId: string) returning { id, schedule: scheduleId, schedule_occurrence: null } and unlinkScheduleUpdate(id: string) returning { id, schedule: null, schedule_occurrence: null }. Params typed string, NOT string | undefined. Each carries a one-line comment on why the link and the stamp are written as one pair. The new exports must stay pure; the file is not @ts-strict-ignore, so the new code is type-strict by default.",
+        "why": "The whole of Fix 1. Consolidating seven duplicated literals puts the invariant in one place and lets one test observe all seven payloads. If the unit test drags in the connection/query layers and needs mocking, move the builders to a leaf module rather than mocking more of the tree."
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useTransactionBatchActions.ts",
+        "action": "edit",
+        "change": "onBatchUnlinkSchedule builds updated: ids.map(unlinkScheduleUpdate), replacing ids.map(id => ({ id, schedule: null }) as unknown as Partial<TransactionEntity>) at :436. The cast goes away.",
+        "why": "The payload the QA reproduction drives — the one leaving both legs stamped today — and the only site a renderHook test can observe directly."
+      },
+      {
+        "path": "packages/desktop-client/src/components/schedules/ScheduleLink.tsx",
+        "action": "edit",
+        "change": "onSelect's payload at :52 becomes ids.map(id => linkScheduleUpdate(id, scheduleId)), replacing ids.map(id => ({ id, schedule: scheduleId })). This — not the hook's onBatchLinkSchedule, which only opens this modal — is the production LINK write the QA script drives in steps 9 and 13.",
+        "why": "A relink is where a stale stamp from another schedule does its damage; without this the fix covers unlinking but not relinking."
+      },
+      {
+        "path": "packages/desktop-client/src/components/schedules/ScheduleEditModal.tsx",
+        "action": "edit",
+        "change": "onLinkTransactions (declared :181, payload key :185) and onUnlinkTransactions (declared :191, payload :193) route through the builders. KEEP onLinkTransactions' existing `scheduleId?: string` declaration and add an explicit `if (scheduleId == null) return;` guard at the top of the body rather than narrowing it — both callers pass a real id (:148 passes the created schedule's res.data after a null check, ScheduleEditForm.tsx:544 passes schedule.id), so no other file's types change.",
+        "why": "The Schedules page reaches the same write through its own copy of the pair; changing the register alone would leave the schedule page able to reproduce the bug (QA step 10)."
+      },
+      {
+        "path": "packages/desktop-client/src/components/mobile/schedules/MobileScheduleEditPage.tsx",
+        "action": "edit",
+        "change": "Same two edits: onLinkTransactions declared at :139 with its payload key at :143, onUnlinkTransactions declared at :149 with its payload at :151 — a genuine third copy of the pair, defined in this file, not a re-export. Apply the same `if (scheduleId == null) return;` guard instead of narrowing; its one caller (:122) passes the created schedule's id.",
+        "why": "Leaving the mobile page out makes the fix desktop-only."
+      },
+      {
+        "path": "packages/desktop-client/src/components/schedules/DiscoverSchedules.tsx",
+        "action": "edit",
+        "change": "onCreate's transactions-batch-update payload (:185-190, schedule key at :187) becomes transactions.map(t => linkScheduleUpdate(t.id, scheduleId)), replacing transactions.map(t => ({ id: t.id, schedule: scheduleId })). scheduleId comes from `send('schedule/create')` at :169 and is a real string, so no guard is needed.",
+        "why": "The seventh production link write, excluded by two earlier plans on a wrong reading. find-schedules.ts:29 only filters schedule: null and never writes a link; this is the real site, and the one where a stale stamp is guaranteed to survive into a fresh link because its matcher selects exactly the schedule: null rows the unlink defect leaves behind."
+      },
+      {
+        "path": "packages/loot-core/src/server/transactions/transfer.ts",
+        "action": "edit",
+        "change": "Derive const matchedOccurrence = matchedSchedule === transaction.schedule ? transaction.schedule_occurrence : undefined next to matchedSchedule (:73) and use it in both writes: in the mirror-insert override object AFTER the ...transferTransaction spread alongside schedule (the literal at :61-71 already carries schedule_occurrence and would otherwise win), and as an explicit ?? null on the main-leg update (:82-86) — load-bearing, because convertForUpdate passes no options so a dropped key never reaches update()'s Object.keys(params) loop and the column would PRESERVE the old stamp. Separately reword the comment at :133-136 to the real contract.",
+        "why": "The last server path that can write the two fields apart, and it writes the schedule twice — once onto the mirror it is inserting and once back onto the main leg."
+      },
+      {
+        "path": "packages/loot-core/src/server/transactions/transfer.test.ts",
+        "action": "edit",
+        "change": "Do NOT delete 'clears the mirror stamp when the schedule link is removed' (:361-388). Keep it and relabel it a GUARD: its payload is built from a full-row read and calls transfer.onUpdate directly, bypassing batchUpdateTransactions, so no production caller constructs it and it passes before and after — but it is the only coverage of onUpdate propagating an explicit null to the mirror. Add two cases: (a) a GUARD driven through batchUpdateTransactions with the pre-fix payload { id, schedule: null }, asserting BOTH legs come back still stamped; (b) a DISCRIMINATING case where a directly-created rule with a link-schedule action relinks the main leg during addTransfer, asserting both legs end at schedule-2 with a NULL occurrence. Assert in the right form: off a db.all row schedule_occurrence is the raw INTEGER (20170101), off db.getTransaction a 'YYYY-MM-DD' string.",
+        "why": "The previous draft deleted this for being vacuous while keeping other equally vacuous cases as guards. That inconsistency loses onUpdate's null-propagation coverage to fix a labelling problem a comment solves."
+      },
+      {
+        "path": "packages/loot-core/src/shared/schedules.test.ts",
+        "action": "edit",
+        "change": "In the getHasTransactionsQuery describe block add one case, labelled a GUARD and scoped to what it proves: a row linked to a schedule with a stale occurrence for a DIFFERENT date matches neither arm, while the same row with a null occurrence and an in-window date does. Explicitly NOT the evidence for the due-to-paid criterion — the query is unmodified by this fix, so the case passes before and after by construction.",
+        "why": "Pins the direction the browser signal comes from, without dressing a guard up as a proof."
+      },
+      {
+        "path": "upcoming-release-notes/fix-stale-schedule-occurrence-stamp.md",
+        "action": "create",
+        "change": "A Bugfixes release note in the shape of the sibling upcoming-release-notes/fix-schedule-occurrence-consumption.md. Say that unlinking or relinking a scheduled transaction now clears its occurrence stamp together with the link. Set the authors field to whoever is actually landing the PR — the sibling's [Shivam-Fl] is not derived from this issue.",
+        "why": "User-visible: this changes what the Schedules page status cell reads after an unlink or relink."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/util/schedule-actions.test.ts",
+        "action": "create",
+        "cases": [
+          "linkScheduleUpdate('t1', 'schedule-1') deep-equals { id: 't1', schedule: 'schedule-1', schedule_occurrence: null } using toStrictEqual — toMatchObject must not be used, because an object with schedule_occurrence ABSENT satisfies it and would pass this defect straight through",
+          "unlinkScheduleUpdate('t1') deep-equals { id: 't1', schedule: null, schedule_occurrence: null } with toStrictEqual",
+          "both builders return an object that own-property-includes 'schedule_occurrence', so a refactor to a spread that drops the key fails loudly"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useTransactionBatchActions.test.ts",
+        "action": "create",
+        "cases": [
+          "renderHook over useTransactionBatchActions wrapped in TestProviders, with vi.mock of @actual-app/core/platform/client/connection exposing send: vi.fn() — the shape of the existing usePreviewTransactions.test.ts",
+          "calling onBatchUnlinkSchedule({ ids: ['t1','t2'] }) sends transactions-batch-update whose updated is exactly [{ id: 't1', schedule: null, schedule_occurrence: null }, { id: 't2', schedule: null, schedule_occurrence: null }], asserted with toStrictEqual on the payload",
+          "the same call invokes onSuccess with ['t1','t2']",
+          "this test observes the literal bytes the register sends rather than the builder in isolation, so it survives someone routing the hook around the builder"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/server/transactions/transfer.test.ts",
+        "action": "edit",
+        "cases": [
+          "DISCRIMINATING: a directly-created rule carrying a link-schedule action relinks the main leg during addTransfer; BOTH legs must end at schedule-2 with a NULL schedule_occurrence. Fails on unfixed code, and fails on an insert-only Fix 2",
+          "GUARD: batchUpdateTransactions driven with the pre-fix payload { id, schedule: null } leaves BOTH legs stamped — labelled as passing before and after, because the server re-reads full rows and cannot infer intent",
+          "GUARD (relabelled, not deleted): 'clears the mirror stamp when the schedule link is removed' still passes unchanged, its comment now saying it is a guard whose payload no production caller constructs",
+          "existing 'gives the mirror leg the schedule and stamp of its main leg' still passes — the stamp still rides along when the rule does NOT relink",
+          "existing 'keeps the mirror stamp when the main leg is updated' still passes, unchanged"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/shared/schedules.test.ts",
+        "action": "edit",
+        "cases": [
+          "GUARD: a row linked to a schedule carrying a stale occurrence for a DIFFERENT date matches neither arm of getHasTransactionsQuery, while the same row with a null occurrence and an in-window date does. The comment states it is a no-regression guard on the query and not evidence for the due-to-paid criterion, since the query is not modified by this fix"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "Relinking a payment to a different schedule no longer marks that schedule Paid on the strength of the old schedule's occurrence stamp, when the payment's own date falls outside the new schedule's match window.",
+        "how_to_verify": "qa_script steps 1-9; the discriminating read is QA Sch B's status cell. DERIVATION: B is created through the Schedules page with Repeats OFF, so its date condition's op is 'isapprox', not 'is' — ScheduleEditModal.tsx:76 seeds the initial condition as isapprox and schedule-edit-utils.ts:49 calls updateCond(conds.date, 'isapprox', 'date', fields.date), updateCond returns { ...cond, value } for an existing cond (:28-30) so the seeded op is preserved — and posts_transaction is seeded false (:75). getScheduleOccurrenceMatchStartDate (shared/schedules.ts:90-102) therefore falls through both early returns and returns subDays(B.next_date, 2) = today+3, NOT the occurrence date. Before the fix the surviving stamp equals B.next_date (today+5), so arm 1 (:206) matches and B reads Paid; after, the stamp is null and arm 2 (:208-219) requires date >= today+3, which a payment dated today fails. The arithmetic is restated inline in qa_script steps 3 and 4 because the previous round got it wrong ('the occurrence date itself') and a tester reading only 'Repeats OFF' cannot tell which op the rule carries. Do not try to read schedule_occurrence off the transaction — it is rendered nowhere in the product.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "The batch unlink action clears the occurrence stamp together with the schedule link, so a later relink cannot pair a stale stamp with a new schedule.",
+        "how_to_verify": "Two CI tests, both in desktop-client and both discriminating: schedule-actions.test.ts asserts unlinkScheduleUpdate deep-equals the pair with toStrictEqual, and useTransactionBatchActions.test.ts drives the real hook with a mocked send and asserts the literal payload. The loot-core guard is explicitly NOT offered as evidence — driven with { id, schedule: null } it passes before and after, because Fix 1 changes no server code, which is precisely why the proof must live on the sender. Scope limit worth stating plainly: the QA finding's 'both legs' claim is verified only by the loot-core transfer tests, because the product renders no stamp and no browser step can read one.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "Every production link/unlink write carries the stamp — all seven sites — so no surface can leave a row stamped for a schedule it is not linked to.",
+        "how_to_verify": "One CI test observes all seven at once: schedule-actions.test.ts asserts the two builders' payloads and all seven sites call them. Coverage broken out here rather than hidden in unknowns: the register hook is additionally covered end-to-end by the renderHook test; DiscoverSchedules is covered by NEITHER a browser step NOR a component-render test (its input is server-side pattern matching over descriptions) and is covered only because it calls the same tested builder; the mobile schedule edit page is changed but exercised by no automated test and only by qa_script step 12. The mobile transaction list is NOT a separate site — TransactionListItem.tsx:135/422 is a destructuring read, and that surface routes through the shared hook.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "A payment that legitimately falls inside a newly linked schedule's match window is no longer blocked from discharging that occurrence by a stale stamp left over from another schedule — the due to paid direction.",
+        "how_to_verify": "qa_script step 13, and it is DISCRIMINATING in the direction this criterion claims. Follow steps 1-12 first, then unlink the QA Payee A row from QA Sch B and link it to QA Sch C instead. C is created Repeats OFF dated TOMORROW, so its match window is subDays(today+1, 2) = today-1 and the payment dated today satisfies today >= today-1 with a day of margin — deliberately not a boundary-exact $gte. Before the fix the surviving stamp (today+5, A's occurrence) matches neither arm for C: it is not C.next_date (today+1), so arm 1 fails, and it is not null, so arm 2 is blocked — C reads not-Paid. After the fix the stamp is null and arm 2 matches on the date, so C reads Paid. Verified as 'browser' rather than 'test', because the due-to-paid direction is computed by getHasTransactionsQuery, which this fix does not modify — no CI test can witness the fix's effect on a status cell. The schedules.test.ts case is retained as a no-regression guard on the query ONLY and is explicitly not this criterion's evidence. If C does not flip, suspect the derivation — and re-check the op assertion in step 4 first — before concluding the fix is broken.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-5",
+        "check": "When a schedule rule relinks a transfer during addTransfer, BOTH legs end up linked to the new schedule with a NULL schedule_occurrence — the main leg as well as the mirror, with the main-leg write sending an explicit null because a dropped key would preserve the old value.",
+        "how_to_verify": "The relink case in transfer.test.ts, which IS discriminating. The fixture is resolved, not hypothetical: getRuleIdFromScheduleId (server/transactions/transaction-rules.ts:293-301) returns row?.rule || null, so a main leg whose schedule id has no row in the schedules table leaves scheduleRuleID === '' and runRules' else path evaluates every rule. Precedent for driving a rule with a link-schedule action directly via updateRule is schedules/app.test.ts:195-209. Not executed in this checkout (node_modules is absent), so the implementer may need to widen the rule's conditions before it fires; if it will not fire, that is a fixture problem to solve, not a reason to weaken the assertion.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "The existing transfer, merge and schedule-stamp tests still pass, and the transfer partial-update comment describes the real contract rather than a hazard no production caller can produce.",
+        "how_to_verify": "yarn workspace @actual-app/core run test:node src/server/transactions src/shared/schedules.test.ts, then yarn workspace @actual-app/web test, and confirm both green. Read green as 'nothing regressed', not 'the fix works': only three CI cases discriminate, and every case labelled GUARD passes with the whole fix reverted. Also run yarn typecheck — it is the check that would catch the guard-vs-narrow choice in ScheduleEditModal and MobileScheduleEditPage being wrong, and it is the reason ScheduleEditForm.tsx is absent from files[].",
+        "verify": "test"
+      },
+      {
+        "id": "AC-7",
+        "check": "The PR is titled with the mandatory [AI] prefix and a release note exists for the user-visible schedule-status change.",
+        "how_to_verify": "gh pr view --json title returns a title starting with '[AI]'; upcoming-release-notes/fix-stale-schedule-occurrence-stamp.md exists with category Bugfixes and an authors field naming whoever lands the PR. PR #33's title cannot be fixed — it is merged — so the rule carries forward against this PR.",
+        "verify": "api"
+      }
+    ],
+    "qa_script": [
+      "Open the app and click 'View demo' to load a synthetic budget.",
+      "Go to Schedules and add 'QA Sch A' — payee 'QA Payee A', account HSBC, 44.00, Repeats ON, starting 5 days from today.",
+      "Add 'QA Sch B' — payee 'QA Payee B', same account, same amount, Repeats OFF, date set to the SAME day as QA Sch A's next occurrence (5 days out). BEFORE MOVING ON, open QA Sch B's rule (Edit rule) and ASSERT its date condition reads `date is approx <date>` — NOT `date is <date>`. If it reads `is`, STOP: the derivation this step depends on does not hold. The shared occurrence date is the other half of the point: it is what makes the stale stamp equal B.next_date, which is what makes step 9 discriminate. Arithmetic to check against the rule in front of you: op 'isapprox' + posts_transaction OFF means getScheduleOccurrenceMatchStartDate falls through to subDays(next_date, 2), so B's window starts at today+3 — not at today+5.",
+      "Add 'QA Sch C' — payee 'QA Payee C', same account, same amount, Repeats OFF, date set to TOMORROW. Apply the SAME assertion as step 3: open C's rule and confirm it reads `date is approx <tomorrow>`, not `date is <tomorrow>`; if it reads `is`, stop. C is used only by step 13. Its match window is occurrence-minus-2-days = today-1, so the payment dated today falls inside it with a day of margin. Under op `is` the window would instead be today+1, the payment dated today would fall OUTSIDE it, and step 13 would flip in the opposite direction and prove nothing.",
+      "Right-click QA Sch A and choose 'Post transaction today'. QA Sch A must now read Paid — paying an occurrence early is legitimate. The created row is dated TODAY but stamped with the occurrence 5 days out; that gap is the whole mechanism and every later step depends on this row never being re-dated.",
+      "Go to the HSBC register and find the QA Payee A row.",
+      "Hover the row, tick its select checkbox, click the '1 transactions' button and choose 'Unlink schedule'.",
+      "Return to Schedules: QA Sch A must read Upcoming again. This passes today too — it confirms the unlink landed, it does not detect the bug.",
+      "Back in the HSBC register, select the same row, choose 'Link schedule', pick QA Sch B. Return to Schedules and read QA Sch B's status cell. THIS IS THE DISCRIMINATING STEP for AC-1: before the fix it reads Paid — a schedule marked paid by another schedule's occurrence on a payment dated five days before it was due, because the surviving stamp today+5 equals B.next_date and arm 1 matches. After the fix the stamp is null, so only arm 2 can match and it requires date >= today+3, which a payment dated today fails. B must NOT read Paid. If B still reads Paid, first re-check the step 3 op assertion, then treat the fix as broken.",
+      "Confirm QA Sch A still reads Upcoming and that no unrelated schedule changed status.",
+      "Repeat steps 7-9 from the Schedules page instead of the register: open QA Sch A's edit page, select the transaction under 'Linked transactions', choose 'Unlink from schedule', then relink it to QA Sch B. B must again not read Paid. This covers the ScheduleEditModal site.",
+      "Repeat the unlink-and-relink from the mobile schedule page (narrow the viewport or use device emulation) to cover the third copy of the pair. The row must end linked to QA Sch B with no stamp.",
+      "With the QA Payee A row still linked to QA Sch B, unlink it from QA Sch B and then link it to QA Sch C — the row context action only offers 'Link schedule' while the row is unlinked, so both halves are required. QA Sch C MUST now read Paid. Why it reads Paid here and not in step 9: C's window starts at today-1 and the payment dated today is inside it, whereas B's window starts at today+3 and the same payment is outside it. Why this step discriminates: before the fix the surviving stamp (today+5) is neither C.next_date (today+1) nor null, so both arms fail and C reads not-Paid; after the fix the cleared stamp lets the date arm match and C reads Paid. This is the due to paid direction (AC-4).",
+      "Confirm no console errors."
+    ],
+    "risks": [
+      "The fix clears the stamp on every relink, including a relink back to the schedule the row was already stamped for. Invisible whenever the payment's date is inside the new schedule's match window, but a payment dated more than 2 days before a recurring occurrence — or any date before a one-time schedule's date minus 2 days — loses its match on relink. QA step 13 probes the ordinary in-window case; the out-of-window case is the review risk and is deliberately untested.",
+      "The fix moves schedules from Due to Paid where a stale stamp was suppressing a legitimate match (AC-4). Correct, but the shape most likely to be mistaken for a regression, so it has its own criterion rather than being buried.",
+      "Both status-cell flips are derived from getScheduleOccurrenceMatchStartDate's fallback branch and from getHasTransactionsQuery's two arms. The derivation was re-checked at every link, but nothing has been executed — node_modules is absent, so no test has run and the app has never started. The op assertion now in qa_script steps 3 and 4 exists because of exactly this class of failure: the previous round's derivation was wrong about the op and only review caught it. If a status cell does not flip as derived, check the rule's op before suspecting the fix.",
+      "The addTransfer fix is justified by the invariant and the verified insert/update asymmetry, not by a reproduction, and its production reachability is unproven: no UI-authored rule can set a schedule. If both writes are dead code in practice, Fix 2 is harmless but untested in production, at a cost of two lines.",
+      "Adding two exports to util/schedule-actions.ts means the new unit test imports a module that also pulls in the connection and query layers. If that bites in vitest, move the builders to a leaf module rather than mocking more of the tree.",
+      "The DiscoverSchedules site has no browser coverage and cannot get any: its input is server-side pattern matching over descriptions, not stageable by hand in a synthetic budget.",
+      "The mobile schedule edit page's link/unlink is changed but exercised by no automated test and only lightly in the QA script, which needs a narrow viewport to reach it at all."
+    ],
+    "out_of_scope": [
+      "A migration clearing schedule_occurrence on rows already in the corrupt state. Nothing repairs them, so a stale stamp on an existing row can still suppress a legitimate occurrence match. Deferred deliberately: a data migration over user money rows with its own sync and undo surface, and no browser step can verify it. First entry in residual_risks.",
+      "@actual-app/api's updateTransaction surface, which can build the same stale-stamp diff because it diffs from a full-row read (api.ts:597). Not reachable from the UI.",
+      "Renaming PR #33, whose title lacked the mandatory [AI] prefix. That PR is merged, so there is no title left to fix; the rule is carried forward as AC-7 against this PR.",
+      "Any change to getHasTransactionsQuery. Its two-arm shape is what makes the defect silent and what makes this fix's effect conditional on the payment's date.",
+      "merge.ts, which writes schedule and schedule_occurrence together from one source (scheduleSource at merge.ts:173-186) and therefore cannot desync. Verified, not assumed.",
+      "Server-side enforcement in batchUpdateTransactions (clear the stamp when the link changes). Rejected on the merits, not deferred: the full-row re-read at index.ts:130-138 means the rule needs an extra read and guesses at intent on paths that legitimately send a full row.",
+      "ScheduleEditForm.tsx. The previous version carried it as a contingency to be edited 'only if typecheck requires it'. It does not require it, and the file is dropped rather than carried: ScheduleEditForm.tsx:99's `(ids: string[], scheduleId?: string) => Promise<void>` prop type accepts the unchanged optional signature both producers keep, so no edit is needed anywhere."
+    ],
+    "evidence": [
+      "packages/loot-core/src/server/aql/schema-helpers.ts:134-144 — conform() drops a key only when obj[field] === undefined, and skips nulls only when skipNull is set. convertForInsert (:184) passes { skipNull: true } and applies column defaults first (:162-180); convertForUpdate (:187-195) passes no options. VERIFIED BY READING.",
+      "packages/loot-core/src/server/db/index.ts:209-227 — update() emits one sync message per Object.keys(params).filter(k => k !== 'id'), so a key dropped by conform is never written and the column keeps its old value. VERIFIED BY READING.",
+      "packages/loot-core/migrations/1790969762045_add_schedule_occurrence_to_transactions.sql:2 — `ALTER TABLE transactions ADD COLUMN schedule_occurrence INTEGER DEFAULT NULL`. This is why an omitted field on INSERT lands on NULL rather than erroring. VERIFIED BY READING.",
+      "packages/loot-core/src/server/transactions/index.ts:130-138 — batchUpdateTransactions re-reads every changed row in full via getTransactionsByIds before transfer logic runs, so the server cannot distinguish an intentional stamp from an omitted one. VERIFIED BY READING.",
+      "packages/loot-core/src/server/transactions/transfer.ts:61-86 — the literal carries `schedule_occurrence: transaction.schedule_occurrence`; runRules is destructured at :72 and matchedSchedule = schedule ?? transaction.schedule at :73; the mirror insert at :75-80 overrides only schedule; a SECOND write at :82-86 puts ...(matchedSchedule ? { schedule: matchedSchedule } : {}) onto the MAIN leg. Neither derives the stamp, and the literal's value wins unless the override comes after the spread. VERIFIED BY READING.",
+      "All seven client write sites read at their lines, grepped in this checkout: useTransactionBatchActions.ts:436, ScheduleLink.tsx:52, ScheduleEditModal.tsx:185 and :193, MobileScheduleEditPage.tsx:143 and :151, DiscoverSchedules.tsx:187. A grep for `schedule_occurrence` across packages/desktop-client/src returns only test files (usePreviewTransactions.test.ts, useSchedules.test.ts) and no production write site at all — which is the whole defect in one line of evidence. VERIFIED BY GREP AND READING.",
+      "packages/desktop-client/src/components/mobile/transactions/TransactionListItem.tsx:135 and :422 — `const { id, schedule: scheduleId } = transaction;` is a destructuring rename, a read, not an eighth write site. This is what makes the seven exhaustive. VERIFIED BY READING.",
+      "packages/loot-core/src/server/schedules/find-schedules.ts:29 only filters schedule: null while matching candidates and never writes a link — which is why DiscoverSchedules' client-side write (DiscoverSchedules.tsx:187, not find-schedules) is the real seventh site that two earlier plans excluded on a wrong reading. VERIFIED BY READING.",
+      "packages/loot-core/src/shared/schedules.ts:90-102 and :194-222 — getScheduleOccurrenceMatchStartDate returns occurrenceDate for op 'is' or posts_transaction, else subDays(occurrenceDate, 2); getHasTransactionsQuery ORs `schedule_occurrence: schedule.next_date` (:206) against `$and: [{schedule_occurrence: null}, {date: {$gte: matchStartDate}}]` (:208-219). Every status-cell read in the QA script and both AC derivations come from these two arms. VERIFIED BY READING.",
+      "packages/desktop-client/src/components/schedules/ScheduleEditModal.tsx:74-76 seeds `posts_transaction: false` and `_conditions: [{ op: 'isapprox', field: 'date', value: date }]`; schedule-edit-utils.ts:49 calls updateCond(conds.date, 'isapprox', 'date', fields.date) and updateCond returns `{ ...cond, value }` for an existing cond (:28-30), preserving its op. So a Schedules-page one-time schedule carries op 'isapprox', NOT 'is'. This is the fact the previous round got wrong in both AC-1's derivation and the rejected step 13, and the reason qa_script steps 3 and 4 now assert the op out loud. VERIFIED BY READING.",
+      "packages/loot-core/src/server/schedules/app.ts:600-609 — postTransactionForSchedule builds `date: today ? currentDay() : (date ?? schedule.next_date)` and `schedule_occurrence: occurrence`, so 'Post transaction today' dates the payment today while stamping it 5 days out. VERIFIED BY READING. SchedulesTable.tsx:180 confirms the menu item exists.",
+      "packages/loot-core/src/server/transactions/transfer.test.ts:361-388 — 'clears the mirror stamp when the schedule link is removed' builds {...payload, schedule: null, schedule_occurrence: null} from a full-row read (payload = await db.getTransaction(transaction.id) at :375) and calls transfer.onUpdate directly, bypassing batchUpdateTransactions. No production caller constructs that payload, so it passes before and after — but it is the only coverage of onUpdate propagating an explicit null to the mirror. VERIFIED BY READING.",
+      "RESOLVED BY RUNNING A COMPILER: packages/desktop-client/tsconfig.json:8 sets \"strict\": false while the root tsconfig.json:22 sets \"strictFunctionTypes\": true. The previous draft concluded from this that narrowing onLinkTransactions assigns fine, and carried ScheduleEditForm.tsx as a contingency. I built the same shape in isolation and ran tsc against it. The assignment compiles clean under `strictFunctionTypes: true, strict: false` — but the real reason is that `strict: false` also disables strictNullChecks, which is what makes `string | undefined` distinct from `string`; with it off, the optional and required signatures are the same type. The CONCLUSION (no ScheduleEditForm edit) holds, but the stated REASON was wrong: `strict: false` does not unset an explicitly-set `strictFunctionTypes`. The work order therefore does not rely on the flag at all — both producers keep their existing `scheduleId?: string` declarations and add a local null guard, so no other file's types change. ScheduleEditForm.tsx is dropped from files[] rather than carried as a contingency.",
+      "All five touched desktop-client component files carry `// @ts-strict-ignore` at line 1, so the typescript-strict-plugin does not apply strict checking to them. util/schedule-actions.ts does NOT carry it, so the two new builders there are type-strict by default. VERIFIED BY READING.",
+      "packages/loot-core/src/server/transactions/transaction-rules.ts:293-301 — getRuleIdFromScheduleId returns row?.rule || null, so a main leg whose schedule id has no schedules row leaves scheduleRuleID === '' and runRules evaluates every rule. This makes the AC-5 fixture constructible; schedules/app.test.ts:195-209 is the precedent for driving a link-schedule action directly via updateRule. VERIFIED BY READING.",
+      "packages/desktop-client/vite.config.mts:405-409 — vitest include is src/**/*.{test,spec}.?(c|m)[jt]s?(x), environment jsdom, so both new test files are picked up by yarn workspace @actual-app/web test; loot-core exposes test:node. upcoming-release-notes/fix-schedule-occurrence-consumption.md confirms the release-note frontmatter shape. VERIFIED BY READING.",
+      "The issue body (gh issue view 38) has NO '## Acceptance (from the split)' section and contains no IAC-n or TR-n identifier anywhere, and the ledger's origin/sdlc-state:state/38.json has an empty acceptance array. There is therefore no split criterion to satisfy or defer, and no source id to cite — acceptance[] carries no source values. Earlier versions carried source: IAC-1 through IAC-7 on all seven criteria; those are fabricated and are dropped.",
+      "node_modules is absent from this checkout, confirming that no test described in this plan has ever been executed.",
+      "The ledger records the route as plan -> implement -> review -> qa, with no debug stage, although config.yml sets route_bugs_to_debugger: true. I checked whether to request one and concluded no: the defect carries a measured in-browser reproduction from the QA run that filed it, plus a probe of the production payload shape in the review that found it. I also did not request review: it is already on the route, and this change touches a shared write helper plus a server write path."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Restage the rejected step 13 exactly as its two suggested branches: either post QA Sch B's OWN occurrence and confirm B reads Paid, or create a fresh register transaction dated on/after B's date and link that to B.",
+        "rejected_because": "Both are non-discriminating, which is the point the rejection made. Posting B's own occurrence writes schedule and schedule_occurrence together through the server's own postTransactionForSchedule, which no client fix touches, so it reads Paid before and after. Linking a fresh in-window transaction never had a stamp, so the unlink defect cannot manifest. Either would have satisfied the objection's letter — a step that is TRUE on fixed code — while leaving the criterion with a guard that proves nothing. The third schedule is strictly better: it reuses the row that actually carries the stale stamp and puts it inside a window that genuinely contains the payment's date."
+      },
+      {
+        "approach": "Satisfy the recorded rejection by asserting the op only in prose in AC-1's how_to_verify, as the previous round already did, and leave qa_script steps 3 and 4 describing the schedules only as 'Repeats OFF, date set to <date>'.",
+        "rejected_because": "This is precisely what the rejection named as the defect. AC-1 is the criterion's support and qa_script is what the floor QA suite is generated from; a QA agent reading 'Repeats OFF' cannot confirm the op, and if the default ever changes the two status-cell flips silently stop discriminating and pass for the wrong reason. The assertion has to sit in the step the tester executes."
+      },
+      {
+        "approach": "Keep the due-to-paid criterion at verify: 'test' and scope it explicitly to what the schedules.test.ts guard proves, as the rejection's second branch allows.",
+        "rejected_because": "It is honest but it drops the criterion's only behavioural evidence, leaving 'the fix does not over-clear a legitimate match' asserted by nothing but a case that passes with the whole fix reverted. Since the discriminating browser step turned out to be constructible, scoping down gives up more than the rejection required. The guard is retained, relabelled and explicitly marked as not that criterion's evidence."
+      },
+      {
+        "approach": "Enforce the invariant server-side in batchUpdateTransactions: when an update changes schedule, null the stamp unless the payload mentions it.",
+        "rejected_because": "It needs a read of each row's current schedule to tell a real link change from a no-op re-send, adding a query to a hot path, and guesses at intent on paths (api.updateTransaction, sync imports) that legitimately send a full row. The callers are few, enumerable, and verified as exactly seven. If a future caller appears that cannot be enumerated, this becomes the right fix."
+      },
+      {
+        "approach": "Keep the payload literals at each of the seven sites and add the field inline in each, with no shared builder.",
+        "rejected_because": "It fixes today's seven sites but leaves the cause in place — seven duplicated one-field literals — and leaves the all-sites criterion unprovable, since no test could observe all seven payloads."
+      },
+      {
+        "approach": "Narrow onLinkTransactions in ScheduleEditModal and MobileScheduleEditPage to `scheduleId: string` and narrow ScheduleEditForm.tsx:99's prop type to match, as an unconditional three-file change.",
+        "rejected_because": "It makes every consumer of the prop type part of the change for no gain. The two producers' only callers already pass a real id, so a local `if (scheduleId == null) return;` guard is equivalent at runtime and leaves the public prop type — and every consumer — untouched. It also removes the type-level question the previous round left as a contingency, which is what let me drop a file from the change on evidence rather than on a guess."
+      },
+      {
+        "approach": "Keep the loot-core batch-unlink test driven with the pre-fix payload { id, schedule: null } and let it carry the unlink criterion as the regression witness.",
+        "rejected_because": "True but not load-bearing. Fix 1 changes no server code, so a hand-written payload produces identical results before and after — the assertion can never distinguish fixed from unfixed. Kept as a labelled GUARD; the proof has to live on the sender, and a loot-core test cannot drive a desktop-client payload."
+      },
+      {
+        "approach": "Drop the clearing change entirely and close the ticket on the documentation, comment and test-honesty fixes only.",
+        "rejected_because": "It leaves a reproduced defect in the product — both legs keep a stamp for a schedule they are no longer linked to — and closes the ticket on it."
+      },
+      {
+        "approach": "For the addTransfer hazard, stop runRules from reassigning the schedule on a mirror at all.",
+        "rejected_because": "It changes rule semantics for every mirrored transaction — a rule that legitimately relinks the other account's row would stop working — a wider behaviour change than dropping a stamp that no longer applies."
+      },
+      {
+        "approach": "Also rewrite getHasTransactionsQuery so a stale stamp cannot suppress a legitimate match.",
+        "rejected_because": "It would make the fix unconditional, but it discards the stamp's purpose: a re-dated payment must keep discharging the occurrence it was posted for. Matching on date alone would re-break that."
+      },
+      {
+        "approach": "Delete transfer.test.ts:361 as the misleading proof it is.",
+        "rejected_because": "Rejected in favour of relabelling. It is vacuous, but so are the guards kept elsewhere, and deleting on one ticket's scope drops the only coverage of onUpdate propagating an explicit null to the mirror."
+      }
+    ],
+    "assumptions": [
+      "The seven write sites are the complete set of production link/unlink writers, verified by grep plus reading each hit: TransactionListItem.tsx:135/422 is a destructuring read, usePreviewTransactions.ts:123/:132 are previews, useScheduleEdit.ts:24/:255 is a reducer's initial state, ScheduleEditForm.tsx:99 is a prop type, and ScheduleEditModal.tsx:127 / MobileScheduleEditPage.tsx:101 are schedule literals in an edit-state seed.",
+      "schedule_occurrence off a db.all row is the raw INTEGER and off db.getTransaction a 'YYYY-MM-DD' string; new tests must insert and assert in the right form. The column is INTEGER DEFAULT NULL.",
+      "api.updateTransaction is NOT changed by this order; the stale diff it can build is a separate surface, filed as a residual risk rather than assumed safe.",
+      "The builders live in the existing util/schedule-actions.ts because it is already desktop-client's schedule-helper home; no new module is introduced unless the unit test's import proves impractical.",
+      "QA Sch C's date arithmetic assumes the demo budget, monthUtils.currentDay() and the DateSelect all work in the local timezone, so that 'tomorrow' is unambiguous."
+    ],
+    "unknowns": [
+      "Whether any user's existing budget already holds rows in the corrupt state. Nothing reads such rows defensively, so this change stops new corruption but does not repair old rows, and an existing stale stamp can still suppress a legitimate occurrence match. A migration would be the follow-up ticket.",
+      "Whether the addTransfer relink fixture fires as derived. getRuleIdFromScheduleId and runRules' else path make it reachable in principle and app.test.ts:195-209 shows the link-schedule action can be driven directly, but the exact conditions that match the mirror have not been run and may need widening.",
+      "Whether relinking a row a user deliberately stamped is a flow the product intends to support. Fix 1 clears the stamp on every relink; it is invisible whenever the payment's date is inside the new schedule's window, but intent could not be determined from the code.",
+      "The exact browser selectors for the Link schedule modal, the Schedules page's Unlink action, and the Edit rule modal the op assertion needs. They are not in .sdlc/memory/qa/selectors.md. The QA script is written by visible text and may need a retry; the op assertion is read from the rule condition the Edit rule modal renders as `date is approx <date>` (util/rule.ts:89 supplies the 'is approx' label).",
+      "Whether importing util/schedule-actions.ts in a unit test drags in the connection/query layers in a way that needs mocking. The builders are pure; the module is not.",
+      "Whether the mobile schedule edit page is reachable in QA without a narrow viewport or device emulation."
+    ],
+    "debate_summary": "There was no council to arbitrate. plan/critique.json is {} — the critic wrote nothing — and plan/proposal.json does not exist at all, so the proposer wrote nothing either. The only prior judgement is the recorded rejection of the earlier draft, whose single objection concerned qa_script step 13. I am reporting that plainly rather than implying a consensus nobody reached. Because nobody had attacked the plan, I re-derived its load-bearing claims from the source myself rather than accepting them: conform()'s insert/update asymmetry, db.update()'s per-key emission, all seven client write sites (a grep for `schedule_occurrence` across desktop-client/src returns test files only — no production write site exists, which is the defect in one line), transfer.ts's literal-plus-two-writes shape, getHasTransactionsQuery's two arms, getScheduleOccurrenceMatchStartDate's fallback, the isapprox seeding preserved by updateCond, and postTransactionForSchedule's `date: today ? currentDay()`. All held.\n\nWhat I changed. First and most important, I applied the recorded rejection, which was correct and had not been fully honoured. The previous round verified the isapprox chain in prose inside AC-1 and then left qa_script steps 3 and 4 describing the schedules only as 'Repeats OFF, date set to <date>'. Since qa_script is what the floor QA suite is generated from, a tester could not confirm the op, and under op `is` both status-cell flips would silently stop discriminating and pass for the wrong reason. Both steps now instruct the tester to open the schedule's rule and assert it reads `date is approx <date>` — not `date is <date>` — and to stop if it reads `is`; both carry their matchStartDate arithmetic restated inline. That is the rejection's required fix, applied where it asked for it rather than where it would have been easiest.\n\nSecond, I dropped ScheduleEditForm.tsx from the change. The previous round carried it as a contingency to be edited 'only if yarn typecheck requires it', which is a coin-flip, and it rested that coin on a misreading: it concluded that `strict: false` in desktop-client unsets the root's explicitly-set `strictFunctionTypes: true`. It does not — an explicitly-set flag survives a `strict` shorthand in either direction. I built the repo's exact shape in isolation and ran a real compiler against it. The conclusion survives anyway, but for a different reason: `strict: false` also disables strictNullChecks, which is what makes `string | undefined` distinct from `string`, so the optional and required signatures are the same type either way. Rather than leave the plan resting on a conclusion whose stated mechanism I had just shown to be wrong, I removed the dependency — both producers keep their existing `scheduleId?: string` declaration and add a local null guard, so no consumer's types change and the file leaves the PR. A file removed on evidence rather than carried as a hedge.\n\nThird, I corrected the line numbers the previous round claimed to have corrected: it announced that MobileScheduleEditPage's pair 'sits at :139/:149, not :143/:151 as v4 stated', but :139 and :149 are the two function declarations and :143 and :151 the two payload lines — both v4's and its own citation were right about different things, and there was no mis-citation to correct. The work order names both pairs so no implementer has to guess.\n\nWhat I did not change. I kept the relabelling of transfer.test.ts:361 rather than deletion — no production caller constructs its payload, and it is the only coverage of onUpdate propagating an explicit null to the mirror. I kept the addTransfer fix even though its production reachability is unproven (no UI-authored rule can set a schedule, so both writes may be dead code in practice); it is two lines, justified by the invariant and the verified insert/update asymmetry, and dropping it would leave the one server path that writes the schedule twice and the stamp zero times unfixed. I kept the fabrication fix: `source: IAC-1` through `IAC-7` is dropped from all seven criteria, because the issue body has no '## Acceptance (from the split)' section and the ledger's acceptance array is empty — a fabricated source is worse than none, since it asserts traceability to a split that does not exist. That also resolves the arbiter's split-criteria obligation: there are no IAC-n criteria to satisfy or defer. I kept stating plainly that a green suite is not evidence this change works: three CI cases and two browser steps discriminate, and everything labelled GUARD passes with the whole fix reverted.\n\nConfidence 80, unchanged. Not raised, because the evidence I gathered confirms the previous round rather than adding to it, and the one genuinely new thing I did — compiling the tsconfig question — removed a hedge rather than adding certainty about the behaviour under test. Not lowered, because I found no load-bearing error: the two changes are a missing QA assertion and a contingent file, and the mis-citation I found was in the plan's commentary about itself, not in the instructions. It stays at 80 because nothing has been executed. node_modules is absent, so no test in this plan has ever run, the app has never started, and both status-cell flips are derived from the query's two arms rather than observed — and the previous round's derived step was exactly the thing that was wrong, which is why the op assertion now sits in the script instead of only in a rationale field. That number is load-bearing and I am not going to inflate it past what has actually been checked.",
+    "residual_risks": [
+      "Rows already corrupt in a user's budget stay corrupt. Nothing repairs them; a stale stamp on an existing row can still suppress a legitimate occurrence match, the due to paid direction. This is the gap QA should understand before signing off, and the reason a follow-up migration is the natural next ticket.",
+      "The api package's updateTransaction can still build a diff that links a row to a new schedule while carrying the old stamp, because it diffs from a full-row read (api.ts:597). Not reachable from the UI, so not fixed here.",
+      "The transfer finding's 'both legs' claim is verified only by loot-core tests. No browser step can read a stamp — schedule_occurrence is rendered nowhere in the product — so QA cannot confirm it, and a reviewer should not read the QA script's green as covering it.",
+      "The addTransfer fix is verified by derivation and by the insert/update asymmetry, not by a reproduction, and its production reachability is unproven. If both writes are dead code in practice, Fix 2 is harmless but untested in production, at a cost of two lines.",
+      "The DiscoverSchedules auto-link site is covered by reading its payload shape and by sharing the tested builder. It has no browser coverage and cannot get any, because its input is server-side pattern matching that cannot be staged in a synthetic budget.",
+      "The mobile schedule edit page's link/unlink is changed but exercised by no automated test and only lightly in the QA script.",
+      "Both status-cell flips are derived from getHasTransactionsQuery's two arms, not observed in a running app. The previous plan's step was exactly this kind of derived-and-wrong step and was caught only in review. The op assertion in steps 3 and 4 narrows the way that step can be wrong, but does not eliminate it: if a status cell does not flip as derived, check the rule's op and the date the tester actually entered before suspecting the fix.",
+      "Any case labelled GUARD passes with the whole fix reverted. A green suite after this change is not evidence that this change works — the three discriminating CI cases plus the two discriminating browser steps are, and they are the ones to watch.",
+      "The three discriminating tests have never been executed. The two builder assertions are trivial and should settle on first run; the renderHook test and the addTransfer relink fixture are the two places implementation is most likely to need iteration."
+    ]
+  },
   "touch_paths": [],
   "acceptance": [],
   "planned_route": [
@@ -133,571 +415,9 @@
   "validated_from": "plan",
   "validated_at": "2026-10-03T16:28:39.229Z",
   "validated_ac_changes": [],
-  "validated_work_order": {
-    "issue": 38,
-    "version": 6,
-    "kind": "bug",
-    "mode": "committed",
-    "reproduced": true,
-    "understanding": "One invariant underlies every finding in this ticket: a schedule_occurrence stamp only means anything next to the schedule link it was minted for. conform() (loot-core/src/server/aql/schema-helpers.ts:134-144) drops a key whose value is undefined and only skips nulls when skipNull is set; convertForInsert (:184) passes { skipNull: true } while convertForUpdate (:187-195) passes no options; db.update() (server/db/index.ts:209-227) emits one sync message per Object.keys(params).filter(k => k !== 'id'). So on UPDATE an omitted field is never written and the column KEEPS its old value, while on INSERT the same omission falls back to column DEFAULT NULL. Seven production client sites send { id, schedule } or { id, schedule: null } and nothing else, so unlinking clears the link and strands the stamp, and relinking pairs that stamp with a schedule it was never minted for — which then blocks BOTH arms of getHasTransactionsQuery (shared/schedules.ts:194-222), so the schedule reads Due when it was in fact paid. batchUpdateTransactions (server/transactions/index.ts:130-138) re-reads every changed row in full before transfer logic runs, so the server cannot distinguish an intentional stamp from an omitted one — which is why the fix belongs on the senders. addTransfer (server/transactions/transfer.ts:61-86) is the server-side instance: it runs the mirror through runRules, accepts a reassigned schedule at :73, writes it to both legs, and derives the occurrence zero times. I re-derived the whole chain from the source rather than accepting it, and ran a standalone tsc probe to settle the one question the previous draft left as a coin-flip, which removed a file from the change.",
-    "root_cause": "schedule and schedule_occurrence are written independently on every path that does not pick both off one source, and conform() makes insert and update disagree about what an omitted field means: on UPDATE a dropped key is never written so the stamp is PRESERVED, on INSERT it falls back to the column default NULL. Seven production client sites each hand-roll the same one-field literal, which is why there is no single place to fix the invariant and no existing test that can observe more than one site. addTransfer is the server-side instance: it writes the schedule to two legs and derives the occurrence zero times, so a rule that relinks the transfer leaves both legs stamped for the old schedule.",
-    "approach": "Fix 1 — one shared builder, seven callers. Add linkScheduleUpdate(id, scheduleId) and unlinkScheduleUpdate(id) to the EXISTING desktop-client/src/util/schedule-actions.ts, each returning the pair with schedule_occurrence: null. All seven sites call one of them. Params typed string, NOT string | undefined. The two producers that today declare `scheduleId?: string` keep that declaration and add a local null guard instead of narrowing, so ScheduleEditForm.tsx needs NO edit.\n\nFix 2 — addTransfer derives the stamp once, next to matchedSchedule (transfer.ts:73): const matchedOccurrence = matchedSchedule === transaction.schedule ? transaction.schedule_occurrence : undefined. Use it in both writes. Mirror insert: put schedule_occurrence AFTER the ...transferTransaction spread alongside schedule (the literal at :61-71 already carries it and would otherwise win); undefined is dropped by skipNull and falls back to DEFAULT NULL. Main-leg update: explicit ?? null, load-bearing because convertForUpdate passes no options so a dropped key never reaches update()'s Object.keys(params) loop and the column would PRESERVE the old stamp.\n\nFix 3 — reword the comment at transfer.ts:133-136 to the real contract.\n\nFix 4 — keep transfer.test.ts:361-388 and relabel it a GUARD rather than deleting it; add one more labelled guard through batchUpdateTransactions and one genuinely discriminating relink case.\n\nFix 5 — the browser steps are staged so each discriminates, and each now carries its own op precondition. A Schedules-page Repeats-OFF schedule carries date op 'isapprox' and posts_transaction false, so getScheduleOccurrenceMatchStartDate falls through to subDays(occurrenceDate, 2). QA Sch B dated 5 days out has a window starting today+3 (payment dated today sits outside) so it reads Paid BEFORE the fix and must NOT after. QA Sch C dated tomorrow has a window starting today-1 (payment inside, with a day of margin) so it reads not-Paid before and Paid after. Both steps first assert the rule's date condition reads `date is approx <date>`, because under op 'is' the window collapses onto the occurrence date and both steps would stop discriminating — the assertion the recorded rejection asked for.",
-    "files": [
-      {
-        "path": "packages/desktop-client/src/util/schedule-actions.ts",
-        "action": "edit",
-        "change": "Add two exported pure builders: linkScheduleUpdate(id: string, scheduleId: string) returning { id, schedule: scheduleId, schedule_occurrence: null } and unlinkScheduleUpdate(id: string) returning { id, schedule: null, schedule_occurrence: null }. Params typed string, NOT string | undefined. Each carries a one-line comment on why the link and the stamp are written as one pair. The new exports must stay pure; the file is not @ts-strict-ignore, so the new code is type-strict by default.",
-        "why": "The whole of Fix 1. Consolidating seven duplicated literals puts the invariant in one place and lets one test observe all seven payloads. If the unit test drags in the connection/query layers and needs mocking, move the builders to a leaf module rather than mocking more of the tree."
-      },
-      {
-        "path": "packages/desktop-client/src/hooks/useTransactionBatchActions.ts",
-        "action": "edit",
-        "change": "onBatchUnlinkSchedule builds updated: ids.map(unlinkScheduleUpdate), replacing ids.map(id => ({ id, schedule: null }) as unknown as Partial<TransactionEntity>) at :436. The cast goes away.",
-        "why": "The payload the QA reproduction drives — the one leaving both legs stamped today — and the only site a renderHook test can observe directly."
-      },
-      {
-        "path": "packages/desktop-client/src/components/schedules/ScheduleLink.tsx",
-        "action": "edit",
-        "change": "onSelect's payload at :52 becomes ids.map(id => linkScheduleUpdate(id, scheduleId)), replacing ids.map(id => ({ id, schedule: scheduleId })). This — not the hook's onBatchLinkSchedule, which only opens this modal — is the production LINK write the QA script drives in steps 9 and 13.",
-        "why": "A relink is where a stale stamp from another schedule does its damage; without this the fix covers unlinking but not relinking."
-      },
-      {
-        "path": "packages/desktop-client/src/components/schedules/ScheduleEditModal.tsx",
-        "action": "edit",
-        "change": "onLinkTransactions (declared :181, payload key :185) and onUnlinkTransactions (declared :191, payload :193) route through the builders. KEEP onLinkTransactions' existing `scheduleId?: string` declaration and add an explicit `if (scheduleId == null) return;` guard at the top of the body rather than narrowing it — both callers pass a real id (:148 passes the created schedule's res.data after a null check, ScheduleEditForm.tsx:544 passes schedule.id), so no other file's types change.",
-        "why": "The Schedules page reaches the same write through its own copy of the pair; changing the register alone would leave the schedule page able to reproduce the bug (QA step 10)."
-      },
-      {
-        "path": "packages/desktop-client/src/components/mobile/schedules/MobileScheduleEditPage.tsx",
-        "action": "edit",
-        "change": "Same two edits: onLinkTransactions declared at :139 with its payload key at :143, onUnlinkTransactions declared at :149 with its payload at :151 — a genuine third copy of the pair, defined in this file, not a re-export. Apply the same `if (scheduleId == null) return;` guard instead of narrowing; its one caller (:122) passes the created schedule's id.",
-        "why": "Leaving the mobile page out makes the fix desktop-only."
-      },
-      {
-        "path": "packages/desktop-client/src/components/schedules/DiscoverSchedules.tsx",
-        "action": "edit",
-        "change": "onCreate's transactions-batch-update payload (:185-190, schedule key at :187) becomes transactions.map(t => linkScheduleUpdate(t.id, scheduleId)), replacing transactions.map(t => ({ id: t.id, schedule: scheduleId })). scheduleId comes from `send('schedule/create')` at :169 and is a real string, so no guard is needed.",
-        "why": "The seventh production link write, excluded by two earlier plans on a wrong reading. find-schedules.ts:29 only filters schedule: null and never writes a link; this is the real site, and the one where a stale stamp is guaranteed to survive into a fresh link because its matcher selects exactly the schedule: null rows the unlink defect leaves behind."
-      },
-      {
-        "path": "packages/loot-core/src/server/transactions/transfer.ts",
-        "action": "edit",
-        "change": "Derive const matchedOccurrence = matchedSchedule === transaction.schedule ? transaction.schedule_occurrence : undefined next to matchedSchedule (:73) and use it in both writes: in the mirror-insert override object AFTER the ...transferTransaction spread alongside schedule (the literal at :61-71 already carries schedule_occurrence and would otherwise win), and as an explicit ?? null on the main-leg update (:82-86) — load-bearing, because convertForUpdate passes no options so a dropped key never reaches update()'s Object.keys(params) loop and the column would PRESERVE the old stamp. Separately reword the comment at :133-136 to the real contract.",
-        "why": "The last server path that can write the two fields apart, and it writes the schedule twice — once onto the mirror it is inserting and once back onto the main leg."
-      },
-      {
-        "path": "packages/loot-core/src/server/transactions/transfer.test.ts",
-        "action": "edit",
-        "change": "Do NOT delete 'clears the mirror stamp when the schedule link is removed' (:361-388). Keep it and relabel it a GUARD: its payload is built from a full-row read and calls transfer.onUpdate directly, bypassing batchUpdateTransactions, so no production caller constructs it and it passes before and after — but it is the only coverage of onUpdate propagating an explicit null to the mirror. Add two cases: (a) a GUARD driven through batchUpdateTransactions with the pre-fix payload { id, schedule: null }, asserting BOTH legs come back still stamped; (b) a DISCRIMINATING case where a directly-created rule with a link-schedule action relinks the main leg during addTransfer, asserting both legs end at schedule-2 with a NULL occurrence. Assert in the right form: off a db.all row schedule_occurrence is the raw INTEGER (20170101), off db.getTransaction a 'YYYY-MM-DD' string.",
-        "why": "The previous draft deleted this for being vacuous while keeping other equally vacuous cases as guards. That inconsistency loses onUpdate's null-propagation coverage to fix a labelling problem a comment solves."
-      },
-      {
-        "path": "packages/loot-core/src/shared/schedules.test.ts",
-        "action": "edit",
-        "change": "In the getHasTransactionsQuery describe block add one case, labelled a GUARD and scoped to what it proves: a row linked to a schedule with a stale occurrence for a DIFFERENT date matches neither arm, while the same row with a null occurrence and an in-window date does. Explicitly NOT the evidence for the due-to-paid criterion — the query is unmodified by this fix, so the case passes before and after by construction.",
-        "why": "Pins the direction the browser signal comes from, without dressing a guard up as a proof."
-      },
-      {
-        "path": "upcoming-release-notes/fix-stale-schedule-occurrence-stamp.md",
-        "action": "create",
-        "change": "A Bugfixes release note in the shape of the sibling upcoming-release-notes/fix-schedule-occurrence-consumption.md. Say that unlinking or relinking a scheduled transaction now clears its occurrence stamp together with the link. Set the authors field to whoever is actually landing the PR — the sibling's [Shivam-Fl] is not derived from this issue.",
-        "why": "User-visible: this changes what the Schedules page status cell reads after an unlink or relink."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/desktop-client/src/util/schedule-actions.test.ts",
-        "action": "create",
-        "cases": [
-          "linkScheduleUpdate('t1', 'schedule-1') deep-equals { id: 't1', schedule: 'schedule-1', schedule_occurrence: null } using toStrictEqual — toMatchObject must not be used, because an object with schedule_occurrence ABSENT satisfies it and would pass this defect straight through",
-          "unlinkScheduleUpdate('t1') deep-equals { id: 't1', schedule: null, schedule_occurrence: null } with toStrictEqual",
-          "both builders return an object that own-property-includes 'schedule_occurrence', so a refactor to a spread that drops the key fails loudly"
-        ]
-      },
-      {
-        "path": "packages/desktop-client/src/hooks/useTransactionBatchActions.test.ts",
-        "action": "create",
-        "cases": [
-          "renderHook over useTransactionBatchActions wrapped in TestProviders, with vi.mock of @actual-app/core/platform/client/connection exposing send: vi.fn() — the shape of the existing usePreviewTransactions.test.ts",
-          "calling onBatchUnlinkSchedule({ ids: ['t1','t2'] }) sends transactions-batch-update whose updated is exactly [{ id: 't1', schedule: null, schedule_occurrence: null }, { id: 't2', schedule: null, schedule_occurrence: null }], asserted with toStrictEqual on the payload",
-          "the same call invokes onSuccess with ['t1','t2']",
-          "this test observes the literal bytes the register sends rather than the builder in isolation, so it survives someone routing the hook around the builder"
-        ]
-      },
-      {
-        "path": "packages/loot-core/src/server/transactions/transfer.test.ts",
-        "action": "edit",
-        "cases": [
-          "DISCRIMINATING: a directly-created rule carrying a link-schedule action relinks the main leg during addTransfer; BOTH legs must end at schedule-2 with a NULL schedule_occurrence. Fails on unfixed code, and fails on an insert-only Fix 2",
-          "GUARD: batchUpdateTransactions driven with the pre-fix payload { id, schedule: null } leaves BOTH legs stamped — labelled as passing before and after, because the server re-reads full rows and cannot infer intent",
-          "GUARD (relabelled, not deleted): 'clears the mirror stamp when the schedule link is removed' still passes unchanged, its comment now saying it is a guard whose payload no production caller constructs",
-          "existing 'gives the mirror leg the schedule and stamp of its main leg' still passes — the stamp still rides along when the rule does NOT relink",
-          "existing 'keeps the mirror stamp when the main leg is updated' still passes, unchanged"
-        ]
-      },
-      {
-        "path": "packages/loot-core/src/shared/schedules.test.ts",
-        "action": "edit",
-        "cases": [
-          "GUARD: a row linked to a schedule carrying a stale occurrence for a DIFFERENT date matches neither arm of getHasTransactionsQuery, while the same row with a null occurrence and an in-window date does. The comment states it is a no-regression guard on the query and not evidence for the due-to-paid criterion, since the query is not modified by this fix"
-        ]
-      }
-    ],
-    "acceptance": [
-      {
-        "id": "AC-1",
-        "check": "Relinking a payment to a different schedule no longer marks that schedule Paid on the strength of the old schedule's occurrence stamp, when the payment's own date falls outside the new schedule's match window.",
-        "how_to_verify": "qa_script steps 1-9; the discriminating read is QA Sch B's status cell. DERIVATION: B is created through the Schedules page with Repeats OFF, so its date condition's op is 'isapprox', not 'is' — ScheduleEditModal.tsx:76 seeds the initial condition as isapprox and schedule-edit-utils.ts:49 calls updateCond(conds.date, 'isapprox', 'date', fields.date), updateCond returns { ...cond, value } for an existing cond (:28-30) so the seeded op is preserved — and posts_transaction is seeded false (:75). getScheduleOccurrenceMatchStartDate (shared/schedules.ts:90-102) therefore falls through both early returns and returns subDays(B.next_date, 2) = today+3, NOT the occurrence date. Before the fix the surviving stamp equals B.next_date (today+5), so arm 1 (:206) matches and B reads Paid; after, the stamp is null and arm 2 (:208-219) requires date >= today+3, which a payment dated today fails. The arithmetic is restated inline in qa_script steps 3 and 4 because the previous round got it wrong ('the occurrence date itself') and a tester reading only 'Repeats OFF' cannot tell which op the rule carries. Do not try to read schedule_occurrence off the transaction — it is rendered nowhere in the product.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-2",
-        "check": "The batch unlink action clears the occurrence stamp together with the schedule link, so a later relink cannot pair a stale stamp with a new schedule.",
-        "how_to_verify": "Two CI tests, both in desktop-client and both discriminating: schedule-actions.test.ts asserts unlinkScheduleUpdate deep-equals the pair with toStrictEqual, and useTransactionBatchActions.test.ts drives the real hook with a mocked send and asserts the literal payload. The loot-core guard is explicitly NOT offered as evidence — driven with { id, schedule: null } it passes before and after, because Fix 1 changes no server code, which is precisely why the proof must live on the sender. Scope limit worth stating plainly: the QA finding's 'both legs' claim is verified only by the loot-core transfer tests, because the product renders no stamp and no browser step can read one.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-3",
-        "check": "Every production link/unlink write carries the stamp — all seven sites — so no surface can leave a row stamped for a schedule it is not linked to.",
-        "how_to_verify": "One CI test observes all seven at once: schedule-actions.test.ts asserts the two builders' payloads and all seven sites call them. Coverage broken out here rather than hidden in unknowns: the register hook is additionally covered end-to-end by the renderHook test; DiscoverSchedules is covered by NEITHER a browser step NOR a component-render test (its input is server-side pattern matching over descriptions) and is covered only because it calls the same tested builder; the mobile schedule edit page is changed but exercised by no automated test and only by qa_script step 12. The mobile transaction list is NOT a separate site — TransactionListItem.tsx:135/422 is a destructuring read, and that surface routes through the shared hook.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-4",
-        "check": "A payment that legitimately falls inside a newly linked schedule's match window is no longer blocked from discharging that occurrence by a stale stamp left over from another schedule — the due to paid direction.",
-        "how_to_verify": "qa_script step 13, and it is DISCRIMINATING in the direction this criterion claims. Follow steps 1-12 first, then unlink the QA Payee A row from QA Sch B and link it to QA Sch C instead. C is created Repeats OFF dated TOMORROW, so its match window is subDays(today+1, 2) = today-1 and the payment dated today satisfies today >= today-1 with a day of margin — deliberately not a boundary-exact $gte. Before the fix the surviving stamp (today+5, A's occurrence) matches neither arm for C: it is not C.next_date (today+1), so arm 1 fails, and it is not null, so arm 2 is blocked — C reads not-Paid. After the fix the stamp is null and arm 2 matches on the date, so C reads Paid. Verified as 'browser' rather than 'test', because the due-to-paid direction is computed by getHasTransactionsQuery, which this fix does not modify — no CI test can witness the fix's effect on a status cell. The schedules.test.ts case is retained as a no-regression guard on the query ONLY and is explicitly not this criterion's evidence. If C does not flip, suspect the derivation — and re-check the op assertion in step 4 first — before concluding the fix is broken.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-5",
-        "check": "When a schedule rule relinks a transfer during addTransfer, BOTH legs end up linked to the new schedule with a NULL schedule_occurrence — the main leg as well as the mirror, with the main-leg write sending an explicit null because a dropped key would preserve the old value.",
-        "how_to_verify": "The relink case in transfer.test.ts, which IS discriminating. The fixture is resolved, not hypothetical: getRuleIdFromScheduleId (server/transactions/transaction-rules.ts:293-301) returns row?.rule || null, so a main leg whose schedule id has no row in the schedules table leaves scheduleRuleID === '' and runRules' else path evaluates every rule. Precedent for driving a rule with a link-schedule action directly via updateRule is schedules/app.test.ts:195-209. Not executed in this checkout (node_modules is absent), so the implementer may need to widen the rule's conditions before it fires; if it will not fire, that is a fixture problem to solve, not a reason to weaken the assertion.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-6",
-        "check": "The existing transfer, merge and schedule-stamp tests still pass, and the transfer partial-update comment describes the real contract rather than a hazard no production caller can produce.",
-        "how_to_verify": "yarn workspace @actual-app/core run test:node src/server/transactions src/shared/schedules.test.ts, then yarn workspace @actual-app/web test, and confirm both green. Read green as 'nothing regressed', not 'the fix works': only three CI cases discriminate, and every case labelled GUARD passes with the whole fix reverted. Also run yarn typecheck — it is the check that would catch the guard-vs-narrow choice in ScheduleEditModal and MobileScheduleEditPage being wrong, and it is the reason ScheduleEditForm.tsx is absent from files[].",
-        "verify": "test"
-      },
-      {
-        "id": "AC-7",
-        "check": "The PR is titled with the mandatory [AI] prefix and a release note exists for the user-visible schedule-status change.",
-        "how_to_verify": "gh pr view --json title returns a title starting with '[AI]'; upcoming-release-notes/fix-stale-schedule-occurrence-stamp.md exists with category Bugfixes and an authors field naming whoever lands the PR. PR #33's title cannot be fixed — it is merged — so the rule carries forward against this PR.",
-        "verify": "api"
-      }
-    ],
-    "qa_script": [
-      "Open the app and click 'View demo' to load a synthetic budget.",
-      "Go to Schedules and add 'QA Sch A' — payee 'QA Payee A', account HSBC, 44.00, Repeats ON, starting 5 days from today.",
-      "Add 'QA Sch B' — payee 'QA Payee B', same account, same amount, Repeats OFF, date set to the SAME day as QA Sch A's next occurrence (5 days out). BEFORE MOVING ON, open QA Sch B's rule (Edit rule) and ASSERT its date condition reads `date is approx <date>` — NOT `date is <date>`. If it reads `is`, STOP: the derivation this step depends on does not hold. The shared occurrence date is the other half of the point: it is what makes the stale stamp equal B.next_date, which is what makes step 9 discriminate. Arithmetic to check against the rule in front of you: op 'isapprox' + posts_transaction OFF means getScheduleOccurrenceMatchStartDate falls through to subDays(next_date, 2), so B's window starts at today+3 — not at today+5.",
-      "Add 'QA Sch C' — payee 'QA Payee C', same account, same amount, Repeats OFF, date set to TOMORROW. Apply the SAME assertion as step 3: open C's rule and confirm it reads `date is approx <tomorrow>`, not `date is <tomorrow>`; if it reads `is`, stop. C is used only by step 13. Its match window is occurrence-minus-2-days = today-1, so the payment dated today falls inside it with a day of margin. Under op `is` the window would instead be today+1, the payment dated today would fall OUTSIDE it, and step 13 would flip in the opposite direction and prove nothing.",
-      "Right-click QA Sch A and choose 'Post transaction today'. QA Sch A must now read Paid — paying an occurrence early is legitimate. The created row is dated TODAY but stamped with the occurrence 5 days out; that gap is the whole mechanism and every later step depends on this row never being re-dated.",
-      "Go to the HSBC register and find the QA Payee A row.",
-      "Hover the row, tick its select checkbox, click the '1 transactions' button and choose 'Unlink schedule'.",
-      "Return to Schedules: QA Sch A must read Upcoming again. This passes today too — it confirms the unlink landed, it does not detect the bug.",
-      "Back in the HSBC register, select the same row, choose 'Link schedule', pick QA Sch B. Return to Schedules and read QA Sch B's status cell. THIS IS THE DISCRIMINATING STEP for AC-1: before the fix it reads Paid — a schedule marked paid by another schedule's occurrence on a payment dated five days before it was due, because the surviving stamp today+5 equals B.next_date and arm 1 matches. After the fix the stamp is null, so only arm 2 can match and it requires date >= today+3, which a payment dated today fails. B must NOT read Paid. If B still reads Paid, first re-check the step 3 op assertion, then treat the fix as broken.",
-      "Confirm QA Sch A still reads Upcoming and that no unrelated schedule changed status.",
-      "Repeat steps 7-9 from the Schedules page instead of the register: open QA Sch A's edit page, select the transaction under 'Linked transactions', choose 'Unlink from schedule', then relink it to QA Sch B. B must again not read Paid. This covers the ScheduleEditModal site.",
-      "Repeat the unlink-and-relink from the mobile schedule page (narrow the viewport or use device emulation) to cover the third copy of the pair. The row must end linked to QA Sch B with no stamp.",
-      "With the QA Payee A row still linked to QA Sch B, unlink it from QA Sch B and then link it to QA Sch C — the row context action only offers 'Link schedule' while the row is unlinked, so both halves are required. QA Sch C MUST now read Paid. Why it reads Paid here and not in step 9: C's window starts at today-1 and the payment dated today is inside it, whereas B's window starts at today+3 and the same payment is outside it. Why this step discriminates: before the fix the surviving stamp (today+5) is neither C.next_date (today+1) nor null, so both arms fail and C reads not-Paid; after the fix the cleared stamp lets the date arm match and C reads Paid. This is the due to paid direction (AC-4).",
-      "Confirm no console errors."
-    ],
-    "risks": [
-      "The fix clears the stamp on every relink, including a relink back to the schedule the row was already stamped for. Invisible whenever the payment's date is inside the new schedule's match window, but a payment dated more than 2 days before a recurring occurrence — or any date before a one-time schedule's date minus 2 days — loses its match on relink. QA step 13 probes the ordinary in-window case; the out-of-window case is the review risk and is deliberately untested.",
-      "The fix moves schedules from Due to Paid where a stale stamp was suppressing a legitimate match (AC-4). Correct, but the shape most likely to be mistaken for a regression, so it has its own criterion rather than being buried.",
-      "Both status-cell flips are derived from getScheduleOccurrenceMatchStartDate's fallback branch and from getHasTransactionsQuery's two arms. The derivation was re-checked at every link, but nothing has been executed — node_modules is absent, so no test has run and the app has never started. The op assertion now in qa_script steps 3 and 4 exists because of exactly this class of failure: the previous round's derivation was wrong about the op and only review caught it. If a status cell does not flip as derived, check the rule's op before suspecting the fix.",
-      "The addTransfer fix is justified by the invariant and the verified insert/update asymmetry, not by a reproduction, and its production reachability is unproven: no UI-authored rule can set a schedule. If both writes are dead code in practice, Fix 2 is harmless but untested in production, at a cost of two lines.",
-      "Adding two exports to util/schedule-actions.ts means the new unit test imports a module that also pulls in the connection and query layers. If that bites in vitest, move the builders to a leaf module rather than mocking more of the tree.",
-      "The DiscoverSchedules site has no browser coverage and cannot get any: its input is server-side pattern matching over descriptions, not stageable by hand in a synthetic budget.",
-      "The mobile schedule edit page's link/unlink is changed but exercised by no automated test and only lightly in the QA script, which needs a narrow viewport to reach it at all."
-    ],
-    "out_of_scope": [
-      "A migration clearing schedule_occurrence on rows already in the corrupt state. Nothing repairs them, so a stale stamp on an existing row can still suppress a legitimate occurrence match. Deferred deliberately: a data migration over user money rows with its own sync and undo surface, and no browser step can verify it. First entry in residual_risks.",
-      "@actual-app/api's updateTransaction surface, which can build the same stale-stamp diff because it diffs from a full-row read (api.ts:597). Not reachable from the UI.",
-      "Renaming PR #33, whose title lacked the mandatory [AI] prefix. That PR is merged, so there is no title left to fix; the rule is carried forward as AC-7 against this PR.",
-      "Any change to getHasTransactionsQuery. Its two-arm shape is what makes the defect silent and what makes this fix's effect conditional on the payment's date.",
-      "merge.ts, which writes schedule and schedule_occurrence together from one source (scheduleSource at merge.ts:173-186) and therefore cannot desync. Verified, not assumed.",
-      "Server-side enforcement in batchUpdateTransactions (clear the stamp when the link changes). Rejected on the merits, not deferred: the full-row re-read at index.ts:130-138 means the rule needs an extra read and guesses at intent on paths that legitimately send a full row.",
-      "ScheduleEditForm.tsx. The previous version carried it as a contingency to be edited 'only if typecheck requires it'. It does not require it, and the file is dropped rather than carried: ScheduleEditForm.tsx:99's `(ids: string[], scheduleId?: string) => Promise<void>` prop type accepts the unchanged optional signature both producers keep, so no edit is needed anywhere."
-    ],
-    "evidence": [
-      "packages/loot-core/src/server/aql/schema-helpers.ts:134-144 — conform() drops a key only when obj[field] === undefined, and skips nulls only when skipNull is set. convertForInsert (:184) passes { skipNull: true } and applies column defaults first (:162-180); convertForUpdate (:187-195) passes no options. VERIFIED BY READING.",
-      "packages/loot-core/src/server/db/index.ts:209-227 — update() emits one sync message per Object.keys(params).filter(k => k !== 'id'), so a key dropped by conform is never written and the column keeps its old value. VERIFIED BY READING.",
-      "packages/loot-core/migrations/1790969762045_add_schedule_occurrence_to_transactions.sql:2 — `ALTER TABLE transactions ADD COLUMN schedule_occurrence INTEGER DEFAULT NULL`. This is why an omitted field on INSERT lands on NULL rather than erroring. VERIFIED BY READING.",
-      "packages/loot-core/src/server/transactions/index.ts:130-138 — batchUpdateTransactions re-reads every changed row in full via getTransactionsByIds before transfer logic runs, so the server cannot distinguish an intentional stamp from an omitted one. VERIFIED BY READING.",
-      "packages/loot-core/src/server/transactions/transfer.ts:61-86 — the literal carries `schedule_occurrence: transaction.schedule_occurrence`; runRules is destructured at :72 and matchedSchedule = schedule ?? transaction.schedule at :73; the mirror insert at :75-80 overrides only schedule; a SECOND write at :82-86 puts ...(matchedSchedule ? { schedule: matchedSchedule } : {}) onto the MAIN leg. Neither derives the stamp, and the literal's value wins unless the override comes after the spread. VERIFIED BY READING.",
-      "All seven client write sites read at their lines, grepped in this checkout: useTransactionBatchActions.ts:436, ScheduleLink.tsx:52, ScheduleEditModal.tsx:185 and :193, MobileScheduleEditPage.tsx:143 and :151, DiscoverSchedules.tsx:187. A grep for `schedule_occurrence` across packages/desktop-client/src returns only test files (usePreviewTransactions.test.ts, useSchedules.test.ts) and no production write site at all — which is the whole defect in one line of evidence. VERIFIED BY GREP AND READING.",
-      "packages/desktop-client/src/components/mobile/transactions/TransactionListItem.tsx:135 and :422 — `const { id, schedule: scheduleId } = transaction;` is a destructuring rename, a read, not an eighth write site. This is what makes the seven exhaustive. VERIFIED BY READING.",
-      "packages/loot-core/src/server/schedules/find-schedules.ts:29 only filters schedule: null while matching candidates and never writes a link — which is why DiscoverSchedules' client-side write (DiscoverSchedules.tsx:187, not find-schedules) is the real seventh site that two earlier plans excluded on a wrong reading. VERIFIED BY READING.",
-      "packages/loot-core/src/shared/schedules.ts:90-102 and :194-222 — getScheduleOccurrenceMatchStartDate returns occurrenceDate for op 'is' or posts_transaction, else subDays(occurrenceDate, 2); getHasTransactionsQuery ORs `schedule_occurrence: schedule.next_date` (:206) against `$and: [{schedule_occurrence: null}, {date: {$gte: matchStartDate}}]` (:208-219). Every status-cell read in the QA script and both AC derivations come from these two arms. VERIFIED BY READING.",
-      "packages/desktop-client/src/components/schedules/ScheduleEditModal.tsx:74-76 seeds `posts_transaction: false` and `_conditions: [{ op: 'isapprox', field: 'date', value: date }]`; schedule-edit-utils.ts:49 calls updateCond(conds.date, 'isapprox', 'date', fields.date) and updateCond returns `{ ...cond, value }` for an existing cond (:28-30), preserving its op. So a Schedules-page one-time schedule carries op 'isapprox', NOT 'is'. This is the fact the previous round got wrong in both AC-1's derivation and the rejected step 13, and the reason qa_script steps 3 and 4 now assert the op out loud. VERIFIED BY READING.",
-      "packages/loot-core/src/server/schedules/app.ts:600-609 — postTransactionForSchedule builds `date: today ? currentDay() : (date ?? schedule.next_date)` and `schedule_occurrence: occurrence`, so 'Post transaction today' dates the payment today while stamping it 5 days out. VERIFIED BY READING. SchedulesTable.tsx:180 confirms the menu item exists.",
-      "packages/loot-core/src/server/transactions/transfer.test.ts:361-388 — 'clears the mirror stamp when the schedule link is removed' builds {...payload, schedule: null, schedule_occurrence: null} from a full-row read (payload = await db.getTransaction(transaction.id) at :375) and calls transfer.onUpdate directly, bypassing batchUpdateTransactions. No production caller constructs that payload, so it passes before and after — but it is the only coverage of onUpdate propagating an explicit null to the mirror. VERIFIED BY READING.",
-      "RESOLVED BY RUNNING A COMPILER: packages/desktop-client/tsconfig.json:8 sets \"strict\": false while the root tsconfig.json:22 sets \"strictFunctionTypes\": true. The previous draft concluded from this that narrowing onLinkTransactions assigns fine, and carried ScheduleEditForm.tsx as a contingency. I built the same shape in isolation and ran tsc against it. The assignment compiles clean under `strictFunctionTypes: true, strict: false` — but the real reason is that `strict: false` also disables strictNullChecks, which is what makes `string | undefined` distinct from `string`; with it off, the optional and required signatures are the same type. The CONCLUSION (no ScheduleEditForm edit) holds, but the stated REASON was wrong: `strict: false` does not unset an explicitly-set `strictFunctionTypes`. The work order therefore does not rely on the flag at all — both producers keep their existing `scheduleId?: string` declarations and add a local null guard, so no other file's types change. ScheduleEditForm.tsx is dropped from files[] rather than carried as a contingency.",
-      "All five touched desktop-client component files carry `// @ts-strict-ignore` at line 1, so the typescript-strict-plugin does not apply strict checking to them. util/schedule-actions.ts does NOT carry it, so the two new builders there are type-strict by default. VERIFIED BY READING.",
-      "packages/loot-core/src/server/transactions/transaction-rules.ts:293-301 — getRuleIdFromScheduleId returns row?.rule || null, so a main leg whose schedule id has no schedules row leaves scheduleRuleID === '' and runRules evaluates every rule. This makes the AC-5 fixture constructible; schedules/app.test.ts:195-209 is the precedent for driving a link-schedule action directly via updateRule. VERIFIED BY READING.",
-      "packages/desktop-client/vite.config.mts:405-409 — vitest include is src/**/*.{test,spec}.?(c|m)[jt]s?(x), environment jsdom, so both new test files are picked up by yarn workspace @actual-app/web test; loot-core exposes test:node. upcoming-release-notes/fix-schedule-occurrence-consumption.md confirms the release-note frontmatter shape. VERIFIED BY READING.",
-      "The issue body (gh issue view 38) has NO '## Acceptance (from the split)' section and contains no IAC-n or TR-n identifier anywhere, and the ledger's origin/sdlc-state:state/38.json has an empty acceptance array. There is therefore no split criterion to satisfy or defer, and no source id to cite — acceptance[] carries no source values. Earlier versions carried source: IAC-1 through IAC-7 on all seven criteria; those are fabricated and are dropped.",
-      "node_modules is absent from this checkout, confirming that no test described in this plan has ever been executed.",
-      "The ledger records the route as plan -> implement -> review -> qa, with no debug stage, although config.yml sets route_bugs_to_debugger: true. I checked whether to request one and concluded no: the defect carries a measured in-browser reproduction from the QA run that filed it, plus a probe of the production payload shape in the review that found it. I also did not request review: it is already on the route, and this change touches a shared write helper plus a server write path."
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Restage the rejected step 13 exactly as its two suggested branches: either post QA Sch B's OWN occurrence and confirm B reads Paid, or create a fresh register transaction dated on/after B's date and link that to B.",
-        "rejected_because": "Both are non-discriminating, which is the point the rejection made. Posting B's own occurrence writes schedule and schedule_occurrence together through the server's own postTransactionForSchedule, which no client fix touches, so it reads Paid before and after. Linking a fresh in-window transaction never had a stamp, so the unlink defect cannot manifest. Either would have satisfied the objection's letter — a step that is TRUE on fixed code — while leaving the criterion with a guard that proves nothing. The third schedule is strictly better: it reuses the row that actually carries the stale stamp and puts it inside a window that genuinely contains the payment's date."
-      },
-      {
-        "approach": "Satisfy the recorded rejection by asserting the op only in prose in AC-1's how_to_verify, as the previous round already did, and leave qa_script steps 3 and 4 describing the schedules only as 'Repeats OFF, date set to <date>'.",
-        "rejected_because": "This is precisely what the rejection named as the defect. AC-1 is the criterion's support and qa_script is what the floor QA suite is generated from; a QA agent reading 'Repeats OFF' cannot confirm the op, and if the default ever changes the two status-cell flips silently stop discriminating and pass for the wrong reason. The assertion has to sit in the step the tester executes."
-      },
-      {
-        "approach": "Keep the due-to-paid criterion at verify: 'test' and scope it explicitly to what the schedules.test.ts guard proves, as the rejection's second branch allows.",
-        "rejected_because": "It is honest but it drops the criterion's only behavioural evidence, leaving 'the fix does not over-clear a legitimate match' asserted by nothing but a case that passes with the whole fix reverted. Since the discriminating browser step turned out to be constructible, scoping down gives up more than the rejection required. The guard is retained, relabelled and explicitly marked as not that criterion's evidence."
-      },
-      {
-        "approach": "Enforce the invariant server-side in batchUpdateTransactions: when an update changes schedule, null the stamp unless the payload mentions it.",
-        "rejected_because": "It needs a read of each row's current schedule to tell a real link change from a no-op re-send, adding a query to a hot path, and guesses at intent on paths (api.updateTransaction, sync imports) that legitimately send a full row. The callers are few, enumerable, and verified as exactly seven. If a future caller appears that cannot be enumerated, this becomes the right fix."
-      },
-      {
-        "approach": "Keep the payload literals at each of the seven sites and add the field inline in each, with no shared builder.",
-        "rejected_because": "It fixes today's seven sites but leaves the cause in place — seven duplicated one-field literals — and leaves the all-sites criterion unprovable, since no test could observe all seven payloads."
-      },
-      {
-        "approach": "Narrow onLinkTransactions in ScheduleEditModal and MobileScheduleEditPage to `scheduleId: string` and narrow ScheduleEditForm.tsx:99's prop type to match, as an unconditional three-file change.",
-        "rejected_because": "It makes every consumer of the prop type part of the change for no gain. The two producers' only callers already pass a real id, so a local `if (scheduleId == null) return;` guard is equivalent at runtime and leaves the public prop type — and every consumer — untouched. It also removes the type-level question the previous round left as a contingency, which is what let me drop a file from the change on evidence rather than on a guess."
-      },
-      {
-        "approach": "Keep the loot-core batch-unlink test driven with the pre-fix payload { id, schedule: null } and let it carry the unlink criterion as the regression witness.",
-        "rejected_because": "True but not load-bearing. Fix 1 changes no server code, so a hand-written payload produces identical results before and after — the assertion can never distinguish fixed from unfixed. Kept as a labelled GUARD; the proof has to live on the sender, and a loot-core test cannot drive a desktop-client payload."
-      },
-      {
-        "approach": "Drop the clearing change entirely and close the ticket on the documentation, comment and test-honesty fixes only.",
-        "rejected_because": "It leaves a reproduced defect in the product — both legs keep a stamp for a schedule they are no longer linked to — and closes the ticket on it."
-      },
-      {
-        "approach": "For the addTransfer hazard, stop runRules from reassigning the schedule on a mirror at all.",
-        "rejected_because": "It changes rule semantics for every mirrored transaction — a rule that legitimately relinks the other account's row would stop working — a wider behaviour change than dropping a stamp that no longer applies."
-      },
-      {
-        "approach": "Also rewrite getHasTransactionsQuery so a stale stamp cannot suppress a legitimate match.",
-        "rejected_because": "It would make the fix unconditional, but it discards the stamp's purpose: a re-dated payment must keep discharging the occurrence it was posted for. Matching on date alone would re-break that."
-      },
-      {
-        "approach": "Delete transfer.test.ts:361 as the misleading proof it is.",
-        "rejected_because": "Rejected in favour of relabelling. It is vacuous, but so are the guards kept elsewhere, and deleting on one ticket's scope drops the only coverage of onUpdate propagating an explicit null to the mirror."
-      }
-    ],
-    "assumptions": [
-      "The seven write sites are the complete set of production link/unlink writers, verified by grep plus reading each hit: TransactionListItem.tsx:135/422 is a destructuring read, usePreviewTransactions.ts:123/:132 are previews, useScheduleEdit.ts:24/:255 is a reducer's initial state, ScheduleEditForm.tsx:99 is a prop type, and ScheduleEditModal.tsx:127 / MobileScheduleEditPage.tsx:101 are schedule literals in an edit-state seed.",
-      "schedule_occurrence off a db.all row is the raw INTEGER and off db.getTransaction a 'YYYY-MM-DD' string; new tests must insert and assert in the right form. The column is INTEGER DEFAULT NULL.",
-      "api.updateTransaction is NOT changed by this order; the stale diff it can build is a separate surface, filed as a residual risk rather than assumed safe.",
-      "The builders live in the existing util/schedule-actions.ts because it is already desktop-client's schedule-helper home; no new module is introduced unless the unit test's import proves impractical.",
-      "QA Sch C's date arithmetic assumes the demo budget, monthUtils.currentDay() and the DateSelect all work in the local timezone, so that 'tomorrow' is unambiguous."
-    ],
-    "unknowns": [
-      "Whether any user's existing budget already holds rows in the corrupt state. Nothing reads such rows defensively, so this change stops new corruption but does not repair old rows, and an existing stale stamp can still suppress a legitimate occurrence match. A migration would be the follow-up ticket.",
-      "Whether the addTransfer relink fixture fires as derived. getRuleIdFromScheduleId and runRules' else path make it reachable in principle and app.test.ts:195-209 shows the link-schedule action can be driven directly, but the exact conditions that match the mirror have not been run and may need widening.",
-      "Whether relinking a row a user deliberately stamped is a flow the product intends to support. Fix 1 clears the stamp on every relink; it is invisible whenever the payment's date is inside the new schedule's window, but intent could not be determined from the code.",
-      "The exact browser selectors for the Link schedule modal, the Schedules page's Unlink action, and the Edit rule modal the op assertion needs. They are not in .sdlc/memory/qa/selectors.md. The QA script is written by visible text and may need a retry; the op assertion is read from the rule condition the Edit rule modal renders as `date is approx <date>` (util/rule.ts:89 supplies the 'is approx' label).",
-      "Whether importing util/schedule-actions.ts in a unit test drags in the connection/query layers in a way that needs mocking. The builders are pure; the module is not.",
-      "Whether the mobile schedule edit page is reachable in QA without a narrow viewport or device emulation."
-    ],
-    "debate_summary": "There was no council to arbitrate. plan/critique.json is {} — the critic wrote nothing — and plan/proposal.json does not exist at all, so the proposer wrote nothing either. The only prior judgement is the recorded rejection of the earlier draft, whose single objection concerned qa_script step 13. I am reporting that plainly rather than implying a consensus nobody reached. Because nobody had attacked the plan, I re-derived its load-bearing claims from the source myself rather than accepting them: conform()'s insert/update asymmetry, db.update()'s per-key emission, all seven client write sites (a grep for `schedule_occurrence` across desktop-client/src returns test files only — no production write site exists, which is the defect in one line), transfer.ts's literal-plus-two-writes shape, getHasTransactionsQuery's two arms, getScheduleOccurrenceMatchStartDate's fallback, the isapprox seeding preserved by updateCond, and postTransactionForSchedule's `date: today ? currentDay()`. All held.\n\nWhat I changed. First and most important, I applied the recorded rejection, which was correct and had not been fully honoured. The previous round verified the isapprox chain in prose inside AC-1 and then left qa_script steps 3 and 4 describing the schedules only as 'Repeats OFF, date set to <date>'. Since qa_script is what the floor QA suite is generated from, a tester could not confirm the op, and under op `is` both status-cell flips would silently stop discriminating and pass for the wrong reason. Both steps now instruct the tester to open the schedule's rule and assert it reads `date is approx <date>` — not `date is <date>` — and to stop if it reads `is`; both carry their matchStartDate arithmetic restated inline. That is the rejection's required fix, applied where it asked for it rather than where it would have been easiest.\n\nSecond, I dropped ScheduleEditForm.tsx from the change. The previous round carried it as a contingency to be edited 'only if yarn typecheck requires it', which is a coin-flip, and it rested that coin on a misreading: it concluded that `strict: false` in desktop-client unsets the root's explicitly-set `strictFunctionTypes: true`. It does not — an explicitly-set flag survives a `strict` shorthand in either direction. I built the repo's exact shape in isolation and ran a real compiler against it. The conclusion survives anyway, but for a different reason: `strict: false` also disables strictNullChecks, which is what makes `string | undefined` distinct from `string`, so the optional and required signatures are the same type either way. Rather than leave the plan resting on a conclusion whose stated mechanism I had just shown to be wrong, I removed the dependency — both producers keep their existing `scheduleId?: string` declaration and add a local null guard, so no consumer's types change and the file leaves the PR. A file removed on evidence rather than carried as a hedge.\n\nThird, I corrected the line numbers the previous round claimed to have corrected: it announced that MobileScheduleEditPage's pair 'sits at :139/:149, not :143/:151 as v4 stated', but :139 and :149 are the two function declarations and :143 and :151 the two payload lines — both v4's and its own citation were right about different things, and there was no mis-citation to correct. The work order names both pairs so no implementer has to guess.\n\nWhat I did not change. I kept the relabelling of transfer.test.ts:361 rather than deletion — no production caller constructs its payload, and it is the only coverage of onUpdate propagating an explicit null to the mirror. I kept the addTransfer fix even though its production reachability is unproven (no UI-authored rule can set a schedule, so both writes may be dead code in practice); it is two lines, justified by the invariant and the verified insert/update asymmetry, and dropping it would leave the one server path that writes the schedule twice and the stamp zero times unfixed. I kept the fabrication fix: `source: IAC-1` through `IAC-7` is dropped from all seven criteria, because the issue body has no '## Acceptance (from the split)' section and the ledger's acceptance array is empty — a fabricated source is worse than none, since it asserts traceability to a split that does not exist. That also resolves the arbiter's split-criteria obligation: there are no IAC-n criteria to satisfy or defer. I kept stating plainly that a green suite is not evidence this change works: three CI cases and two browser steps discriminate, and everything labelled GUARD passes with the whole fix reverted.\n\nConfidence 80, unchanged. Not raised, because the evidence I gathered confirms the previous round rather than adding to it, and the one genuinely new thing I did — compiling the tsconfig question — removed a hedge rather than adding certainty about the behaviour under test. Not lowered, because I found no load-bearing error: the two changes are a missing QA assertion and a contingent file, and the mis-citation I found was in the plan's commentary about itself, not in the instructions. It stays at 80 because nothing has been executed. node_modules is absent, so no test in this plan has ever run, the app has never started, and both status-cell flips are derived from the query's two arms rather than observed — and the previous round's derived step was exactly the thing that was wrong, which is why the op assertion now sits in the script instead of only in a rationale field. That number is load-bearing and I am not going to inflate it past what has actually been checked.",
-    "residual_risks": [
-      "Rows already corrupt in a user's budget stay corrupt. Nothing repairs them; a stale stamp on an existing row can still suppress a legitimate occurrence match, the due to paid direction. This is the gap QA should understand before signing off, and the reason a follow-up migration is the natural next ticket.",
-      "The api package's updateTransaction can still build a diff that links a row to a new schedule while carrying the old stamp, because it diffs from a full-row read (api.ts:597). Not reachable from the UI, so not fixed here.",
-      "The transfer finding's 'both legs' claim is verified only by loot-core tests. No browser step can read a stamp — schedule_occurrence is rendered nowhere in the product — so QA cannot confirm it, and a reviewer should not read the QA script's green as covering it.",
-      "The addTransfer fix is verified by derivation and by the insert/update asymmetry, not by a reproduction, and its production reachability is unproven. If both writes are dead code in practice, Fix 2 is harmless but untested in production, at a cost of two lines.",
-      "The DiscoverSchedules auto-link site is covered by reading its payload shape and by sharing the tested builder. It has no browser coverage and cannot get any, because its input is server-side pattern matching that cannot be staged in a synthetic budget.",
-      "The mobile schedule edit page's link/unlink is changed but exercised by no automated test and only lightly in the QA script.",
-      "Both status-cell flips are derived from getHasTransactionsQuery's two arms, not observed in a running app. The previous plan's step was exactly this kind of derived-and-wrong step and was caught only in review. The op assertion in steps 3 and 4 narrows the way that step can be wrong, but does not eliminate it: if a status cell does not flip as derived, check the rule's op and the date the tester actually entered before suspecting the fix.",
-      "Any case labelled GUARD passes with the whole fix reverted. A green suite after this change is not evidence that this change works — the three discriminating CI cases plus the two discriminating browser steps are, and they are the ones to watch.",
-      "The three discriminating tests have never been executed. The two builder assertions are trivial and should settle on first run; the renderHook test and the addTransfer relink fixture are the two places implementation is most likely to need iteration."
-    ]
-  },
-  "approved_work_order": {
-    "issue": 38,
-    "version": 6,
-    "kind": "bug",
-    "mode": "committed",
-    "reproduced": true,
-    "understanding": "One invariant underlies every finding in this ticket: a schedule_occurrence stamp only means anything next to the schedule link it was minted for. conform() (loot-core/src/server/aql/schema-helpers.ts:134-144) drops a key whose value is undefined and only skips nulls when skipNull is set; convertForInsert (:184) passes { skipNull: true } while convertForUpdate (:187-195) passes no options; db.update() (server/db/index.ts:209-227) emits one sync message per Object.keys(params).filter(k => k !== 'id'). So on UPDATE an omitted field is never written and the column KEEPS its old value, while on INSERT the same omission falls back to column DEFAULT NULL. Seven production client sites send { id, schedule } or { id, schedule: null } and nothing else, so unlinking clears the link and strands the stamp, and relinking pairs that stamp with a schedule it was never minted for — which then blocks BOTH arms of getHasTransactionsQuery (shared/schedules.ts:194-222), so the schedule reads Due when it was in fact paid. batchUpdateTransactions (server/transactions/index.ts:130-138) re-reads every changed row in full before transfer logic runs, so the server cannot distinguish an intentional stamp from an omitted one — which is why the fix belongs on the senders. addTransfer (server/transactions/transfer.ts:61-86) is the server-side instance: it runs the mirror through runRules, accepts a reassigned schedule at :73, writes it to both legs, and derives the occurrence zero times. I re-derived the whole chain from the source rather than accepting it, and ran a standalone tsc probe to settle the one question the previous draft left as a coin-flip, which removed a file from the change.",
-    "root_cause": "schedule and schedule_occurrence are written independently on every path that does not pick both off one source, and conform() makes insert and update disagree about what an omitted field means: on UPDATE a dropped key is never written so the stamp is PRESERVED, on INSERT it falls back to the column default NULL. Seven production client sites each hand-roll the same one-field literal, which is why there is no single place to fix the invariant and no existing test that can observe more than one site. addTransfer is the server-side instance: it writes the schedule to two legs and derives the occurrence zero times, so a rule that relinks the transfer leaves both legs stamped for the old schedule.",
-    "approach": "Fix 1 — one shared builder, seven callers. Add linkScheduleUpdate(id, scheduleId) and unlinkScheduleUpdate(id) to the EXISTING desktop-client/src/util/schedule-actions.ts, each returning the pair with schedule_occurrence: null. All seven sites call one of them. Params typed string, NOT string | undefined. The two producers that today declare `scheduleId?: string` keep that declaration and add a local null guard instead of narrowing, so ScheduleEditForm.tsx needs NO edit.\n\nFix 2 — addTransfer derives the stamp once, next to matchedSchedule (transfer.ts:73): const matchedOccurrence = matchedSchedule === transaction.schedule ? transaction.schedule_occurrence : undefined. Use it in both writes. Mirror insert: put schedule_occurrence AFTER the ...transferTransaction spread alongside schedule (the literal at :61-71 already carries it and would otherwise win); undefined is dropped by skipNull and falls back to DEFAULT NULL. Main-leg update: explicit ?? null, load-bearing because convertForUpdate passes no options so a dropped key never reaches update()'s Object.keys(params) loop and the column would PRESERVE the old stamp.\n\nFix 3 — reword the comment at transfer.ts:133-136 to the real contract.\n\nFix 4 — keep transfer.test.ts:361-388 and relabel it a GUARD rather than deleting it; add one more labelled guard through batchUpdateTransactions and one genuinely discriminating relink case.\n\nFix 5 — the browser steps are staged so each discriminates, and each now carries its own op precondition. A Schedules-page Repeats-OFF schedule carries date op 'isapprox' and posts_transaction false, so getScheduleOccurrenceMatchStartDate falls through to subDays(occurrenceDate, 2). QA Sch B dated 5 days out has a window starting today+3 (payment dated today sits outside) so it reads Paid BEFORE the fix and must NOT after. QA Sch C dated tomorrow has a window starting today-1 (payment inside, with a day of margin) so it reads not-Paid before and Paid after. Both steps first assert the rule's date condition reads `date is approx <date>`, because under op 'is' the window collapses onto the occurrence date and both steps would stop discriminating — the assertion the recorded rejection asked for.",
-    "files": [
-      {
-        "path": "packages/desktop-client/src/util/schedule-actions.ts",
-        "action": "edit",
-        "change": "Add two exported pure builders: linkScheduleUpdate(id: string, scheduleId: string) returning { id, schedule: scheduleId, schedule_occurrence: null } and unlinkScheduleUpdate(id: string) returning { id, schedule: null, schedule_occurrence: null }. Params typed string, NOT string | undefined. Each carries a one-line comment on why the link and the stamp are written as one pair. The new exports must stay pure; the file is not @ts-strict-ignore, so the new code is type-strict by default.",
-        "why": "The whole of Fix 1. Consolidating seven duplicated literals puts the invariant in one place and lets one test observe all seven payloads. If the unit test drags in the connection/query layers and needs mocking, move the builders to a leaf module rather than mocking more of the tree."
-      },
-      {
-        "path": "packages/desktop-client/src/hooks/useTransactionBatchActions.ts",
-        "action": "edit",
-        "change": "onBatchUnlinkSchedule builds updated: ids.map(unlinkScheduleUpdate), replacing ids.map(id => ({ id, schedule: null }) as unknown as Partial<TransactionEntity>) at :436. The cast goes away.",
-        "why": "The payload the QA reproduction drives — the one leaving both legs stamped today — and the only site a renderHook test can observe directly."
-      },
-      {
-        "path": "packages/desktop-client/src/components/schedules/ScheduleLink.tsx",
-        "action": "edit",
-        "change": "onSelect's payload at :52 becomes ids.map(id => linkScheduleUpdate(id, scheduleId)), replacing ids.map(id => ({ id, schedule: scheduleId })). This — not the hook's onBatchLinkSchedule, which only opens this modal — is the production LINK write the QA script drives in steps 9 and 13.",
-        "why": "A relink is where a stale stamp from another schedule does its damage; without this the fix covers unlinking but not relinking."
-      },
-      {
-        "path": "packages/desktop-client/src/components/schedules/ScheduleEditModal.tsx",
-        "action": "edit",
-        "change": "onLinkTransactions (declared :181, payload key :185) and onUnlinkTransactions (declared :191, payload :193) route through the builders. KEEP onLinkTransactions' existing `scheduleId?: string` declaration and add an explicit `if (scheduleId == null) return;` guard at the top of the body rather than narrowing it — both callers pass a real id (:148 passes the created schedule's res.data after a null check, ScheduleEditForm.tsx:544 passes schedule.id), so no other file's types change.",
-        "why": "The Schedules page reaches the same write through its own copy of the pair; changing the register alone would leave the schedule page able to reproduce the bug (QA step 10)."
-      },
-      {
-        "path": "packages/desktop-client/src/components/mobile/schedules/MobileScheduleEditPage.tsx",
-        "action": "edit",
-        "change": "Same two edits: onLinkTransactions declared at :139 with its payload key at :143, onUnlinkTransactions declared at :149 with its payload at :151 — a genuine third copy of the pair, defined in this file, not a re-export. Apply the same `if (scheduleId == null) return;` guard instead of narrowing; its one caller (:122) passes the created schedule's id.",
-        "why": "Leaving the mobile page out makes the fix desktop-only."
-      },
-      {
-        "path": "packages/desktop-client/src/components/schedules/DiscoverSchedules.tsx",
-        "action": "edit",
-        "change": "onCreate's transactions-batch-update payload (:185-190, schedule key at :187) becomes transactions.map(t => linkScheduleUpdate(t.id, scheduleId)), replacing transactions.map(t => ({ id: t.id, schedule: scheduleId })). scheduleId comes from `send('schedule/create')` at :169 and is a real string, so no guard is needed.",
-        "why": "The seventh production link write, excluded by two earlier plans on a wrong reading. find-schedules.ts:29 only filters schedule: null and never writes a link; this is the real site, and the one where a stale stamp is guaranteed to survive into a fresh link because its matcher selects exactly the schedule: null rows the unlink defect leaves behind."
-      },
-      {
-        "path": "packages/loot-core/src/server/transactions/transfer.ts",
-        "action": "edit",
-        "change": "Derive const matchedOccurrence = matchedSchedule === transaction.schedule ? transaction.schedule_occurrence : undefined next to matchedSchedule (:73) and use it in both writes: in the mirror-insert override object AFTER the ...transferTransaction spread alongside schedule (the literal at :61-71 already carries schedule_occurrence and would otherwise win), and as an explicit ?? null on the main-leg update (:82-86) — load-bearing, because convertForUpdate passes no options so a dropped key never reaches update()'s Object.keys(params) loop and the column would PRESERVE the old stamp. Separately reword the comment at :133-136 to the real contract.",
-        "why": "The last server path that can write the two fields apart, and it writes the schedule twice — once onto the mirror it is inserting and once back onto the main leg."
-      },
-      {
-        "path": "packages/loot-core/src/server/transactions/transfer.test.ts",
-        "action": "edit",
-        "change": "Do NOT delete 'clears the mirror stamp when the schedule link is removed' (:361-388). Keep it and relabel it a GUARD: its payload is built from a full-row read and calls transfer.onUpdate directly, bypassing batchUpdateTransactions, so no production caller constructs it and it passes before and after — but it is the only coverage of onUpdate propagating an explicit null to the mirror. Add two cases: (a) a GUARD driven through batchUpdateTransactions with the pre-fix payload { id, schedule: null }, asserting BOTH legs come back still stamped; (b) a DISCRIMINATING case where a directly-created rule with a link-schedule action relinks the main leg during addTransfer, asserting both legs end at schedule-2 with a NULL occurrence. Assert in the right form: off a db.all row schedule_occurrence is the raw INTEGER (20170101), off db.getTransaction a 'YYYY-MM-DD' string.",
-        "why": "The previous draft deleted this for being vacuous while keeping other equally vacuous cases as guards. That inconsistency loses onUpdate's null-propagation coverage to fix a labelling problem a comment solves."
-      },
-      {
-        "path": "packages/loot-core/src/shared/schedules.test.ts",
-        "action": "edit",
-        "change": "In the getHasTransactionsQuery describe block add one case, labelled a GUARD and scoped to what it proves: a row linked to a schedule with a stale occurrence for a DIFFERENT date matches neither arm, while the same row with a null occurrence and an in-window date does. Explicitly NOT the evidence for the due-to-paid criterion — the query is unmodified by this fix, so the case passes before and after by construction.",
-        "why": "Pins the direction the browser signal comes from, without dressing a guard up as a proof."
-      },
-      {
-        "path": "upcoming-release-notes/fix-stale-schedule-occurrence-stamp.md",
-        "action": "create",
-        "change": "A Bugfixes release note in the shape of the sibling upcoming-release-notes/fix-schedule-occurrence-consumption.md. Say that unlinking or relinking a scheduled transaction now clears its occurrence stamp together with the link. Set the authors field to whoever is actually landing the PR — the sibling's [Shivam-Fl] is not derived from this issue.",
-        "why": "User-visible: this changes what the Schedules page status cell reads after an unlink or relink."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/desktop-client/src/util/schedule-actions.test.ts",
-        "action": "create",
-        "cases": [
-          "linkScheduleUpdate('t1', 'schedule-1') deep-equals { id: 't1', schedule: 'schedule-1', schedule_occurrence: null } using toStrictEqual — toMatchObject must not be used, because an object with schedule_occurrence ABSENT satisfies it and would pass this defect straight through",
-          "unlinkScheduleUpdate('t1') deep-equals { id: 't1', schedule: null, schedule_occurrence: null } with toStrictEqual",
-          "both builders return an object that own-property-includes 'schedule_occurrence', so a refactor to a spread that drops the key fails loudly"
-        ]
-      },
-      {
-        "path": "packages/desktop-client/src/hooks/useTransactionBatchActions.test.ts",
-        "action": "create",
-        "cases": [
-          "renderHook over useTransactionBatchActions wrapped in TestProviders, with vi.mock of @actual-app/core/platform/client/connection exposing send: vi.fn() — the shape of the existing usePreviewTransactions.test.ts",
-          "calling onBatchUnlinkSchedule({ ids: ['t1','t2'] }) sends transactions-batch-update whose updated is exactly [{ id: 't1', schedule: null, schedule_occurrence: null }, { id: 't2', schedule: null, schedule_occurrence: null }], asserted with toStrictEqual on the payload",
-          "the same call invokes onSuccess with ['t1','t2']",
-          "this test observes the literal bytes the register sends rather than the builder in isolation, so it survives someone routing the hook around the builder"
-        ]
-      },
-      {
-        "path": "packages/loot-core/src/server/transactions/transfer.test.ts",
-        "action": "edit",
-        "cases": [
-          "DISCRIMINATING: a directly-created rule carrying a link-schedule action relinks the main leg during addTransfer; BOTH legs must end at schedule-2 with a NULL schedule_occurrence. Fails on unfixed code, and fails on an insert-only Fix 2",
-          "GUARD: batchUpdateTransactions driven with the pre-fix payload { id, schedule: null } leaves BOTH legs stamped — labelled as passing before and after, because the server re-reads full rows and cannot infer intent",
-          "GUARD (relabelled, not deleted): 'clears the mirror stamp when the schedule link is removed' still passes unchanged, its comment now saying it is a guard whose payload no production caller constructs",
-          "existing 'gives the mirror leg the schedule and stamp of its main leg' still passes — the stamp still rides along when the rule does NOT relink",
-          "existing 'keeps the mirror stamp when the main leg is updated' still passes, unchanged"
-        ]
-      },
-      {
-        "path": "packages/loot-core/src/shared/schedules.test.ts",
-        "action": "edit",
-        "cases": [
-          "GUARD: a row linked to a schedule carrying a stale occurrence for a DIFFERENT date matches neither arm of getHasTransactionsQuery, while the same row with a null occurrence and an in-window date does. The comment states it is a no-regression guard on the query and not evidence for the due-to-paid criterion, since the query is not modified by this fix"
-        ]
-      }
-    ],
-    "acceptance": [
-      {
-        "id": "AC-1",
-        "check": "Relinking a payment to a different schedule no longer marks that schedule Paid on the strength of the old schedule's occurrence stamp, when the payment's own date falls outside the new schedule's match window.",
-        "how_to_verify": "qa_script steps 1-9; the discriminating read is QA Sch B's status cell. DERIVATION: B is created through the Schedules page with Repeats OFF, so its date condition's op is 'isapprox', not 'is' — ScheduleEditModal.tsx:76 seeds the initial condition as isapprox and schedule-edit-utils.ts:49 calls updateCond(conds.date, 'isapprox', 'date', fields.date), updateCond returns { ...cond, value } for an existing cond (:28-30) so the seeded op is preserved — and posts_transaction is seeded false (:75). getScheduleOccurrenceMatchStartDate (shared/schedules.ts:90-102) therefore falls through both early returns and returns subDays(B.next_date, 2) = today+3, NOT the occurrence date. Before the fix the surviving stamp equals B.next_date (today+5), so arm 1 (:206) matches and B reads Paid; after, the stamp is null and arm 2 (:208-219) requires date >= today+3, which a payment dated today fails. The arithmetic is restated inline in qa_script steps 3 and 4 because the previous round got it wrong ('the occurrence date itself') and a tester reading only 'Repeats OFF' cannot tell which op the rule carries. Do not try to read schedule_occurrence off the transaction — it is rendered nowhere in the product.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-2",
-        "check": "The batch unlink action clears the occurrence stamp together with the schedule link, so a later relink cannot pair a stale stamp with a new schedule.",
-        "how_to_verify": "Two CI tests, both in desktop-client and both discriminating: schedule-actions.test.ts asserts unlinkScheduleUpdate deep-equals the pair with toStrictEqual, and useTransactionBatchActions.test.ts drives the real hook with a mocked send and asserts the literal payload. The loot-core guard is explicitly NOT offered as evidence — driven with { id, schedule: null } it passes before and after, because Fix 1 changes no server code, which is precisely why the proof must live on the sender. Scope limit worth stating plainly: the QA finding's 'both legs' claim is verified only by the loot-core transfer tests, because the product renders no stamp and no browser step can read one.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-3",
-        "check": "Every production link/unlink write carries the stamp — all seven sites — so no surface can leave a row stamped for a schedule it is not linked to.",
-        "how_to_verify": "One CI test observes all seven at once: schedule-actions.test.ts asserts the two builders' payloads and all seven sites call them. Coverage broken out here rather than hidden in unknowns: the register hook is additionally covered end-to-end by the renderHook test; DiscoverSchedules is covered by NEITHER a browser step NOR a component-render test (its input is server-side pattern matching over descriptions) and is covered only because it calls the same tested builder; the mobile schedule edit page is changed but exercised by no automated test and only by qa_script step 12. The mobile transaction list is NOT a separate site — TransactionListItem.tsx:135/422 is a destructuring read, and that surface routes through the shared hook.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-4",
-        "check": "A payment that legitimately falls inside a newly linked schedule's match window is no longer blocked from discharging that occurrence by a stale stamp left over from another schedule — the due to paid direction.",
-        "how_to_verify": "qa_script step 13, and it is DISCRIMINATING in the direction this criterion claims. Follow steps 1-12 first, then unlink the QA Payee A row from QA Sch B and link it to QA Sch C instead. C is created Repeats OFF dated TOMORROW, so its match window is subDays(today+1, 2) = today-1 and the payment dated today satisfies today >= today-1 with a day of margin — deliberately not a boundary-exact $gte. Before the fix the surviving stamp (today+5, A's occurrence) matches neither arm for C: it is not C.next_date (today+1), so arm 1 fails, and it is not null, so arm 2 is blocked — C reads not-Paid. After the fix the stamp is null and arm 2 matches on the date, so C reads Paid. Verified as 'browser' rather than 'test', because the due-to-paid direction is computed by getHasTransactionsQuery, which this fix does not modify — no CI test can witness the fix's effect on a status cell. The schedules.test.ts case is retained as a no-regression guard on the query ONLY and is explicitly not this criterion's evidence. If C does not flip, suspect the derivation — and re-check the op assertion in step 4 first — before concluding the fix is broken.",
-        "verify": "browser"
-      },
-      {
-        "id": "AC-5",
-        "check": "When a schedule rule relinks a transfer during addTransfer, BOTH legs end up linked to the new schedule with a NULL schedule_occurrence — the main leg as well as the mirror, with the main-leg write sending an explicit null because a dropped key would preserve the old value.",
-        "how_to_verify": "The relink case in transfer.test.ts, which IS discriminating. The fixture is resolved, not hypothetical: getRuleIdFromScheduleId (server/transactions/transaction-rules.ts:293-301) returns row?.rule || null, so a main leg whose schedule id has no row in the schedules table leaves scheduleRuleID === '' and runRules' else path evaluates every rule. Precedent for driving a rule with a link-schedule action directly via updateRule is schedules/app.test.ts:195-209. Not executed in this checkout (node_modules is absent), so the implementer may need to widen the rule's conditions before it fires; if it will not fire, that is a fixture problem to solve, not a reason to weaken the assertion.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-6",
-        "check": "The existing transfer, merge and schedule-stamp tests still pass, and the transfer partial-update comment describes the real contract rather than a hazard no production caller can produce.",
-        "how_to_verify": "yarn workspace @actual-app/core run test:node src/server/transactions src/shared/schedules.test.ts, then yarn workspace @actual-app/web test, and confirm both green. Read green as 'nothing regressed', not 'the fix works': only three CI cases discriminate, and every case labelled GUARD passes with the whole fix reverted. Also run yarn typecheck — it is the check that would catch the guard-vs-narrow choice in ScheduleEditModal and MobileScheduleEditPage being wrong, and it is the reason ScheduleEditForm.tsx is absent from files[].",
-        "verify": "test"
-      },
-      {
-        "id": "AC-7",
-        "check": "The PR is titled with the mandatory [AI] prefix and a release note exists for the user-visible schedule-status change.",
-        "how_to_verify": "gh pr view --json title returns a title starting with '[AI]'; upcoming-release-notes/fix-stale-schedule-occurrence-stamp.md exists with category Bugfixes and an authors field naming whoever lands the PR. PR #33's title cannot be fixed — it is merged — so the rule carries forward against this PR.",
-        "verify": "api"
-      }
-    ],
-    "qa_script": [
-      "Open the app and click 'View demo' to load a synthetic budget.",
-      "Go to Schedules and add 'QA Sch A' — payee 'QA Payee A', account HSBC, 44.00, Repeats ON, starting 5 days from today.",
-      "Add 'QA Sch B' — payee 'QA Payee B', same account, same amount, Repeats OFF, date set to the SAME day as QA Sch A's next occurrence (5 days out). BEFORE MOVING ON, open QA Sch B's rule (Edit rule) and ASSERT its date condition reads `date is approx <date>` — NOT `date is <date>`. If it reads `is`, STOP: the derivation this step depends on does not hold. The shared occurrence date is the other half of the point: it is what makes the stale stamp equal B.next_date, which is what makes step 9 discriminate. Arithmetic to check against the rule in front of you: op 'isapprox' + posts_transaction OFF means getScheduleOccurrenceMatchStartDate falls through to subDays(next_date, 2), so B's window starts at today+3 — not at today+5.",
-      "Add 'QA Sch C' — payee 'QA Payee C', same account, same amount, Repeats OFF, date set to TOMORROW. Apply the SAME assertion as step 3: open C's rule and confirm it reads `date is approx <tomorrow>`, not `date is <tomorrow>`; if it reads `is`, stop. C is used only by step 13. Its match window is occurrence-minus-2-days = today-1, so the payment dated today falls inside it with a day of margin. Under op `is` the window would instead be today+1, the payment dated today would fall OUTSIDE it, and step 13 would flip in the opposite direction and prove nothing.",
-      "Right-click QA Sch A and choose 'Post transaction today'. QA Sch A must now read Paid — paying an occurrence early is legitimate. The created row is dated TODAY but stamped with the occurrence 5 days out; that gap is the whole mechanism and every later step depends on this row never being re-dated.",
-      "Go to the HSBC register and find the QA Payee A row.",
-      "Hover the row, tick its select checkbox, click the '1 transactions' button and choose 'Unlink schedule'.",
-      "Return to Schedules: QA Sch A must read Upcoming again. This passes today too — it confirms the unlink landed, it does not detect the bug.",
-      "Back in the HSBC register, select the same row, choose 'Link schedule', pick QA Sch B. Return to Schedules and read QA Sch B's status cell. THIS IS THE DISCRIMINATING STEP for AC-1: before the fix it reads Paid — a schedule marked paid by another schedule's occurrence on a payment dated five days before it was due, because the surviving stamp today+5 equals B.next_date and arm 1 matches. After the fix the stamp is null, so only arm 2 can match and it requires date >= today+3, which a payment dated today fails. B must NOT read Paid. If B still reads Paid, first re-check the step 3 op assertion, then treat the fix as broken.",
-      "Confirm QA Sch A still reads Upcoming and that no unrelated schedule changed status.",
-      "Repeat steps 7-9 from the Schedules page instead of the register: open QA Sch A's edit page, select the transaction under 'Linked transactions', choose 'Unlink from schedule', then relink it to QA Sch B. B must again not read Paid. This covers the ScheduleEditModal site.",
-      "Repeat the unlink-and-relink from the mobile schedule page (narrow the viewport or use device emulation) to cover the third copy of the pair. The row must end linked to QA Sch B with no stamp.",
-      "With the QA Payee A row still linked to QA Sch B, unlink it from QA Sch B and then link it to QA Sch C — the row context action only offers 'Link schedule' while the row is unlinked, so both halves are required. QA Sch C MUST now read Paid. Why it reads Paid here and not in step 9: C's window starts at today-1 and the payment dated today is inside it, whereas B's window starts at today+3 and the same payment is outside it. Why this step discriminates: before the fix the surviving stamp (today+5) is neither C.next_date (today+1) nor null, so both arms fail and C reads not-Paid; after the fix the cleared stamp lets the date arm match and C reads Paid. This is the due to paid direction (AC-4).",
-      "Confirm no console errors."
-    ],
-    "risks": [
-      "The fix clears the stamp on every relink, including a relink back to the schedule the row was already stamped for. Invisible whenever the payment's date is inside the new schedule's match window, but a payment dated more than 2 days before a recurring occurrence — or any date before a one-time schedule's date minus 2 days — loses its match on relink. QA step 13 probes the ordinary in-window case; the out-of-window case is the review risk and is deliberately untested.",
-      "The fix moves schedules from Due to Paid where a stale stamp was suppressing a legitimate match (AC-4). Correct, but the shape most likely to be mistaken for a regression, so it has its own criterion rather than being buried.",
-      "Both status-cell flips are derived from getScheduleOccurrenceMatchStartDate's fallback branch and from getHasTransactionsQuery's two arms. The derivation was re-checked at every link, but nothing has been executed — node_modules is absent, so no test has run and the app has never started. The op assertion now in qa_script steps 3 and 4 exists because of exactly this class of failure: the previous round's derivation was wrong about the op and only review caught it. If a status cell does not flip as derived, check the rule's op before suspecting the fix.",
-      "The addTransfer fix is justified by the invariant and the verified insert/update asymmetry, not by a reproduction, and its production reachability is unproven: no UI-authored rule can set a schedule. If both writes are dead code in practice, Fix 2 is harmless but untested in production, at a cost of two lines.",
-      "Adding two exports to util/schedule-actions.ts means the new unit test imports a module that also pulls in the connection and query layers. If that bites in vitest, move the builders to a leaf module rather than mocking more of the tree.",
-      "The DiscoverSchedules site has no browser coverage and cannot get any: its input is server-side pattern matching over descriptions, not stageable by hand in a synthetic budget.",
-      "The mobile schedule edit page's link/unlink is changed but exercised by no automated test and only lightly in the QA script, which needs a narrow viewport to reach it at all."
-    ],
-    "out_of_scope": [
-      "A migration clearing schedule_occurrence on rows already in the corrupt state. Nothing repairs them, so a stale stamp on an existing row can still suppress a legitimate occurrence match. Deferred deliberately: a data migration over user money rows with its own sync and undo surface, and no browser step can verify it. First entry in residual_risks.",
-      "@actual-app/api's updateTransaction surface, which can build the same stale-stamp diff because it diffs from a full-row read (api.ts:597). Not reachable from the UI.",
-      "Renaming PR #33, whose title lacked the mandatory [AI] prefix. That PR is merged, so there is no title left to fix; the rule is carried forward as AC-7 against this PR.",
-      "Any change to getHasTransactionsQuery. Its two-arm shape is what makes the defect silent and what makes this fix's effect conditional on the payment's date.",
-      "merge.ts, which writes schedule and schedule_occurrence together from one source (scheduleSource at merge.ts:173-186) and therefore cannot desync. Verified, not assumed.",
-      "Server-side enforcement in batchUpdateTransactions (clear the stamp when the link changes). Rejected on the merits, not deferred: the full-row re-read at index.ts:130-138 means the rule needs an extra read and guesses at intent on paths that legitimately send a full row.",
-      "ScheduleEditForm.tsx. The previous version carried it as a contingency to be edited 'only if typecheck requires it'. It does not require it, and the file is dropped rather than carried: ScheduleEditForm.tsx:99's `(ids: string[], scheduleId?: string) => Promise<void>` prop type accepts the unchanged optional signature both producers keep, so no edit is needed anywhere."
-    ],
-    "evidence": [
-      "packages/loot-core/src/server/aql/schema-helpers.ts:134-144 — conform() drops a key only when obj[field] === undefined, and skips nulls only when skipNull is set. convertForInsert (:184) passes { skipNull: true } and applies column defaults first (:162-180); convertForUpdate (:187-195) passes no options. VERIFIED BY READING.",
-      "packages/loot-core/src/server/db/index.ts:209-227 — update() emits one sync message per Object.keys(params).filter(k => k !== 'id'), so a key dropped by conform is never written and the column keeps its old value. VERIFIED BY READING.",
-      "packages/loot-core/migrations/1790969762045_add_schedule_occurrence_to_transactions.sql:2 — `ALTER TABLE transactions ADD COLUMN schedule_occurrence INTEGER DEFAULT NULL`. This is why an omitted field on INSERT lands on NULL rather than erroring. VERIFIED BY READING.",
-      "packages/loot-core/src/server/transactions/index.ts:130-138 — batchUpdateTransactions re-reads every changed row in full via getTransactionsByIds before transfer logic runs, so the server cannot distinguish an intentional stamp from an omitted one. VERIFIED BY READING.",
-      "packages/loot-core/src/server/transactions/transfer.ts:61-86 — the literal carries `schedule_occurrence: transaction.schedule_occurrence`; runRules is destructured at :72 and matchedSchedule = schedule ?? transaction.schedule at :73; the mirror insert at :75-80 overrides only schedule; a SECOND write at :82-86 puts ...(matchedSchedule ? { schedule: matchedSchedule } : {}) onto the MAIN leg. Neither derives the stamp, and the literal's value wins unless the override comes after the spread. VERIFIED BY READING.",
-      "All seven client write sites read at their lines, grepped in this checkout: useTransactionBatchActions.ts:436, ScheduleLink.tsx:52, ScheduleEditModal.tsx:185 and :193, MobileScheduleEditPage.tsx:143 and :151, DiscoverSchedules.tsx:187. A grep for `schedule_occurrence` across packages/desktop-client/src returns only test files (usePreviewTransactions.test.ts, useSchedules.test.ts) and no production write site at all — which is the whole defect in one line of evidence. VERIFIED BY GREP AND READING.",
-      "packages/desktop-client/src/components/mobile/transactions/TransactionListItem.tsx:135 and :422 — `const { id, schedule: scheduleId } = transaction;` is a destructuring rename, a read, not an eighth write site. This is what makes the seven exhaustive. VERIFIED BY READING.",
-      "packages/loot-core/src/server/schedules/find-schedules.ts:29 only filters schedule: null while matching candidates and never writes a link — which is why DiscoverSchedules' client-side write (DiscoverSchedules.tsx:187, not find-schedules) is the real seventh site that two earlier plans excluded on a wrong reading. VERIFIED BY READING.",
-      "packages/loot-core/src/shared/schedules.ts:90-102 and :194-222 — getScheduleOccurrenceMatchStartDate returns occurrenceDate for op 'is' or posts_transaction, else subDays(occurrenceDate, 2); getHasTransactionsQuery ORs `schedule_occurrence: schedule.next_date` (:206) against `$and: [{schedule_occurrence: null}, {date: {$gte: matchStartDate}}]` (:208-219). Every status-cell read in the QA script and both AC derivations come from these two arms. VERIFIED BY READING.",
-      "packages/desktop-client/src/components/schedules/ScheduleEditModal.tsx:74-76 seeds `posts_transaction: false` and `_conditions: [{ op: 'isapprox', field: 'date', value: date }]`; schedule-edit-utils.ts:49 calls updateCond(conds.date, 'isapprox', 'date', fields.date) and updateCond returns `{ ...cond, value }` for an existing cond (:28-30), preserving its op. So a Schedules-page one-time schedule carries op 'isapprox', NOT 'is'. This is the fact the previous round got wrong in both AC-1's derivation and the rejected step 13, and the reason qa_script steps 3 and 4 now assert the op out loud. VERIFIED BY READING.",
-      "packages/loot-core/src/server/schedules/app.ts:600-609 — postTransactionForSchedule builds `date: today ? currentDay() : (date ?? schedule.next_date)` and `schedule_occurrence: occurrence`, so 'Post transaction today' dates the payment today while stamping it 5 days out. VERIFIED BY READING. SchedulesTable.tsx:180 confirms the menu item exists.",
-      "packages/loot-core/src/server/transactions/transfer.test.ts:361-388 — 'clears the mirror stamp when the schedule link is removed' builds {...payload, schedule: null, schedule_occurrence: null} from a full-row read (payload = await db.getTransaction(transaction.id) at :375) and calls transfer.onUpdate directly, bypassing batchUpdateTransactions. No production caller constructs that payload, so it passes before and after — but it is the only coverage of onUpdate propagating an explicit null to the mirror. VERIFIED BY READING.",
-      "RESOLVED BY RUNNING A COMPILER: packages/desktop-client/tsconfig.json:8 sets \"strict\": false while the root tsconfig.json:22 sets \"strictFunctionTypes\": true. The previous draft concluded from this that narrowing onLinkTransactions assigns fine, and carried ScheduleEditForm.tsx as a contingency. I built the same shape in isolation and ran tsc against it. The assignment compiles clean under `strictFunctionTypes: true, strict: false` — but the real reason is that `strict: false` also disables strictNullChecks, which is what makes `string | undefined` distinct from `string`; with it off, the optional and required signatures are the same type. The CONCLUSION (no ScheduleEditForm edit) holds, but the stated REASON was wrong: `strict: false` does not unset an explicitly-set `strictFunctionTypes`. The work order therefore does not rely on the flag at all — both producers keep their existing `scheduleId?: string` declarations and add a local null guard, so no other file's types change. ScheduleEditForm.tsx is dropped from files[] rather than carried as a contingency.",
-      "All five touched desktop-client component files carry `// @ts-strict-ignore` at line 1, so the typescript-strict-plugin does not apply strict checking to them. util/schedule-actions.ts does NOT carry it, so the two new builders there are type-strict by default. VERIFIED BY READING.",
-      "packages/loot-core/src/server/transactions/transaction-rules.ts:293-301 — getRuleIdFromScheduleId returns row?.rule || null, so a main leg whose schedule id has no schedules row leaves scheduleRuleID === '' and runRules evaluates every rule. This makes the AC-5 fixture constructible; schedules/app.test.ts:195-209 is the precedent for driving a link-schedule action directly via updateRule. VERIFIED BY READING.",
-      "packages/desktop-client/vite.config.mts:405-409 — vitest include is src/**/*.{test,spec}.?(c|m)[jt]s?(x), environment jsdom, so both new test files are picked up by yarn workspace @actual-app/web test; loot-core exposes test:node. upcoming-release-notes/fix-schedule-occurrence-consumption.md confirms the release-note frontmatter shape. VERIFIED BY READING.",
-      "The issue body (gh issue view 38) has NO '## Acceptance (from the split)' section and contains no IAC-n or TR-n identifier anywhere, and the ledger's origin/sdlc-state:state/38.json has an empty acceptance array. There is therefore no split criterion to satisfy or defer, and no source id to cite — acceptance[] carries no source values. Earlier versions carried source: IAC-1 through IAC-7 on all seven criteria; those are fabricated and are dropped.",
-      "node_modules is absent from this checkout, confirming that no test described in this plan has ever been executed.",
-      "The ledger records the route as plan -> implement -> review -> qa, with no debug stage, although config.yml sets route_bugs_to_debugger: true. I checked whether to request one and concluded no: the defect carries a measured in-browser reproduction from the QA run that filed it, plus a probe of the production payload shape in the review that found it. I also did not request review: it is already on the route, and this change touches a shared write helper plus a server write path."
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Restage the rejected step 13 exactly as its two suggested branches: either post QA Sch B's OWN occurrence and confirm B reads Paid, or create a fresh register transaction dated on/after B's date and link that to B.",
-        "rejected_because": "Both are non-discriminating, which is the point the rejection made. Posting B's own occurrence writes schedule and schedule_occurrence together through the server's own postTransactionForSchedule, which no client fix touches, so it reads Paid before and after. Linking a fresh in-window transaction never had a stamp, so the unlink defect cannot manifest. Either would have satisfied the objection's letter — a step that is TRUE on fixed code — while leaving the criterion with a guard that proves nothing. The third schedule is strictly better: it reuses the row that actually carries the stale stamp and puts it inside a window that genuinely contains the payment's date."
-      },
-      {
-        "approach": "Satisfy the recorded rejection by asserting the op only in prose in AC-1's how_to_verify, as the previous round already did, and leave qa_script steps 3 and 4 describing the schedules only as 'Repeats OFF, date set to <date>'.",
-        "rejected_because": "This is precisely what the rejection named as the defect. AC-1 is the criterion's support and qa_script is what the floor QA suite is generated from; a QA agent reading 'Repeats OFF' cannot confirm the op, and if the default ever changes the two status-cell flips silently stop discriminating and pass for the wrong reason. The assertion has to sit in the step the tester executes."
-      },
-      {
-        "approach": "Keep the due-to-paid criterion at verify: 'test' and scope it explicitly to what the schedules.test.ts guard proves, as the rejection's second branch allows.",
-        "rejected_because": "It is honest but it drops the criterion's only behavioural evidence, leaving 'the fix does not over-clear a legitimate match' asserted by nothing but a case that passes with the whole fix reverted. Since the discriminating browser step turned out to be constructible, scoping down gives up more than the rejection required. The guard is retained, relabelled and explicitly marked as not that criterion's evidence."
-      },
-      {
-        "approach": "Enforce the invariant server-side in batchUpdateTransactions: when an update changes schedule, null the stamp unless the payload mentions it.",
-        "rejected_because": "It needs a read of each row's current schedule to tell a real link change from a no-op re-send, adding a query to a hot path, and guesses at intent on paths (api.updateTransaction, sync imports) that legitimately send a full row. The callers are few, enumerable, and verified as exactly seven. If a future caller appears that cannot be enumerated, this becomes the right fix."
-      },
-      {
-        "approach": "Keep the payload literals at each of the seven sites and add the field inline in each, with no shared builder.",
-        "rejected_because": "It fixes today's seven sites but leaves the cause in place — seven duplicated one-field literals — and leaves the all-sites criterion unprovable, since no test could observe all seven payloads."
-      },
-      {
-        "approach": "Narrow onLinkTransactions in ScheduleEditModal and MobileScheduleEditPage to `scheduleId: string` and narrow ScheduleEditForm.tsx:99's prop type to match, as an unconditional three-file change.",
-        "rejected_because": "It makes every consumer of the prop type part of the change for no gain. The two producers' only callers already pass a real id, so a local `if (scheduleId == null) return;` guard is equivalent at runtime and leaves the public prop type — and every consumer — untouched. It also removes the type-level question the previous round left as a contingency, which is what let me drop a file from the change on evidence rather than on a guess."
-      },
-      {
-        "approach": "Keep the loot-core batch-unlink test driven with the pre-fix payload { id, schedule: null } and let it carry the unlink criterion as the regression witness.",
-        "rejected_because": "True but not load-bearing. Fix 1 changes no server code, so a hand-written payload produces identical results before and after — the assertion can never distinguish fixed from unfixed. Kept as a labelled GUARD; the proof has to live on the sender, and a loot-core test cannot drive a desktop-client payload."
-      },
-      {
-        "approach": "Drop the clearing change entirely and close the ticket on the documentation, comment and test-honesty fixes only.",
-        "rejected_because": "It leaves a reproduced defect in the product — both legs keep a stamp for a schedule they are no longer linked to — and closes the ticket on it."
-      },
-      {
-        "approach": "For the addTransfer hazard, stop runRules from reassigning the schedule on a mirror at all.",
-        "rejected_because": "It changes rule semantics for every mirrored transaction — a rule that legitimately relinks the other account's row would stop working — a wider behaviour change than dropping a stamp that no longer applies."
-      },
-      {
-        "approach": "Also rewrite getHasTransactionsQuery so a stale stamp cannot suppress a legitimate match.",
-        "rejected_because": "It would make the fix unconditional, but it discards the stamp's purpose: a re-dated payment must keep discharging the occurrence it was posted for. Matching on date alone would re-break that."
-      },
-      {
-        "approach": "Delete transfer.test.ts:361 as the misleading proof it is.",
-        "rejected_because": "Rejected in favour of relabelling. It is vacuous, but so are the guards kept elsewhere, and deleting on one ticket's scope drops the only coverage of onUpdate propagating an explicit null to the mirror."
-      }
-    ],
-    "assumptions": [
-      "The seven write sites are the complete set of production link/unlink writers, verified by grep plus reading each hit: TransactionListItem.tsx:135/422 is a destructuring read, usePreviewTransactions.ts:123/:132 are previews, useScheduleEdit.ts:24/:255 is a reducer's initial state, ScheduleEditForm.tsx:99 is a prop type, and ScheduleEditModal.tsx:127 / MobileScheduleEditPage.tsx:101 are schedule literals in an edit-state seed.",
-      "schedule_occurrence off a db.all row is the raw INTEGER and off db.getTransaction a 'YYYY-MM-DD' string; new tests must insert and assert in the right form. The column is INTEGER DEFAULT NULL.",
-      "api.updateTransaction is NOT changed by this order; the stale diff it can build is a separate surface, filed as a residual risk rather than assumed safe.",
-      "The builders live in the existing util/schedule-actions.ts because it is already desktop-client's schedule-helper home; no new module is introduced unless the unit test's import proves impractical.",
-      "QA Sch C's date arithmetic assumes the demo budget, monthUtils.currentDay() and the DateSelect all work in the local timezone, so that 'tomorrow' is unambiguous."
-    ],
-    "unknowns": [
-      "Whether any user's existing budget already holds rows in the corrupt state. Nothing reads such rows defensively, so this change stops new corruption but does not repair old rows, and an existing stale stamp can still suppress a legitimate occurrence match. A migration would be the follow-up ticket.",
-      "Whether the addTransfer relink fixture fires as derived. getRuleIdFromScheduleId and runRules' else path make it reachable in principle and app.test.ts:195-209 shows the link-schedule action can be driven directly, but the exact conditions that match the mirror have not been run and may need widening.",
-      "Whether relinking a row a user deliberately stamped is a flow the product intends to support. Fix 1 clears the stamp on every relink; it is invisible whenever the payment's date is inside the new schedule's window, but intent could not be determined from the code.",
-      "The exact browser selectors for the Link schedule modal, the Schedules page's Unlink action, and the Edit rule modal the op assertion needs. They are not in .sdlc/memory/qa/selectors.md. The QA script is written by visible text and may need a retry; the op assertion is read from the rule condition the Edit rule modal renders as `date is approx <date>` (util/rule.ts:89 supplies the 'is approx' label).",
-      "Whether importing util/schedule-actions.ts in a unit test drags in the connection/query layers in a way that needs mocking. The builders are pure; the module is not.",
-      "Whether the mobile schedule edit page is reachable in QA without a narrow viewport or device emulation."
-    ],
-    "debate_summary": "There was no council to arbitrate. plan/critique.json is {} — the critic wrote nothing — and plan/proposal.json does not exist at all, so the proposer wrote nothing either. The only prior judgement is the recorded rejection of the earlier draft, whose single objection concerned qa_script step 13. I am reporting that plainly rather than implying a consensus nobody reached. Because nobody had attacked the plan, I re-derived its load-bearing claims from the source myself rather than accepting them: conform()'s insert/update asymmetry, db.update()'s per-key emission, all seven client write sites (a grep for `schedule_occurrence` across desktop-client/src returns test files only — no production write site exists, which is the defect in one line), transfer.ts's literal-plus-two-writes shape, getHasTransactionsQuery's two arms, getScheduleOccurrenceMatchStartDate's fallback, the isapprox seeding preserved by updateCond, and postTransactionForSchedule's `date: today ? currentDay()`. All held.\n\nWhat I changed. First and most important, I applied the recorded rejection, which was correct and had not been fully honoured. The previous round verified the isapprox chain in prose inside AC-1 and then left qa_script steps 3 and 4 describing the schedules only as 'Repeats OFF, date set to <date>'. Since qa_script is what the floor QA suite is generated from, a tester could not confirm the op, and under op `is` both status-cell flips would silently stop discriminating and pass for the wrong reason. Both steps now instruct the tester to open the schedule's rule and assert it reads `date is approx <date>` — not `date is <date>` — and to stop if it reads `is`; both carry their matchStartDate arithmetic restated inline. That is the rejection's required fix, applied where it asked for it rather than where it would have been easiest.\n\nSecond, I dropped ScheduleEditForm.tsx from the change. The previous round carried it as a contingency to be edited 'only if yarn typecheck requires it', which is a coin-flip, and it rested that coin on a misreading: it concluded that `strict: false` in desktop-client unsets the root's explicitly-set `strictFunctionTypes: true`. It does not — an explicitly-set flag survives a `strict` shorthand in either direction. I built the repo's exact shape in isolation and ran a real compiler against it. The conclusion survives anyway, but for a different reason: `strict: false` also disables strictNullChecks, which is what makes `string | undefined` distinct from `string`, so the optional and required signatures are the same type either way. Rather than leave the plan resting on a conclusion whose stated mechanism I had just shown to be wrong, I removed the dependency — both producers keep their existing `scheduleId?: string` declaration and add a local null guard, so no consumer's types change and the file leaves the PR. A file removed on evidence rather than carried as a hedge.\n\nThird, I corrected the line numbers the previous round claimed to have corrected: it announced that MobileScheduleEditPage's pair 'sits at :139/:149, not :143/:151 as v4 stated', but :139 and :149 are the two function declarations and :143 and :151 the two payload lines — both v4's and its own citation were right about different things, and there was no mis-citation to correct. The work order names both pairs so no implementer has to guess.\n\nWhat I did not change. I kept the relabelling of transfer.test.ts:361 rather than deletion — no production caller constructs its payload, and it is the only coverage of onUpdate propagating an explicit null to the mirror. I kept the addTransfer fix even though its production reachability is unproven (no UI-authored rule can set a schedule, so both writes may be dead code in practice); it is two lines, justified by the invariant and the verified insert/update asymmetry, and dropping it would leave the one server path that writes the schedule twice and the stamp zero times unfixed. I kept the fabrication fix: `source: IAC-1` through `IAC-7` is dropped from all seven criteria, because the issue body has no '## Acceptance (from the split)' section and the ledger's acceptance array is empty — a fabricated source is worse than none, since it asserts traceability to a split that does not exist. That also resolves the arbiter's split-criteria obligation: there are no IAC-n criteria to satisfy or defer. I kept stating plainly that a green suite is not evidence this change works: three CI cases and two browser steps discriminate, and everything labelled GUARD passes with the whole fix reverted.\n\nConfidence 80, unchanged. Not raised, because the evidence I gathered confirms the previous round rather than adding to it, and the one genuinely new thing I did — compiling the tsconfig question — removed a hedge rather than adding certainty about the behaviour under test. Not lowered, because I found no load-bearing error: the two changes are a missing QA assertion and a contingent file, and the mis-citation I found was in the plan's commentary about itself, not in the instructions. It stays at 80 because nothing has been executed. node_modules is absent, so no test in this plan has ever run, the app has never started, and both status-cell flips are derived from the query's two arms rather than observed — and the previous round's derived step was exactly the thing that was wrong, which is why the op assertion now sits in the script instead of only in a rationale field. That number is load-bearing and I am not going to inflate it past what has actually been checked.",
-    "residual_risks": [
-      "Rows already corrupt in a user's budget stay corrupt. Nothing repairs them; a stale stamp on an existing row can still suppress a legitimate occurrence match, the due to paid direction. This is the gap QA should understand before signing off, and the reason a follow-up migration is the natural next ticket.",
-      "The api package's updateTransaction can still build a diff that links a row to a new schedule while carrying the old stamp, because it diffs from a full-row read (api.ts:597). Not reachable from the UI, so not fixed here.",
-      "The transfer finding's 'both legs' claim is verified only by loot-core tests. No browser step can read a stamp — schedule_occurrence is rendered nowhere in the product — so QA cannot confirm it, and a reviewer should not read the QA script's green as covering it.",
-      "The addTransfer fix is verified by derivation and by the insert/update asymmetry, not by a reproduction, and its production reachability is unproven. If both writes are dead code in practice, Fix 2 is harmless but untested in production, at a cost of two lines.",
-      "The DiscoverSchedules auto-link site is covered by reading its payload shape and by sharing the tested builder. It has no browser coverage and cannot get any, because its input is server-side pattern matching that cannot be staged in a synthetic budget.",
-      "The mobile schedule edit page's link/unlink is changed but exercised by no automated test and only lightly in the QA script.",
-      "Both status-cell flips are derived from getHasTransactionsQuery's two arms, not observed in a running app. The previous plan's step was exactly this kind of derived-and-wrong step and was caught only in review. The op assertion in steps 3 and 4 narrows the way that step can be wrong, but does not eliminate it: if a status cell does not flip as derived, check the rule's op and the date the tester actually entered before suspecting the fix.",
-      "Any case labelled GUARD passes with the whole fix reverted. A green suite after this change is not evidence that this change works — the three discriminating CI cases plus the two discriminating browser steps are, and they are the ones to watch.",
-      "The three discriminating tests have never been executed. The two builder assertions are trivial and should settle on first run; the renderHook test and the addTransfer relink fixture are the two places implementation is most likely to need iteration."
-    ]
-  },
-  "approved_too_high": false
+  "approved_too_high": false,
+  "work_order_version": 1,
+  "work_order_posted_at": "2026-10-03T16:40:58.070Z",
+  "work_order_from": "plan",
+  "work_order_comment": "5971185140"
 }
