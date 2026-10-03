@@ -176,5 +176,110 @@
   },
   "validated_from": "plan",
   "validated_at": "2026-10-03T08:36:01.818Z",
-  "validated_ac_changes": []
+  "validated_ac_changes": [],
+  "approved_work_order": {
+    "issue": 21,
+    "version": 1,
+    "kind": "bug",
+    "mode": "committed",
+    "reproduced": true,
+    "understanding": "Reproduced on the versions this repo actually ships: cmdk 1.1.1 with @radix-ui/react-dialog 1.1.15 (yarn.lock:6684). Every open of the command palette logs two console messages from Radix: the error '`DialogContent` requires a `DialogTitle` for the component to be accessible for screen reader users.' and the warning 'Missing `Description` or `aria-describedby={undefined}` for {DialogContent}.' The dialog also renders aria-labelledby=\"radix-_r_1_\" pointing at an element that does not exist, so the palette has no real accessible name despite the props it already passes. THE ISSUE'S STATED CAUSE IS WRONG, and this matters because it is what points at the forbidden fix. The body claims that because the warning fires while CommandBar.tsx passes aria-label, 'that label is evidently not reaching the underlying DialogContent', and that 'Radix suppresses the warning when DialogContent receives aria-label={undefined}'. Both halves are false. cmdk's Command.Dialog (dist/index.js, xe) destructures only {open, onOpenChange, overlayClassName, contentClassName, container, ...p} and renders Dialog.Content with exactly three props: aria-label={e.label}, cmdk-dialog, className — so DialogContent's accessible name comes from the label prop, which CommandBar.tsx:273 already passes as t('Command Bar'); the label is already reaching it. Radix 1.1.15's TitleWarning consults only document.getElementById(context.titleId) and never reads aria-label at all. And removing both props changes nothing: with label and aria-label stripped, aria-label comes back null and BOTH warnings still fire. So the fix is not about where a label goes, and the route the issue text implies — passing or removing an aria-label — is a dead end. The real defect is that cmdk never renders DialogTitle or DialogDescription. It is fixed by rendering both as visually-hidden children of Command.Dialog, verified to drop the captured console output to zero while both aria-labelledby and aria-describedby resolve to real elements. The second warning is not mentioned in the ticket but fires on the same open from the same cause and is in scope: the body asks for the palette to open silently, and a Title-only fix still leaves a warning in the console. That is the one scope judgment here and it is called out so a maintainer can reject it. Removing the accessible name is not an option — it is explicitly forbidden by the ticket and, per the disproof above, it would not even silence the warning.",
+    "root_cause": "cmdk 1.1.1's Command.Dialog renders Dialog.Content with an aria-label but never renders a DialogTitle or DialogDescription, so no element ever carries the id that Radix's context hands to Dialog.Content as aria-labelledby. Radix 1.1.15 unconditionally sets aria-labelledby={titleId} (useId, always truthy) and warns when document.getElementById(titleId) is null, so the warning fires on every open regardless of any aria-label. The fix is to render a DialogTitle and DialogDescription; cmdk spreads children onto the inner Command root, which sits inside Dialog.Content, and Radix's check is a document-wide getElementById, so both land in the live tree. Title alone is not enough — verified: Title-without-Description still leaves one captured warning.",
+    "approach": "1. packages/desktop-client/package.json — add \"@radix-ui/react-dialog\": \"^1.1.6\" to devDependencies, alphabetically after @playwright/test. Required because the repo's actual/no-extraneous-dependencies rule errors on an import of a package absent from the nearest package.json. The range is deliberately the same one cmdk declares, so it resolves to the already-locked 1.1.15 and no version moves. 2. Run yarn install to regenerate yarn.lock; it gains one line, \"@radix-ui/react-dialog\": \"npm:^1.1.6\", in the @actual-app/web@workspace:packages/desktop-client block near line 269, because the descriptor @radix-ui/react-dialog@npm:^1.1.6 -> 1.1.15 already exists at yarn.lock:6684. CI installs with --immutable, so an un-regenerated lock fails the build. 3. packages/desktop-client/src/components/CommandBar.tsx — add `import * as RadixDialog from '@radix-ui/react-dialog';` between the @emotion/css and cmdk imports, then make two visually-hidden nodes the first children of the existing <Command.Dialog> at line 269, before <Command.Input>:\n      <RadixDialog.Title style={styles.visuallyHidden}>\n        <Trans>Command Bar</Trans>\n      </RadixDialog.Title>\n      <RadixDialog.Description style={styles.visuallyHidden}>\n        <Trans>Search pages, accounts and reports</Trans>\n      </RadixDialog.Description>\n   `styles` is already imported at line 20 and styles.visuallyHidden already exists in @actual-app/components/styles:136; `Trans` is already imported at line 3. Use <Trans> rather than t() because the prefer-trans-over-t rule flags a t() call as JSX children. The description text names the palette's real sections (Navigation, Accounts, Reports, Custom Reports, Help). 4. Leave the existing label/ and aria-label= props on line 273-274 exactly as they are: they are already correct — the label prop is what cmdk forwards to Dialog.Content as its accessible name, and the aria-label prop lands on the cmdk root div where it is inert. The fix is additive and does not depend on changing either. 5. packages/desktop-client/e2e/command-bar.test.ts — add a test that attaches a console listener after the budget is loaded, presses ControlOrMeta+k, and fails if any error/warning mentions DialogContent, DialogTitle, DialogDescription, aria-labelledby or aria-describedby; also assert getByRole('dialog', { name: 'Command Bar' }) resolves, which proves the accessible name survived. Filtering to those patterns rather than asserting an empty console keeps the test from flaking on unrelated app noise while still catching both warnings. The two existing tests in the file already cover IAC-3 and need no edit. 6. upcoming-release-notes/fix-command-bar-dialog-title-warning.md — new note, category Maintenance, authors [Shivam-Fl], one-line body.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/CommandBar.tsx",
+        "action": "edit",
+        "change": "Import * as RadixDialog from '@radix-ui/react-dialog' (between @emotion/css and cmdk) and add <RadixDialog.Title style={styles.visuallyHidden}><Trans>Command Bar</Trans></RadixDialog.Title> plus <RadixDialog.Description style={styles.visuallyHidden}><Trans>Search pages, accounts and reports</Trans></RadixDialog.Description> as the first two children of the existing <Command.Dialog> at line 269, before <Command.Input>. No change to the label/aria-label props, the keyboard handler, or the filter logic.",
+        "why": "cmdk never renders a DialogTitle or DialogDescription, so the id Radix puts in aria-labelledby has no element behind it and both warnings fire on every open. Rendering them makes aria-labelledby and aria-describedby resolve and drops the captured console output to zero. styles.visuallyHidden keeps the palette pixel-identical."
+      },
+      {
+        "path": "packages/desktop-client/package.json",
+        "action": "edit",
+        "change": "Add \"@radix-ui/react-dialog\": \"^1.1.6\" to the desktop-client devDependencies block, alphabetically after \"@playwright/test\".",
+        "why": "The repo's actual/no-extraneous-dependencies rule errors on any import of a package not listed in the nearest package.json's dependencies or devDependencies. The range matches the one cmdk already declares, so it dedupes to the locked 1.1.15 and nothing else moves."
+      },
+      {
+        "path": "yarn.lock",
+        "action": "edit",
+        "change": "Regenerate with yarn install. Expected delta is one line, \"@radix-ui/react-dialog\": \"npm:^1.1.6\", added to the @actual-app/web@workspace:packages/desktop-client dependencies list near line 269; the descriptor @radix-ui/react-dialog@npm:^1.1.6 -> version 1.1.15 at line 6684 already exists and is reused.",
+        "why": "CI bootstraps with yarn install --immutable, which fails if the lockfile does not match package.json."
+      },
+      {
+        "path": "upcoming-release-notes/fix-command-bar-dialog-title-warning.md",
+        "action": "create",
+        "change": "New note with front matter `category: Maintenance` and `authors: [Shivam-Fl]`, and a single-line body describing the fix, e.g. 'Stop the command palette logging accessibility warnings when it opens'. The release-notes gate requires category to be one of Features/Enhancements/Bugfixes/Maintenance, authors to be a non-empty list of person GitHub handles, and the body to be exactly one line.",
+        "why": "Repo convention for a shipped change; the gate validates any note the PR adds or modifies."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/e2e/command-bar.test.ts",
+        "action": "edit",
+        "cases": [
+          "opening the command bar logs no console error or warning mentioning DialogContent, DialogTitle, DialogDescription, aria-labelledby or aria-describedby",
+          "the open command bar is reachable by getByRole('dialog', { name: 'Command Bar' }) — the dialog keeps a real accessible name",
+          "existing 'Check the command bar visuals' and 'Check the command bar search works correctly' are unchanged and still pass: fill to filter, ArrowDown to move selection, Enter to navigate, Escape to dismiss"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "source": "IAC-1",
+        "check": "With a budget loaded, pressing ControlOrMeta+k opens the palette and no console error or warning about DialogTitle, DialogDescription or aria-describedby is logged.",
+        "verify": "test",
+        "how_to_verify": "yarn workspace @actual-app/web run playwright test command-bar.test.ts --browser=chromium. The new test fails on current code and passes after the fix."
+      },
+      {
+        "id": "AC-2",
+        "source": "IAC-2",
+        "check": "The open palette exposes the accessible name 'Command Bar' from a rendered Dialog.Title, so aria-labelledby resolves to a real element rather than a dangling id, and the name is added to rather than removed from what exists today.",
+        "verify": "test",
+        "how_to_verify": "The new test asserts getByRole('dialog', { name: 'Command Bar' }) resolves. Separately confirmed in the jsdom harness: after the fix aria-labelledby radix-_r_1_ resolves to an element whose textContent is 'Command Bar'."
+      },
+      {
+        "id": "AC-3",
+        "source": "IAC-3",
+        "check": "Typing to filter, arrow keys, Enter to navigate and Escape to dismiss all behave exactly as today; the palette renders pixel-identically.",
+        "verify": "test",
+        "how_to_verify": "yarn workspace @actual-app/web run playwright test command-bar.test.ts — the two pre-existing tests, which already cover filter/ArrowDown/Enter/Escape and take theme screenshots, pass unmodified against the existing *-snapshots/*.png baselines."
+      },
+      {
+        "id": "AC-4",
+        "source": "IAC-4",
+        "check": "The finding is confirmed to still reproduce on current code, so the make-no-change branch does not apply: with the CommandBar.tsx edit reverted, the new test fails with both the 'requires a DialogTitle' error and the 'Missing Description' warning.",
+        "verify": "test",
+        "how_to_verify": "Stash the CommandBar.tsx change, run the new test, observe it fail with both messages, restore. The jsdom harness already captured exactly those two messages on cmdk 1.1.1 + @radix-ui/react-dialog 1.1.15."
+      }
+    ],
+    "qa_script": [
+      "yarn install (must complete with no lockfile drift beyond the one added descriptor, or CI's --immutable will fail)",
+      "yarn typecheck",
+      "yarn lint",
+      "yarn workspace @actual-app/web run playwright test command-bar.test.ts --browser=chromium",
+      "yarn start, open http://localhost:3001, click 'View demo' to load a budget",
+      "Open devtools, clear the console, press Ctrl+K — the console must stay empty",
+      "Confirm the dialog is announced as 'Command Bar' and the palette renders exactly as before",
+      "Type 'reports', press ArrowDown twice, press Enter — navigation still works; press Escape — the palette dismisses"
+    ],
+    "risks": [
+      "yarn.lock must be regenerated and committed. If the implementer edits package.json and forgets, CI's yarn install --immutable fails outright — this is the most likely way the change breaks, and it is not a subtle failure.",
+      "Visual regression: the palette has toMatchThemeScreenshots baselines in packages/desktop-client/e2e/command-bar.test.ts-snapshots/. Two extra 1px, clip-hidden, absolutely-positioned nodes should render nothing — cmdk's own visually-hidden <label> uses the identical technique inside the same root and those snapshots pass today — but only the e2e run can confirm the pixels are unchanged.",
+      "The new i18n key 'Search pages, accounts and reports' renders in English until the translations repo syncs. locale/ is gitignored and generated, so nothing is added to the diff, and i18next returns the key itself in the meantime.",
+      "Adding @radix-ui/react-dialog as a direct dependency with the same ^1.1.6 range cmdk uses should dedupe to the existing 1.1.15. If some future dependency forces a different resolution, the warnings' behaviour is version-specific: >=1.1.18 has no warnings at all and the Title becomes decorative. Nothing today forces that, and the lockfile pins it.",
+      "The extra <h2> is a heading in the dialog subtree while the palette is open. No e2e query matches a heading by that name and no axe check exists in the repo, but a future getByRole('heading') on the open palette would see it."
+    ],
+    "out_of_scope": [
+      "Redesigning the command palette, changing what it searches, or changing its filter, keyboard or selection behaviour — the issue rules it out and IAC-3 requires it stay as-is.",
+      "The Reports nested-button accessibility warning — named as out of scope in the issue.",
+      "Any accessibility audit beyond the two warnings this palette open emits — named as out of scope in the issue.",
+      "Upgrading @radix-ui/react-dialog past 1.1.15 to silence the warnings upstream. It is a dependency change that would ship on its own, and on 1.1.18 it silences the console while leaving aria-labelledby pointing at a missing element (see alternatives_considered).",
+      "Replacing cmdk's Dialog with react-aria-components, which the repo already uses for its own Modal. That is a rewrite that would ship on its own and would put IAC-3's behaviour guarantees at risk.",
+      "Fixing the redundant aria-label prop on CommandBar.tsx:274. It lands on the cmdk root div where it is inert, and it is harmless — folding it in would widen the diff for no behavioural gain."
+    ],
+    "confidence": 88,
+    "confidence_rationale": "The defect is reproduced and the fix is verified against the exact locked dependency versions, with both aria-*by ids resolving and the existing e2e selectors confirmed unaffected. What is not verified here is what needs a running app: whether yarn install regenerates the lockfile exactly as predicted, and whether the two VRT baselines stay byte-identical with two extra hidden nodes. Both are concrete and cheap for the implementer to confirm, and neither can make the fix wrong — only the test artifacts could need regenerating."
+  },
+  "approved_too_high": false
 }
