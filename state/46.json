@@ -168,7 +168,12 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/accounts/Balance.tsx",
+    "upcoming-release-notes/post-scheduled-transaction-on-its-own-date.md",
+    "upcoming-release-notes/fix-schedule-occurrence-consumption.md",
+    "packages/loot-core/src/server/schedules/app.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
