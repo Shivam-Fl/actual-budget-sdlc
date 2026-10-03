@@ -1,6 +1,9 @@
 // @ts-strict-ignore
 import { expectSnapshotWithDiffer } from '#mocks/util';
 import * as db from '#server/db';
+import { loadMappings } from '#server/db/mappings';
+import { batchUpdateTransactions } from '#server/transactions/index';
+import { insertRule, loadRules } from '#server/transactions/transaction-rules';
 
 import * as transfer from './transfer';
 
@@ -359,6 +362,11 @@ describe('Transfer schedule occurrence', () => {
   });
 
   it('clears the mirror stamp when the schedule link is removed', async () => {
+    // GUARD — passes before and after this fix, and no production caller
+    // constructs its payload: `cleared` is built from a full-row read and
+    // handed straight to transfer.onUpdate, bypassing batchUpdateTransactions.
+    // Kept (rather than deleted as vacuous) because it is the only coverage of
+    // onUpdate propagating an explicit null through to the mirror.
     await prepareScheduleDatabase();
 
     const transaction: ScheduledTransaction = {
@@ -384,6 +392,90 @@ describe('Transfer schedule occurrence', () => {
     const mirrors = await getMirrorRows(transaction.id);
     expect(mirrors).toHaveLength(1);
     expect(mirrors[0].schedule).toBeNull();
+    expect(mirrors[0].schedule_occurrence).toBeNull();
+  });
+
+  it('leaves both legs stamped when the update payload omits the stamp', async () => {
+    // GUARD — passes before and after this fix, by construction: the payload
+    // is the PRE-FIX one the client used to send, and batchUpdateTransactions
+    // re-reads every changed row in full before transfer logic runs, so the
+    // server cannot tell an intentional stamp from an omitted one and hands
+    // the mirror the main leg's stamp back. The proof that the client now
+    // sends `schedule_occurrence` lives on the sender, not here.
+    await prepareScheduleDatabase();
+
+    const transaction: ScheduledTransaction = {
+      account: 'one',
+      amount: 5000,
+      payee: await getTransferTwo(),
+      date: '2017-01-01',
+      schedule: 'schedule-1',
+      schedule_occurrence: '2017-01-01',
+    };
+    transaction.id = await db.insertTransaction(transaction);
+    await transfer.onInsert(transaction);
+
+    await batchUpdateTransactions({
+      updated: [{ id: transaction.id, schedule: null }],
+    });
+
+    const mainLeg = await db.getTransaction(transaction.id);
+    expect(mainLeg.schedule).toBeNull();
+    expect(mainLeg.schedule_occurrence).toBe('2017-01-01');
+
+    const mirrors = await getMirrorRows(transaction.id);
+    expect(mirrors).toHaveLength(1);
+    expect(mirrors[0].schedule_occurrence).toBe(20170101);
+  });
+
+  it('clears the stamp on BOTH legs when a rule relinks the transfer', async () => {
+    // DISCRIMINATING — fails on unfixed code. A rule carrying a link-schedule
+    // action reassigns `schedule` while the mirror is being built, so the
+    // occurrence stamp minted for the OLD schedule must not ride along onto
+    // either leg.
+    await prepareScheduleDatabase();
+    await loadMappings();
+    await loadRules();
+
+    const transaction: ScheduledTransaction = {
+      account: 'one',
+      amount: 5000,
+      payee: await getTransferTwo(),
+      date: '2017-01-01',
+      schedule: 'schedule-1',
+      schedule_occurrence: '2017-01-01',
+    };
+    transaction.id = await db.insertTransaction(transaction);
+
+    // No UI-authored rule can set a schedule, so this rule is built directly
+    // rather than through the rule editor. It is unlinked to no schedule, so
+    // runRules' scheduleRuleID stays '' and every rule is evaluated; its
+    // conditions match the MIRROR leg (the transferred account, the negated
+    // amount, the transfer payee), which is the transaction addTransfer runs
+    // the rules against.
+    const fromPayee = await db.first<db.DbPayee>(
+      "SELECT id FROM payees WHERE transfer_acct = 'one'",
+    );
+    await insertRule({
+      stage: null,
+      conditionsOp: 'and',
+      conditions: [
+        { op: 'is', field: 'account', value: 'two' },
+        { op: 'is', field: 'amount', value: -5000 },
+        { op: 'is', field: 'payee', value: fromPayee.id },
+      ],
+      actions: [{ op: 'link-schedule', value: 'schedule-2' }],
+    });
+
+    await transfer.onInsert(transaction);
+
+    const mainLeg = await db.getTransaction(transaction.id);
+    expect(mainLeg.schedule).toBe('schedule-2');
+    expect(mainLeg.schedule_occurrence).toBeNull();
+
+    const mirrors = await getMirrorRows(transaction.id);
+    expect(mirrors).toHaveLength(1);
+    expect(mirrors[0].schedule).toBe('schedule-2');
     expect(mirrors[0].schedule_occurrence).toBeNull();
   });
 });

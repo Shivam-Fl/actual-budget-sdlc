@@ -25,6 +25,10 @@ import { useScheduleEdit } from '#hooks/useScheduleEdit';
 import { useSelected } from '#hooks/useSelected';
 import { useUndo } from '#hooks/useUndo';
 import { aqlQuery } from '#queries/aqlQuery';
+import {
+  linkScheduleUpdate,
+  unlinkScheduleUpdate,
+} from '#util/schedule-actions';
 
 export function MobileScheduleEditPage() {
   const { t } = useTranslation();
@@ -137,18 +141,18 @@ export function MobileScheduleEditPage() {
   }
 
   async function onLinkTransactions(ids: string[], scheduleId?: string) {
+    if (scheduleId == null) {
+      return;
+    }
     await send('transactions-batch-update', {
-      updated: ids.map(id => ({
-        id,
-        schedule: scheduleId,
-      })),
+      updated: ids.map(id => linkScheduleUpdate(id, scheduleId)),
     });
     selectedInst.dispatch({ type: 'select-none' });
   }
 
   async function onUnlinkTransactions(ids: string[]) {
     await send('transactions-batch-update', {
-      updated: ids.map(id => ({ id, schedule: null })),
+      updated: ids.map(unlinkScheduleUpdate),
     });
     selectedInst.dispatch({ type: 'select-none' });
   }

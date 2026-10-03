@@ -71,18 +71,30 @@ export async function addTransfer(transaction, transferredAccount) {
   };
   const { notes, cleared, schedule } = await runRules(transferTransaction);
   const matchedSchedule = schedule ?? transaction.schedule;
+  // The occurrence stamp belongs to the schedule link it was minted for, so
+  // it only survives while the rule leaves that link alone. When the rule
+  // relinks the transfer, the stamp has to be dropped from both legs.
+  const matchedOccurrence =
+    matchedSchedule === transaction.schedule
+      ? transaction.schedule_occurrence
+      : undefined;
 
   const id = await db.insertTransaction({
     ...transferTransaction,
     notes,
     cleared,
     schedule: matchedSchedule,
+    schedule_occurrence: matchedOccurrence,
   });
 
   await db.updateTransaction({
     id: transaction.id,
     transfer_id: id,
     ...(matchedSchedule ? { schedule: matchedSchedule } : {}),
+    // Explicit `?? null` rather than passing the value through: an update that
+    // does not mention the field leaves it undefined, and undefined is dropped
+    // rather than written, so the main leg would keep the old stamp.
+    schedule_occurrence: matchedOccurrence ?? null,
   });
   const categoryCleared = await clearCategory(transaction, transferredAccount);
 
@@ -130,9 +142,8 @@ export async function updateTransfer(transaction, transferredAccount) {
     notes: transaction.notes,
     amount: -transaction.amount,
     schedule: transaction.schedule,
-    // Passed through verbatim, never `?? null`: an update that does not
-    // mention the field leaves it undefined, and undefined is dropped rather
-    // than written, so the mirror keeps the stamp it already has.
+    // The mirror carries the main leg's link and stamp, written as one pair
+    // here so the two can never be updated apart on this path.
     schedule_occurrence: transaction.schedule_occurrence,
   });
 

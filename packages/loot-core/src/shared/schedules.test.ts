@@ -436,6 +436,81 @@ describe('schedules', () => {
           'OR (schedule_occurrence IS NULL AND date >= 20161202)))))',
       );
     });
+
+    it('a stamp for a different date matches neither arm', () => {
+      // GUARD — this query is NOT modified by the schedule-stamp fix, so this
+      // passes before and after it and is explicitly NOT the evidence for the
+      // due-to-paid criterion. What it pins is the DIRECTION the browser signal
+      // comes from, which is why clearing the stamp on a relink is what moves a
+      // schedule's status cell: arm 1 is an equality on next_date and arm 2 is
+      // gated on the stamp being null, so a stamp naming some other date blocks
+      // BOTH and the schedule reads Due.
+      function matches(row: {
+        schedule: string;
+        schedule_occurrence: string | null;
+        date: string;
+      }) {
+        const [{ $or: perSchedule }] = getHasTransactionsQuery([
+          {
+            id: 'schedule-1',
+            next_date: '2024-03-10',
+            // op 'isapprox' with posts_transaction off, the shape a
+            // Schedules-page one-time schedule carries: the fallback bound
+            // opens two days before the occurrence date.
+            posts_transaction: false,
+            _conditions: [
+              { op: 'isapprox', field: 'date', value: '2024-03-10' },
+            ],
+          },
+        ]).serialize().filterExpressions as [
+          { $or: Array<{ $and: { schedule: string; $or: unknown[] } }> },
+        ];
+
+        const $and = perSchedule[0].$and;
+        if ($and.schedule !== row.schedule) {
+          return false;
+        }
+        const [stampArm, dateArm] = $and.$or as [
+          { schedule_occurrence: string },
+          { $and: [{ schedule_occurrence: null }, { date: { $gte: string } }] },
+        ];
+
+        return (
+          row.schedule_occurrence === stampArm.schedule_occurrence ||
+          (row.schedule_occurrence === dateArm.$and[0].schedule_occurrence &&
+            row.date >= dateArm.$and[1].date.$gte)
+        );
+      }
+
+      // Stamped for another schedule's occurrence: arm 1 is an equality that
+      // misses, and arm 2 is blocked by the stamp being non-null.
+      expect(
+        matches({
+          schedule: 'schedule-1',
+          schedule_occurrence: '2024-04-10',
+          date: '2024-03-08',
+        }),
+      ).toBe(false);
+
+      // The same row with the stamp cleared, dated inside the window the
+      // fallback arm opens: it now matches.
+      expect(
+        matches({
+          schedule: 'schedule-1',
+          schedule_occurrence: null,
+          date: '2024-03-08',
+        }),
+      ).toBe(true);
+
+      // And still no match when the cleared stamp is dated outside that window.
+      expect(
+        matches({
+          schedule: 'schedule-1',
+          schedule_occurrence: null,
+          date: '2024-03-01',
+        }),
+      ).toBe(false);
+    });
   });
 
   describe('getPostedScheduleTransactionsQuery', () => {
