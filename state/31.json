@@ -368,7 +368,55 @@
         "detail": "The PR title lacks the mandatory `[AI]` prefix. `.github/agents/pr-and-commit-rules.md` states \"ALL pull request titles MUST be prefixed with `[AI]` — you have to apply it yourself\", and #32's title is `fix: Follow-ups from #28: 5 from the review, 4 from QA`. This is a known pattern rather than a novel lapse: work-order.json's out_of_scope records the identical violation on the predecessor PR #30 as \"review finding 5\", and `gh pr list` shows all eleven PRs on this repo carry an unprefixed title. The fix is one command and touches no file.\n\n`review/design.json:1`\n\nEvidence: gh pr view 32 --json title -> \"fix: Follow-ups from #28: 5 from the review, 4 from QA\" (no prefix). The rule is in .github/agents/pr-and-commit-rules.md, pulled into CLAUDE.md. work-order.json:125 records the same lapse on PR #30 with the exact fix command, and it was evidently never applied there either. The commit subject on this PR *does* carry the prefix, and scripts/agent-hooks/git-guard.sh:139 blocks unprefixed commits — so a hook covers commits and nothing covers titles, which is how the gap recurred unnoticed.\n\nFix: gh pr edit 32 --title '[AI] Follow-ups from #28: 5 from the review, 4 from QA'. Worth applying the same edit to #30, which the work order already recorded as outstanding."
       }
     ],
-    "pr": "32"
+    "pr": "32",
+    "qa": [
+      {
+        "id": "BUG-1",
+        "severity": "major",
+        "area": "packages/ci-actions/bin/release-notes-check.mjs",
+        "title": "The git diff call is left unguarded, so two git failures still crash the gate with a raw stack trace",
+        "expected": "Every way the two git calls can fail produces a ::error:: line and exit 1, which is the contract the PR states for the fetch: \"This function's contract is to report rather than throw, so the same treatment the file reads get applies here.\"",
+        "actual": "The try/catch wraps only `git fetch`. The `git diff` on the next statement still rejects into an async IIFE with no catch. Two triggers confirmed: (a) a BASE_REF that fetches but does not resolve as origin/<ref> — a tag is enough — which yields 'fatal: bad revision' and a 6-frame Error stack; (b) diff output over execFile's 1MB default maxBuffer — 1768000 bytes was enough — which yields RangeError [ERR_CHILD_PROCESS_STDIO_MAXBUFFER]. In both, stdout carries zero ::error:: lines. The exit code is 1, but only because Node terminates on the unhandled rejection.",
+        "suspected_cause": "The guard was applied per-call-site rather than to the git invocation as a whole. Both execFile calls sit in the same function and can reject for the same environmental reasons, so the narrow fix the work order considered — wrapping the one fetch — leaves its immediate neighbour unguarded. Widening the existing try to cover both calls is a one-line change and is still narrower than the top-level .catch the work order rejected.",
+        "repro": [
+          "Create a sandbox: bare remote with a 'base' branch, clone it, commit a valid note on a branch off origin/base",
+          "git tag qa-tag-1 and git push origin qa-tag-1 on that branch",
+          "Run: env -u GITHUB_STEP_SUMMARY BASE_REF=qa-tag-1 node packages/ci-actions/bin/release-notes-check.mjs",
+          "Observe: stdout empty, stderr 'Error: Command failed: git diff ... fatal: bad revision', exit 1",
+          "Second trigger: commit 26000 notes with long filenames (diff output 1768000 bytes) and run with BASE_REF=base",
+          "Observe: stdout empty, stderr 'RangeError [ERR_CHILD_PROCESS_STDIO_MAXBUFFER]: stdout maxBuffer length exceeded', exit 1"
+        ],
+        "evidence": [
+          "qa-evidence/hostile/H-1/stdout.txt",
+          "qa-evidence/hostile/H-1/stderr.txt",
+          "qa-evidence/hostile2/H-12/stdout.txt",
+          "qa-evidence/hostile2/H-12/stderr.txt"
+        ],
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      },
+      {
+        "id": "BUG-2",
+        "severity": "major",
+        "area": "packages/ci-actions/bin/release-notes-check.mjs",
+        "title": "A release note with malformed YAML front matter crashes the gate instead of reporting it",
+        "expected": "A note the gate cannot parse is reported the way every other invalid note is — a ::error:: naming the file and what is wrong with it — and the run exits 1.",
+        "actual": "matter(fs.readFileSync(path, 'utf-8')) in validateFile is not wrapped, so a YAMLException escapes into the async IIFE. stdout is empty: zero ::error:: lines. stderr is a 10-frame YAMLException stack ending 'Node.js v22.23.3'. Exit 1 via the uncaught throw. The contributor who made the typo gets a Node stack trace in the job log instead of the annotation telling them their front matter is malformed.",
+        "suspected_cause": "validateFile assumes gray-matter always parses. Every other validation failure in the function is funnelled through reportError; the parse is the one step that can throw, and it sits outside that funnel. This is the same 'report, do not throw' contract the PR restores for I/O, applied to content parsing.",
+        "repro": [
+          "Branch off origin/base and commit a note whose front matter is an unterminated flow sequence",
+          "printf -- '---\\ncategory: [unclosed\\nauthors: alice\\n---\\n\\nBroken\\n' > upcoming-release-notes/broken.md",
+          "Run: env -u GITHUB_STEP_SUMMARY BASE_REF=base node packages/ci-actions/bin/release-notes-check.mjs",
+          "Observe: stdout empty, stderr 'YAMLException: missed comma between flow collection entries' with a 10-frame stack, exit 1"
+        ],
+        "evidence": [
+          "qa-evidence/hostile/H-9/stdout.txt",
+          "qa-evidence/hostile/H-9/stderr.txt"
+        ],
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "fail",
