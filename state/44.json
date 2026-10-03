@@ -17,8 +17,13 @@
   "work_order": null,
   "touch_paths": [],
   "acceptance": [],
-  "planned_route": [],
-  "on_complete": null,
+  "planned_route": [
+    "plan",
+    "implement",
+    "review",
+    "qa"
+  ],
+  "on_complete": "merge",
   "artifacts": {},
   "failure_history": [],
   "review_history": [],
@@ -30,7 +35,24 @@
       "at": "2026-10-03T22:03:28.723Z",
       "agent": "intake",
       "action": "-> planning"
+    },
+    {
+      "at": "2026-10-03T22:05:25.915Z",
+      "agent": "router",
+      "action": "route plan -> implement -> review -> qa (model, confidence 78)"
     }
   ],
-  "epic": 41
+  "epic": 41,
+  "resume_at": null,
+  "flow_plan": {
+    "kind": "bug",
+    "confidence": 78,
+    "matched_rule": null,
+    "gates": {},
+    "councils": {
+      "plan": "single",
+      "review": "single"
+    },
+    "decided_at": "2026-10-03T22:05:25.915Z"
+  }
 }
