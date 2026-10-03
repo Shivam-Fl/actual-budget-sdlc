@@ -1,7 +1,7 @@
 {
   "issue": 51,
   "pr": 55,
-  "state": "ci-green",
+  "state": "review",
   "owner": null,
   "lock_expires": null,
   "lock_run": null,
@@ -229,7 +229,7 @@
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-03T15:56:16.206Z",
-  "updated_at": "2026-10-03T18:11:56.875Z",
+  "updated_at": "2026-10-03T18:12:03.003Z",
   "history": [
     {
       "at": "2026-10-03T15:56:34.206Z",
@@ -340,6 +340,11 @@
       "at": "2026-10-03T18:11:56.875Z",
       "agent": "gate",
       "action": "-> ci-green"
+    },
+    {
+      "at": "2026-10-03T18:12:03.003Z",
+      "agent": "gate",
+      "action": "-> review"
     }
   ],
   "resume_at": null,
