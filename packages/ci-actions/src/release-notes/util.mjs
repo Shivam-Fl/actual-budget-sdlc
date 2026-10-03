@@ -33,8 +33,11 @@ export const NON_PERSON_AUTHORS = ['claude', 'github-actions'];
 const BOT_SUFFIX = /\[bot\]$/;
 
 // Statuses whose file is still present on HEAD, so it is worth validating. A
-// deletion is not: there is nothing left to publish.
-const SELECTED_STATUSES = ['A', 'M', 'R', 'C'];
+// deletion is not: there is nothing left to publish. A rename is selected
+// because HEAD holds that file under its new path. No copy status is listed
+// because the invocation asks git for no copy detection, so a copy arrives as
+// an addition — already selected, and `added` stays truthful about it.
+const SELECTED_STATUSES = ['A', 'M', 'R'];
 
 /**
  * Returns every author that is not a credit to a person — a known bot or agent,
@@ -75,38 +78,80 @@ export function sanitizeWorkflowCommandData(value) {
 }
 
 /**
- * Turns `git diff --name-status` output into the release notes a check run has
- * to look at, as `{ added, changed }`.
+ * Renders one offending author for an error message. A string is already
+ * readable, so it passes through untouched.
  *
- * `changed` covers modifications, renames and copies as well as additions: a
- * note edited — or moved to a fresh filename — to credit a bot is as much a
- * gate concern as one added with a bot in it. A rename or copy row carries
- * three fields (status, old path, new path) and HEAD holds the new one, which
- * is the file that would ship; binding the old path instead would validate a
- * file that no longer exists.
+ * Everything else is JSON, because the gate names the structure an author wrote
+ * so they can see what to fix. JSON.stringify throws on a cycle, and a YAML
+ * anchor can make a value self-referential (`authors: &a [*a]`), so the render
+ * is guarded rather than left to reach the author as a stack trace. The `??`
+ * matters for the same reason from the other side: JSON.stringify(undefined)
+ * returns undefined without throwing, and an offender rendered as the empty
+ * string would produce a message naming nobody.
+ */
+export function describeAuthor(value) {
+  if (typeof value === 'string') {
+    return value;
+  }
+  try {
+    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
+}
+
+/**
+ * Turns NUL-separated `git diff --name-status -z` output into the release notes
+ * a check run has to look at, as `{ added, changed }`.
  *
- * `added` is derived from the status column alone, so "did this branch add a
- * note?" keeps answering exactly as it did when only added files were read.
- * Only the four statuses that leave a file on HEAD are considered, and the
- * README is filtered out because it is documentation, not a note.
+ * `-z` is what makes the path a path. Without it git quotes and backslash-
+ * escapes any path holding a quote, a backslash or a control character, and
+ * octal-escapes the non-ASCII bytes of any path unless it is separately told
+ * not to; a tab-separated parse of that output shreds the row either way.
+ * With `-z` the fields are NUL-separated: one record is `status\0path\0` and a
+ * rename or copy record is `status\0old\0new\0`, so an R or C record has to
+ * consume two path fields before the next record begins. Fields are consumed
+ * before the status is filtered, so a row we go on to discard cannot
+ * desynchronise the rows after it.
+ *
+ * `changed` covers modifications and renames as well as additions: a note
+ * edited — or moved to a fresh filename — to credit a bot is as much a gate
+ * concern as one added with a bot in it. A rename record's last path is the one
+ * HEAD holds, which is the file that would ship; binding the old path instead
+ * would validate a file that no longer exists.
+ *
+ * The `.md` and README filters are applied once, to the collected rows, before
+ * they are split: both lists must exclude them, or a README-only edit would
+ * satisfy the "did this branch add a note?" check and then be validated as a
+ * note. `added` is derived from the status column alone, so that check keeps
+ * answering exactly as it did when only added files were read.
  */
 export function selectReleaseNotePaths(diffOutput, notesDir) {
-  const rows = diffOutput
-    .split('\n')
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(line => line.split('\t'))
-    .filter(([status]) => SELECTED_STATUSES.includes(status[0]))
-    .map(([status, oldPath, newPath]) => [status, newPath ?? oldPath])
-    .filter(
-      ([, path]) => path?.endsWith('.md') && path !== `${notesDir}/README.md`,
-    );
+  const fields = diffOutput.split('\0');
+  const rows = [];
+
+  let index = 0;
+  while (index < fields.length) {
+    const status = fields[index++];
+    if (!status) {
+      continue;
+    }
+    const hasTwoPaths = status[0] === 'R' || status[0] === 'C';
+    const path = hasTwoPaths ? fields[index + 1] : fields[index];
+    index += hasTwoPaths ? 2 : 1;
+
+    if (SELECTED_STATUSES.includes(status[0])) {
+      rows.push([status, path]);
+    }
+  }
+
+  const notes = rows.filter(
+    ([, path]) => path?.endsWith('.md') && path !== `${notesDir}/README.md`,
+  );
 
   return {
-    added: rows
-      .filter(([status]) => status.startsWith('A'))
-      .map(([, path]) => path),
-    changed: rows.map(([, path]) => path),
+    added: notes.filter(([status]) => status === 'A').map(([, path]) => path),
+    changed: notes.map(([, path]) => path),
   };
 }
 
