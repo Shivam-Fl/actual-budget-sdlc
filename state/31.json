@@ -1,7 +1,7 @@
 {
   "issue": 31,
   "pr": 32,
-  "state": "qa",
+  "state": "needs-human",
   "owner": null,
   "lock_expires": null,
   "lock_run": null,
@@ -293,7 +293,7 @@
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-03T04:10:13.343Z",
-  "updated_at": "2026-10-03T08:59:17.037Z",
+  "updated_at": "2026-10-03T10:50:32.044Z",
   "history": [
     {
       "at": "2026-10-03T04:10:30.817Z",
@@ -509,6 +509,11 @@
       "at": "2026-10-03T08:59:17.037Z",
       "agent": "qa",
       "action": "qa attempt 2"
+    },
+    {
+      "at": "2026-10-03T10:50:32.044Z",
+      "agent": "triage",
+      "action": "-> needs-human"
     }
   ],
   "resume_at": "qa",
