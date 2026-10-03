@@ -301,7 +301,22 @@
       "The three discriminating tests have never been executed. The two builder assertions are trivial and should settle on first run; the renderHook test and the addTransfer relink fixture are the two places implementation is most likely to need iteration."
     ]
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/util/schedule-actions.ts",
+    "packages/desktop-client/src/hooks/useTransactionBatchActions.ts",
+    "packages/desktop-client/src/components/schedules/ScheduleLink.tsx",
+    "packages/desktop-client/src/components/schedules/ScheduleEditModal.tsx",
+    "packages/desktop-client/src/components/mobile/schedules/MobileScheduleEditPage.tsx",
+    "packages/desktop-client/src/components/schedules/DiscoverSchedules.tsx",
+    "packages/loot-core/src/server/transactions/transfer.ts",
+    "packages/loot-core/src/server/transactions/transfer.test.ts",
+    "packages/loot-core/src/shared/schedules.test.ts",
+    "upcoming-release-notes/fix-stale-schedule-occurrence-stamp.md",
+    "packages/desktop-client/src/util/schedule-actions.test.ts",
+    "packages/desktop-client/src/hooks/useTransactionBatchActions.test.ts",
+    "packages/loot-core/src/server/transactions/transfer.test.ts",
+    "packages/loot-core/src/shared/schedules.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
