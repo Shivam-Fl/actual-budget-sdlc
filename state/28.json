@@ -427,7 +427,93 @@
         "detail": "The PR title is `fix: Follow-ups from #17: 7 from the review, 1 from QA`, which does not carry the `[AI]` prefix that .github/agents/pr-and-commit-rules.md requires on every PR title. The rule is emphatic ('you have to apply it yourself') and the fix is one command.\n\n`.github/agents/pr-and-commit-rules.md:7`\n\nEvidence: `gh pr view 30 --json title` → `fix: Follow-ups from #17: 7 from the review, 1 from QA`. The rule file, quoted verbatim: '**ALL pull request titles MUST be prefixed with `[AI]`** — you have to apply it yourself.' The work order's own understanding already records this as 'a one-command process lapse, not a work order', i.e. known and deliberately deferred rather than missed — but it is still the state the PR is in, and renaming costs nothing while a CI check on the rule later would not. The single commit on the branch (c22ec2d) does carry the prefix on its headline, so the commit half of the rule was observed.\n\nFix: `gh pr edit 30 --title '[AI] Follow-ups from #17: 7 from the review, 1 from QA'`."
       }
     ],
-    "pr": "30"
+    "pr": "30",
+    "qa": [
+      {
+        "id": "BUG-1",
+        "severity": "minor",
+        "area": "packages/ci-actions/bin/release-notes-check.mjs — reportError",
+        "title": "release-notes check crashes with an unhandled stream error when GITHUB_STEP_SUMMARY's parent directory does not exist",
+        "expected": "reportError prints the ::error:: line and exits 1 cleanly. This PR hardened two of its three I/O calls on exactly this contract — the README read now degrades to '' and an unset GITHUB_STEP_SUMMARY exits early — but the third, fs.createWriteStream, is still unguarded.",
+        "actual": "The ::error:: and ::notice:: lines print, then Node dies with \"Unhandled 'error' event ... ENOENT: no such file or directory, open '<summary path>'\" and a stack trace. Reproduced 10/10 runs.",
+        "repro": [
+          "Create a repo with an upstream `base` branch containing upcoming-release-notes/README.md and one seed note, and push base.",
+          "Branch off base and add a release note with `category: Nonsense` so validation fails.",
+          "Run `BASE_REF=base GITHUB_STEP_SUMMARY=/tmp/nope/deep/s.md node packages/ci-actions/bin/release-notes-check.mjs` from the work tree, where /tmp/nope does not exist.",
+          "Observe the ::error:: line, then the unhandled 'error' event and the ENOENT stack."
+        ],
+        "evidence": [
+          "qa-evidence/cli/T-26-summary-missing-dir-race.txt",
+          "qa-evidence/cli/T-20-h3-summary-missing-dir.txt"
+        ],
+        "suspected_cause": "fs.createWriteStream(...).end(readme).on('close', ...) registers only a 'close' listener, not an 'error' one, so an open failure has no handler. The sibling calls one line above were given guards in this PR and this one was not.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      },
+      {
+        "id": "BUG-2",
+        "severity": "major",
+        "area": "packages/ci-actions/bin/release-notes-check.mjs — module top level",
+        "title": "Deleting the whole upcoming-release-notes/ directory crashes the release-notes check with an ENOENT stack trace instead of reporting",
+        "expected": "the gate reports '::error::No release note added under upcoming-release-notes/.' and exits 1, as AC-3 and AC-4 were written to guarantee for the README being deleted.",
+        "actual": "The script dies during module evaluation at `console.log('Looking in ' + fs.realpathSync(NOTES_DIR))` with ENOENT on lstat, before BASE_REF is read. No ::error:: line, no step summary, and a raw Node stack trace in the job log.",
+        "repro": [
+          "Create a repo with an upstream `base` branch containing upcoming-release-notes/README.md and one seed note, and push base.",
+          "Branch off base and run `git rm -r upcoming-release-notes` and commit — a plausible PR that moves the notes into packages/docs.",
+          "Run `BASE_REF=base GITHUB_STEP_SUMMARY=/tmp/s.md node packages/ci-actions/bin/release-notes-check.mjs`.",
+          "Observe the ENOENT stack trace out of realpathSync instead of any gate message."
+        ],
+        "evidence": [
+          "qa-evidence/cli/T-19-h8-notes-dir-deleted.txt",
+          "qa-evidence/cli/T-25-compare-notes-dir-deleted-base-vs-pr.txt"
+        ],
+        "suspected_cause": "Line 20 calls fs.realpathSync(NOTES_DIR) unguarded, at module scope, so it runs before any error-handling path. AC-3 and AC-4 closed the same class of hole one level down, inside reportError, but not here.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      },
+      {
+        "id": "BUG-3",
+        "severity": "minor",
+        "area": "packages/ci-actions/src/release-notes/util.mjs — selectReleaseNotePaths",
+        "title": "A release note whose filename is not valid UTF-8 is falsely rejected as not existing on HEAD",
+        "expected": "-z was adopted so a path reaches the parser verbatim. A note named latin\\xe9-note.md exists on HEAD and should be selected and validated, exit 0.",
+        "actual": "exit 1 with '::error::Release note upcoming-release-notes/latin<U+FFFD>-note.md was added but does not exist on HEAD.' The 0xE9 byte survives git and the -z parser, but execFile decodes stdout as UTF-8, so the byte becomes U+FFFD and fs.existsSync then misses a file that is genuinely there.",
+        "repro": [
+          "Create a repo with an upstream `base` branch containing upcoming-release-notes/README.md and a seed note.",
+          "Branch off base and add a note whose filename contains the raw byte 0xE9 (e.g. via python: open(b'upcoming-release-notes/latin\\xe9-note.md','wb').write(...)), then commit.",
+          "Run the gate with BASE_REF=base.",
+          "Observe the U+FFFD path and the false 'does not exist on HEAD' rejection."
+        ],
+        "evidence": [
+          "qa-evidence/cli/T-22-hc-invalid-utf8-filename.txt",
+          "qa-evidence/cli/T-25-compare-invalid-utf8-base-vs-pr.txt"
+        ],
+        "suspected_cause": "promisify(execFile) returns stdout as a UTF-8-decoded string, so the byte-level fidelity -z buys is discarded one step later. -z fixes quoting and escaping, not decoding.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      },
+      {
+        "id": "BUG-4",
+        "severity": "minor",
+        "area": "packages/ci-actions/bin/release-notes-check.mjs — reportError output",
+        "title": "The release-notes check truncates its ::error:: message on the piped stdout GitHub Actions uses",
+        "expected": "the full error message reaches the job log, so an author can see every offending author.",
+        "actual": "With a ~160KB ::error:: message (a note crediting 20000 bot authors) stdout stops at 65585 bytes, mid-word. The tail of the author list and the ::notice:: line never arrive.",
+        "repro": [
+          "Create a repo with an upstream `base` branch containing upcoming-release-notes/README.md and a seed note.",
+          "Branch off base and add a note whose front matter is `authors:` followed by 20000 comma-separated `claude` entries.",
+          "Run `env -u GITHUB_STEP_SUMMARY BASE_REF=base node packages/ci-actions/bin/release-notes-check.mjs | cat > out.txt` and check `wc -c out.txt`.",
+          "Observe ~65585 bytes and a message cut off mid-author."
+        ],
+        "evidence": [
+          "qa-evidence/cli/T-30-long-error-pipe-truncation.txt",
+          "qa-evidence/cli/T-21-h1b-exit-unset-pipe.txt"
+        ],
+        "suspected_cause": "console.log to a pipe is an asynchronous write in Node and process.exit(1) — the call this PR added on the unset-summary path — can fire before stdout drains. Reproduced identically at origin/main, so this predates the PR; the new early exit simply sits on the same path.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "pass",
