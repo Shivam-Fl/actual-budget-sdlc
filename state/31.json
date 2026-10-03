@@ -216,7 +216,12 @@
       "Baseline test count in util.test.js is 32 `it(` blocks, matching the proposal's 32-before/33-after arithmetic."
     ]
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/ci-actions/bin/release-notes-check.mjs",
+    "packages/ci-actions/src/release-notes/util.test.js",
+    "upcoming-release-notes/fix-release-notes-gate-io-paths.md",
+    "packages/ci-actions/src/release-notes/util.test.js"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
