@@ -54,5 +54,7 @@
       "review": "single"
     },
     "decided_at": "2026-10-03T22:05:25.915Z"
-  }
+  },
+  "stopped_at": null,
+  "dispatched_stage": "plan"
 }
