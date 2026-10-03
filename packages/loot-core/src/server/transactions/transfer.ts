@@ -91,10 +91,14 @@ export async function addTransfer(transaction, transferredAccount) {
     id: transaction.id,
     transfer_id: id,
     ...(matchedSchedule ? { schedule: matchedSchedule } : {}),
-    // Explicit `?? null` rather than passing the value through: an update that
-    // does not mention the field leaves it undefined, and undefined is dropped
-    // rather than written, so the main leg would keep the old stamp.
-    schedule_occurrence: matchedOccurrence ?? null,
+    // Only on the relink, and explicit `?? null` when it is there: an update
+    // that does not mention the field leaves it undefined, and undefined is
+    // dropped rather than written, so the main leg would keep the old stamp.
+    // Without a relink the stamp is already on the row, and every key here is
+    // a sync message.
+    ...(matchedSchedule !== transaction.schedule
+      ? { schedule_occurrence: null }
+      : {}),
   });
   const categoryCleared = await clearCategory(transaction, transferredAccount);
 
@@ -142,8 +146,9 @@ export async function updateTransfer(transaction, transferredAccount) {
     notes: transaction.notes,
     amount: -transaction.amount,
     schedule: transaction.schedule,
-    // The mirror carries the main leg's link and stamp, written as one pair
-    // here so the two can never be updated apart on this path.
+    // The link and the stamp are passed through verbatim, never `?? null`:
+    // both come off the same re-read of the main leg, so they cannot desync
+    // here. A conditional on either key alone is what strands a stamp.
     schedule_occurrence: transaction.schedule_occurrence,
   });
 

@@ -1,16 +1,20 @@
-import React from 'react';
-
-import { send } from '@actual-app/core/platform/client/connection';
+import {
+  clearServer,
+  initServer,
+} from '@actual-app/core/platform/client/connection';
 import { renderHook } from '@testing-library/react';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { TestProviders } from '#mocks';
 
 import { useTransactionBatchActions } from './useTransactionBatchActions';
 
-vi.mock('@actual-app/core/platform/client/connection', () => ({
-  send: vi.fn(),
-}));
+vi.mock(
+  '@actual-app/core/platform/client/connection',
+  () => import('#mocks/connection'),
+);
+
+let sent: Array<{ name: string; args: unknown }> = [];
 
 function renderBatchActions() {
   return renderHook(() => useTransactionBatchActions(), {
@@ -20,7 +24,17 @@ function renderBatchActions() {
 
 describe('useTransactionBatchActions.onBatchUnlinkSchedule', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    sent = [];
+    initServer({
+      'transactions-batch-update': async (args: unknown) => {
+        sent.push({ name: 'transactions-batch-update', args });
+        return { added: [], updated: [], deleted: [], errors: [] };
+      },
+    });
+  });
+
+  afterEach(async () => {
+    await clearServer();
   });
 
   test('clears the occurrence stamp alongside the schedule link', async () => {
@@ -31,12 +45,17 @@ describe('useTransactionBatchActions.onBatchUnlinkSchedule', () => {
     // Asserted on the literal payload the register sends rather than on the
     // builder in isolation, so this still fails if the hook is routed around
     // `unlinkScheduleUpdate`.
-    expect(send).toHaveBeenCalledWith('transactions-batch-update', {
-      updated: [
-        { id: 't1', schedule: null, schedule_occurrence: null },
-        { id: 't2', schedule: null, schedule_occurrence: null },
-      ],
-    });
+    expect(sent).toStrictEqual([
+      {
+        name: 'transactions-batch-update',
+        args: {
+          updated: [
+            { id: 't1', schedule: null, schedule_occurrence: null },
+            { id: 't2', schedule: null, schedule_occurrence: null },
+          ],
+        },
+      },
+    ]);
   });
 
   test('calls onSuccess with the unlinked ids', async () => {

@@ -10,8 +10,9 @@ import type {
 } from '@actual-app/core/types/models';
 
 // A schedule link and its occurrence stamp are only meaningful together, so
-// both writes always carry `schedule_occurrence` explicitly: on update an
+// every builder here writes `schedule_occurrence` explicitly: on update an
 // omitted key is never written and the stale stamp would survive.
+
 export function linkScheduleUpdate(
   id: string,
   scheduleId: string,
@@ -20,10 +21,9 @@ export function linkScheduleUpdate(
 }
 
 export function unlinkScheduleUpdate(id: string): Partial<TransactionEntity> {
-  // The cast is the one the unlink payload already needed at its old home:
-  // `TransactionEntity['schedule']` is typed `string`, but the batch-update
-  // API takes and stores null for "unlinked". It lives here so every caller
-  // gets the payload without repeating it.
+  // The cast `schedule: null` needs: the column stores null for "unlinked",
+  // but `TransactionEntity['schedule']` is typed `string`. Widening the model
+  // would retire it.
   return {
     id,
     schedule: null,
