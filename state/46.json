@@ -300,5 +300,18 @@
   "work_order_posted_at": "2026-10-03T12:21:32.234Z",
   "work_order_from": "plan",
   "work_order_comment": "5969107135",
-  "implemented_version": 1
+  "implemented_version": 1,
+  "follow_ups": {
+    "review": [
+      {
+        "title": "The PR title lacks the mandatory `[AI]` prefix required by .github/agents/pr-and-commit-rules.md, and the PR body replaces the template with pipeline-generated sections instead of leaving .github/PULL_REQUEST_TEMPLATE.md unmodified as the same rules require.",
+        "detail": "The PR title lacks the mandatory `[AI]` prefix required by .github/agents/pr-and-commit-rules.md, and the PR body replaces the template with pipeline-generated sections instead of leaving .github/PULL_REQUEST_TEMPLATE.md unmodified as the same rules require.\n\n`.github/PULL_REQUEST_TEMPLATE.md:1`\n\nEvidence: `gh pr view 49 --json title` returns `fix: Housekeeping from the schedule-occurrence PR: preview id parse, duplicate release note, setNextDate shape` — no `[AI]` prefix. The body begins `Closes #46` / `## Changed` / `## Acceptance criteria`; the template's `## Description`, `## Related issue(s)`, `## Testing` and `## Checklist` headings and HTML placeholder comments are absent rather than present-and-blank. Not a correctness defect in the code — a repo-rule violation to correct before merge.\n\nFix: Rename the PR to `[AI] Housekeeping from the schedule-occurrence PR: preview id parse, duplicate release note, setNextDate shape`, and replace the body with .github/PULL_REQUEST_TEMPLATE.md verbatim, placeholders intact and every checklist box unchecked."
+      },
+      {
+        "title": "The surviving note's rewritten body is 442 characters, more than double the longest other note in upcoming-release-notes/ (194, in release-cut-prs.md) and 5x the 86-character median. formatNotes (packages/ci-actions/src/release-notes/util.mjs:238) joins note bodies verbatim with no wrapping or sentence splitting, so this ships to the docs page as one 442-character bullet under Bugfixes.",
+        "detail": "The surviving note's rewritten body is 442 characters, more than double the longest other note in upcoming-release-notes/ (194, in release-cut-prs.md) and 5x the 86-character median. formatNotes (packages/ci-actions/src/release-notes/util.mjs:238) joins note bodies verbatim with no wrapping or sentence splitting, so this ships to the docs page as one 442-character bullet under Bugfixes.\n\n`upcoming-release-notes/fix-schedule-occurrence-consumption.md:6`\n\nEvidence: Measured every note body in upcoming-release-notes/ (85 files, excluding README.md): median 86, p90 138, max 194 before this change. The new body is 442. The pre-existing body of this same note was already 416, so the length is inherited from the note this PR is editing rather than introduced by the carry-over the work order asked for — but this PR is what lands it in the published changelog. The format constrains it: validateFile (packages/ci-actions/bin/release-notes-check.mjs:98-102) rejects any body containing a newline, and parseReleaseNotes:180 renders `- ${prefix}${body.trim()} — thanks ${authors}` with no wrapping. So the only available lever is sentence choice, not layout.\n\nFix: Not a merge blocker and not the implementer's error — the work order prescribed this exact sentence and the one-line constraint makes it the only shape available. If a maintainer wants it shorter, the clause 'and the Upcoming row it came from leaves the register' is the most severable: the remaining claims (lands on the clicked occurrence's date, skipped occurrence stays payable, double-post creates one transaction) are the part a user actually needs. Worth raising with the maintainer, not reworking here."
+      }
+    ],
+    "pr": "49"
+  }
 }
