@@ -1,5 +1,6 @@
 import MockDate from 'mockdate';
 
+import { compileQuery, schema, schemaConfig } from '#server/aql';
 import type { RuleConditionEntity, ScheduleEntity } from '#types/models';
 
 import * as monthUtils from './months';
@@ -18,7 +19,10 @@ import {
   UPCOMING_LENGTH_PRESET_OPTIONS,
   UPCOMING_LENGTH_PRESET_VALUES,
 } from './schedules';
-import type { ScheduleStatuses } from './schedules';
+import type {
+  ScheduleOccurrenceMatchInput,
+  ScheduleStatuses,
+} from './schedules';
 
 describe('schedules', () => {
   const today = new Date(2017, 0, 1); // Global date when testing is set to 2017-01-01 per monthUtils.currentDay()
@@ -285,7 +289,7 @@ describe('schedules', () => {
       expect(filters[0]).not.toHaveProperty('$or');
     });
 
-    it('filters by schedule and date when schedules are given', () => {
+    it('matches the occurrence stamp first, falling back to the date bound', () => {
       const filters = getHasTransactionsQuery([
         {
           id: 'schedule-1',
@@ -297,10 +301,110 @@ describe('schedules', () => {
       expect(filters).toEqual([
         {
           $or: [
-            { $and: { schedule: 'schedule-1', date: { $gte: '2024-03-10' } } },
+            {
+              $and: {
+                schedule: 'schedule-1',
+                $or: [
+                  { schedule_occurrence: '2024-03-10' },
+                  {
+                    $and: [
+                      { schedule_occurrence: null },
+                      { date: { $gte: '2024-03-10' } },
+                    ],
+                  },
+                ],
+              },
+            },
           ],
         },
       ]);
+    });
+
+    it('leaves the fallback date bound unchanged from today', () => {
+      // The stamp carries occurrence identity for anything this app posted;
+      // the fallback bound must keep matching exactly what it matched before,
+      // so no grace window is silently reintroduced (or widened).
+      function fallbackDateBound(
+        schedule: {
+          id: string;
+          next_date: string;
+        } & ScheduleOccurrenceMatchInput,
+      ) {
+        const [{ $or: perSchedule }] = getHasTransactionsQuery([
+          schedule,
+        ]).serialize().filterExpressions as [
+          { $or: Array<{ $and: { $or: unknown[] } }> },
+        ];
+        const [, fallback] = perSchedule[0].$and.$or as [
+          unknown,
+          { $and: [{ schedule_occurrence: null }, { date: { $gte: string } }] },
+        ];
+        return fallback.$and[1].date.$gte;
+      }
+
+      const opIs: {
+        id: string;
+        next_date: string;
+      } & ScheduleOccurrenceMatchInput = {
+        id: 'schedule-1',
+        next_date: '2026-11-02',
+        _conditions: [
+          {
+            op: 'is',
+            field: 'date',
+            value: { start: '2026-11-02', frequency: 'monthly' },
+          },
+        ],
+      };
+
+      expect(fallbackDateBound(opIs)).toBe('2026-11-02');
+
+      expect(
+        fallbackDateBound({
+          id: 'schedule-2',
+          next_date: '2026-11-02',
+          posts_transaction: false,
+        }),
+      ).toBe('2026-10-31');
+
+      expect(
+        fallbackDateBound({
+          id: 'schedule-3',
+          next_date: '2026-11-02',
+          posts_transaction: true,
+        }),
+      ).toBe('2026-11-02');
+    });
+
+    it('compiles the fallback arm with AND, not OR', () => {
+      // AQL's `compileOr` joins the conditions *inside* a branch with OR, so
+      // the object form `{ schedule_occurrence: null, date: {...} }` compiles
+      // to `IS NULL OR date >= bound` — matching every schedule-linked
+      // transaction and making each occurrence look permanently paid. The
+      // serialised filter above looks fine either way, so assert the SQL.
+      const { sqlPieces } = compileQuery(
+        getHasTransactionsQuery([
+          {
+            id: 's1',
+            next_date: '2016-12-02',
+            _conditions: [{ op: 'is', field: 'date', value: '2016-12-02' }],
+          },
+        ]).serialize(),
+        schema,
+        schemaConfig,
+      );
+
+      // Strip the internal-table prefix and the formatting so the assertion is
+      // about the operators, not about which view the table resolved to.
+      const where = sqlPieces.where
+        .replace(/v_transactions_internal(_alive)?\./g, '')
+        .replace(/\s+/g, ' ');
+
+      expect(where).toBe(
+        "WHERE (((schedules1.id = 's1' " +
+          'AND (schedule_occurrence = 20161202 ' +
+          'OR (schedule_occurrence IS NULL AND date >= 20161202)))))',
+      );
     });
   });
 
@@ -461,6 +565,63 @@ describe('schedules', () => {
       ],
     ] as const)('%s', (_label, schedule, txDate, expected) => {
       expectPosted(schedule, txDate, expected);
+    });
+
+    function expectStamped(
+      schedule: Parameters<typeof getScheduleOccurrenceMatchStartDate>[0],
+      occurrence: string | null,
+      txDate: string,
+      expected: boolean,
+    ) {
+      expect(
+        isScheduleOccurrencePosted({
+          schedule,
+          scheduleId,
+          occurrenceDate,
+          postedTransactions: [
+            {
+              schedule: scheduleId,
+              date: txDate,
+              schedule_occurrence: occurrence,
+            },
+          ],
+        }),
+      ).toBe(expected);
+    }
+
+    it('credits a stamped transaction to its occurrence however it is dated', () => {
+      // The reported bug: the payment was posted for this occurrence and then
+      // moved seven days earlier. The date is the user's; the stamp is not.
+      expectStamped(
+        manualRecurringWithIsOp,
+        occurrenceDate,
+        '2024-03-03',
+        true,
+      );
+    });
+
+    it('does not credit a transaction stamped for a different occurrence', () => {
+      expectStamped(
+        manualRecurringWithIsOp,
+        '2024-02-10',
+        occurrenceDate,
+        false,
+      );
+      // Dated late and inside any plausible grace, so this cannot pass
+      // vacuously by falling out of the window.
+      expectStamped(manualRecurringWithIsOp, '2024-02-10', '2024-03-09', false);
+    });
+
+    it('matches exactly for a schedule that both auto-posts and recurs on op is', () => {
+      const bothShape = {
+        posts_transaction: true,
+        _conditions: manualRecurringWithIsOp._conditions,
+      };
+
+      expectStamped(bothShape, occurrenceDate, '2024-03-03', true);
+      expectStamped(bothShape, occurrenceDate, '2024-03-12', true);
+      expectStamped(bothShape, '2024-02-10', occurrenceDate, false);
+      expectStamped(bothShape, '2024-02-10', '2024-03-09', false);
     });
   });
 

@@ -104,6 +104,12 @@ export function getScheduleOccurrenceMatchStartDate(
 export type PostedScheduleTransaction = {
   schedule?: string | null;
   date: string;
+  /**
+   * The occurrence the transaction was posted for, when it was posted from the
+   * schedule. Undefined/null on transactions that predate the stamp, or that a
+   * user, import or API created themselves.
+   */
+  schedule_occurrence?: string | null;
 };
 
 export function indexPostedScheduleTransactions(
@@ -127,6 +133,15 @@ export function indexPostedScheduleTransactions(
   return byScheduleId;
 }
 
+/**
+ * Whether `tx` discharges `occurrenceDate` for its schedule.
+ *
+ * A stamped transaction is credited to the occurrence it names and to nothing
+ * else, whatever date it carries — the date is the user's to edit, and matching
+ * on it is what let a re-dated payment un-pay its own occurrence. An unstamped
+ * transaction falls back to the date comparison, one-sided as before: it may be
+ * early by up to the lookback but never later than the occurrence.
+ */
 export function isScheduleOccurrencePosted({
   schedule,
   scheduleId,
@@ -143,36 +158,58 @@ export function isScheduleOccurrencePosted({
     occurrenceDate,
   );
 
-  return postedTransactions.some(
-    tx =>
-      tx.schedule === scheduleId &&
-      tx.date >= matchStartDate &&
-      tx.date <= occurrenceDate,
-  );
+  return postedTransactions.some(tx => {
+    if (tx.schedule !== scheduleId) {
+      return false;
+    }
+
+    if (tx.schedule_occurrence != null) {
+      return tx.schedule_occurrence === occurrenceDate;
+    }
+
+    return tx.date >= matchStartDate && tx.date <= occurrenceDate;
+  });
 }
 
 /**
  * Builds a query to check if each schedule already has a matching transaction.
  *
- * The date lower-bound varies:
+ * Each schedule matches on its `schedule_occurrence` stamp first — an exact
+ * identity comparison against `next_date`, so re-dating the payment does not
+ * un-pay the occurrence. Transactions without the stamp fall back to a date
+ * lower bound, which is unchanged from before:
  * - `dateCond.op === 'is'` (one-time or recurring): exact `next_date`, no lookback.
  * - `posts_transaction` (auto-posted recurring): exact `next_date`, since
  *   auto-posted dates are always precise. A lookback here would cause
  *   yesterday's transaction to falsely match today's occurrence.
  * - Otherwise (manual recurring with `isapprox`, etc.): 2-day lookback to catch
  *   early payments.
+ *
+ * The fallback arm must use the `$and` ARRAY form: AQL's `compileOr` joins the
+ * conditions inside a branch with OR, so the object form matches every
+ * schedule-linked transaction and would make every occurrence look paid.
  */
 export function getHasTransactionsQuery(schedules) {
   const filters = schedules.map(schedule => {
     return {
       $and: {
         schedule: schedule.id,
-        date: {
-          $gte: getScheduleOccurrenceMatchStartDate(
-            schedule,
-            schedule.next_date,
-          ),
-        },
+        $or: [
+          { schedule_occurrence: schedule.next_date },
+          {
+            $and: [
+              { schedule_occurrence: null },
+              {
+                date: {
+                  $gte: getScheduleOccurrenceMatchStartDate(
+                    schedule,
+                    schedule.next_date,
+                  ),
+                },
+              },
+            ],
+          },
+        ],
       },
     };
   });
@@ -180,7 +217,7 @@ export function getHasTransactionsQuery(schedules) {
   const query = q('transactions')
     .options({ splits: 'all' })
     .orderBy({ date: 'desc' })
-    .select(['schedule', 'date']);
+    .select(['schedule', 'date', 'schedule_occurrence']);
 
   // An empty `$or` compiles away to no constraint at all (`WHERE 1`), which
   // would scan every transaction in the budget to answer a question about zero
