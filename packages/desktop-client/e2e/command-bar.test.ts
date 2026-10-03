@@ -3,6 +3,25 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import { ConfigurationPage } from './page-models/configuration-page';
 
+/**
+ * Console output Radix emits when `Dialog.Content` has no title/description
+ * backing its `aria-labelledby` / `aria-describedby`. Matched narrowly so the
+ * test fails on these two warnings without flaking on unrelated app noise.
+ */
+const dialogAccessibilityWarning =
+  /DialogContent|DialogTitle|DialogDescription|aria-labelledby|aria-describedby/;
+
+/** Text of the element a dialog's `aria-labelledby` / `aria-describedby` points at. */
+function referredText(
+  dialog: ReturnType<Page['locator']>,
+  attribute: 'aria-labelledby' | 'aria-describedby',
+): Promise<string | null> {
+  return dialog.evaluate((node, attr) => {
+    const id = node.getAttribute(attr as string);
+    return id ? (document.getElementById(id)?.textContent ?? null) : null;
+  }, attribute);
+}
+
 test.describe('Command bar', () => {
   let page: Page;
   let configurationPage: ConfigurationPage;
@@ -28,6 +47,39 @@ test.describe('Command bar', () => {
 
   test.afterEach(async () => {
     await page?.close();
+  });
+
+  test('Opening the command bar logs no dialog accessibility warnings', async () => {
+    // Attach the listener after the budget has loaded so we only capture what
+    // the palette open itself produces.
+    const messages: string[] = [];
+    page.on('console', message => {
+      if (message.type() !== 'error' && message.type() !== 'warning') return;
+      const text = message.text();
+      if (dialogAccessibilityWarning.test(text)) messages.push(text);
+    });
+
+    await page.keyboard.press('ControlOrMeta+k');
+    await expect(
+      page.getByRole('combobox', { name: 'Command Bar' }),
+    ).toBeVisible();
+
+    // Assert the console first: it is the regression this test exists for, and
+    // the failure below would otherwise mask it.
+    expect(messages).toEqual([]);
+
+    // The dialog keeps its accessible name, but assert the ids resolve to real
+    // elements too: Playwright falls back to `aria-label` when
+    // `aria-labelledby` dangles, so the role query alone would pass either way.
+    const dialog = page.getByRole('dialog', { name: 'Command Bar' });
+    await expect(dialog).toBeAttached();
+    expect(await referredText(dialog, 'aria-labelledby')).toBe('Command Bar');
+    expect(await referredText(dialog, 'aria-describedby')).toBe(
+      'Search pages, accounts and reports',
+    );
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeAttached();
   });
 
   test('Check the command bar visuals', async () => {
