@@ -595,7 +595,7 @@
     "decided_at": "2026-10-02T18:17:01.535Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "implement",
+  "dispatched_stage": "review",
   "answers": [
     {
       "at": "2026-10-02T18:30:21.446Z",
