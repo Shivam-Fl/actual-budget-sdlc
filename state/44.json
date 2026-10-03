@@ -205,7 +205,13 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/hooks/useSchedules.ts",
+    "packages/desktop-client/src/hooks/useSchedules.test.ts",
+    "upcoming-release-notes/fix-schedule-rows-refresh-flicker.md",
+    "packages/desktop-client/src/hooks/useSchedules.test.ts",
+    "packages/desktop-client/src/hooks/usePreviewTransactions.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
