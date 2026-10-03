@@ -17,8 +17,6 @@ const execFile = promisify(childProcess.execFile);
 
 const NOTES_DIR = 'upcoming-release-notes';
 
-console.log('Looking in ' + fs.realpathSync(NOTES_DIR));
-
 const baseRef = process.env.BASE_REF;
 if (!baseRef) {
   console.log('::error::BASE_REF env var is not set');
@@ -44,28 +42,50 @@ function reportError(message) {
   // GITHUB_STEP_SUMMARY is supplied by the runner, so it is always set in
   // Actions and absent on a local run. The summary is the only thing the
   // message is written to, so without it there is nothing left to do but exit.
+  //
+  // Every exit here sets `exitCode` rather than calling `process.exit`. To a
+  // pipe, `console.log` is asynchronous, so exiting synchronously discards
+  // whatever had not drained — and the README is a tracked file any PR author
+  // can rewrite, so the notice above can be megabytes. The verdict is already
+  // on stdout by this point; only the unhandled write is at stake.
   if (!process.env.GITHUB_STEP_SUMMARY) {
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
-  fs.createWriteStream(process.env.GITHUB_STEP_SUMMARY)
-    .end(readme)
-    .on('close', () => {
-      process.exit(1);
-    });
+  // An unopenable summary path — a directory the runner never created, say —
+  // arrives as an `error` event on the stream, and a stream with no `error`
+  // listener throws it as an unhandled event. That kills the process on the way
+  // out of a function whose contract is to report an error rather than throw
+  // one, so both endings set the same exit code and neither throws. The
+  // listener is attached before `end()` so it is in place before the write
+  // attempts the open.
+  const summary = fs.createWriteStream(process.env.GITHUB_STEP_SUMMARY);
+  summary.on('error', () => {
+    process.exitCode = 1;
+  });
+  summary.on('close', () => {
+    process.exitCode = 1;
+  });
+  summary.end(readme);
 }
 
-function validateFile(path) {
+/**
+ * Validates one release note. `path` is the Buffer the filesystem is asked
+ * about, and `label` is the same path as a string for the error messages —
+ * a Buffer stringifies to its raw bytes, so the two cannot be one argument.
+ */
+function validateFile(path, label) {
   const { data, content } = matter(fs.readFileSync(path, 'utf-8'));
 
   if (!data.category) {
-    reportError(`Release note ${path} is missing a category.`);
+    reportError(`Release note ${label} is missing a category.`);
     return false;
   }
   const category = categoryAutocorrections[data.category] ?? data.category;
   if (!categoryOrder.includes(category)) {
     reportError(
-      `Release note ${path} category "${data.category}" is not one of ${categoryOrder
+      `Release note ${label} category "${data.category}" is not one of ${categoryOrder
         .map(JSON.stringify)
         .join(', ')}`,
     );
@@ -73,21 +93,21 @@ function validateFile(path) {
   }
 
   if (!data.authors) {
-    reportError(`Release note ${path} is missing authors.`);
+    reportError(`Release note ${label} is missing authors.`);
     return false;
   }
   if (!Array.isArray(data.authors)) {
-    reportError(`Release note ${path} authors should be a list.`);
+    reportError(`Release note ${label} authors should be a list.`);
     return false;
   }
   if (data.authors.length === 0) {
-    reportError(`Release note ${path} has an empty authors list.`);
+    reportError(`Release note ${label} has an empty authors list.`);
     return false;
   }
   const nonPersonAuthors = findNonPersonAuthors(data.authors);
   if (nonPersonAuthors.length > 0) {
     reportError(
-      `Release note ${path} authors must be GitHub usernames of people, not bots or agents: ${nonPersonAuthors
+      `Release note ${label} authors must be GitHub usernames of people, not bots or agents: ${nonPersonAuthors
         .map(describeAuthor)
         .join(', ')}.`,
     );
@@ -96,7 +116,7 @@ function validateFile(path) {
 
   const trimmedContent = content.trim();
   if (!trimmedContent || trimmedContent.includes('\n')) {
-    reportError(`Release note ${path} body should contain exactly one line`);
+    reportError(`Release note ${label} body should contain exactly one line`);
     return false;
   }
 
@@ -104,22 +124,44 @@ function validateFile(path) {
 }
 
 void (async () => {
-  await execFile('git', ['fetch', 'origin', baseRef]);
-  const { stdout } = await execFile('git', [
-    'diff',
-    '--name-status',
-    // `-z` makes git emit paths verbatim, NUL-separated, instead of quoting and
-    // backslash-escaping anything a tab-separated parse would misread.
-    '-z',
-    // R matters as much as M: a note moved to a fresh filename reaches readers
-    // with whatever is in its authors list, and HEAD holds it at the new path.
-    // Deletions publish nothing. C is deliberately absent — the invocation asks
-    // for no copy detection, so git reports a copy as an addition anyway.
-    '--diff-filter=AMR',
-    `origin/${baseRef}...HEAD`,
-    '--',
-    `${NOTES_DIR}/`,
-  ]);
+  // A base ref that cannot be fetched — deleted, renamed, or unreachable for a
+  // moment — rejects this promise, and an async IIFE with no catch turns that
+  // into an unhandled rejection: a raw `Command failed` stack in the job log and
+  // no ::error:: line at all. This function's contract is to report rather than
+  // throw, so the same treatment the file reads get applies here.
+  try {
+    await execFile('git', ['fetch', 'origin', baseRef]);
+  } catch (e) {
+    reportError(
+      `Could not fetch base ref "${baseRef}" from origin: ${e.message}`,
+    );
+    return;
+  }
+  const { stdout } = await execFile(
+    'git',
+    [
+      'diff',
+      '--name-status',
+      // `-z` makes git emit paths verbatim, NUL-separated, instead of quoting and
+      // backslash-escaping anything a tab-separated parse would misread.
+      '-z',
+      // R matters as much as M: a note moved to a fresh filename reaches readers
+      // with whatever is in its authors list, and HEAD holds it at the new path.
+      // Deletions publish nothing. C is deliberately absent — the invocation asks
+      // for no copy detection, so git reports a copy as an addition anyway.
+      '--diff-filter=AMR',
+      `origin/${baseRef}...HEAD`,
+      '--',
+      `${NOTES_DIR}/`,
+    ],
+    // A POSIX filename may hold any byte, but a UTF-8 decode cannot represent
+    // every one of them: git hands back raw bytes under -z, and a byte that is
+    // not valid UTF-8 becomes U+FFFD, so a file that is genuinely there stops
+    // existing as far as `fs.existsSync` is concerned. latin1 maps bytes to
+    // code points one for one, so it is the exact inverse of what -z produced
+    // and every path below round-trips to the bytes git reported.
+    { encoding: 'latin1' },
+  );
   const { added, changed } = selectReleaseNotePaths(stdout, NOTES_DIR);
 
   if (added.length === 0) {
@@ -129,12 +171,23 @@ void (async () => {
     return;
   }
 
-  for (const path of changed) {
+  for (const name of changed) {
+    // The invariant this loop depends on: every path arriving here is the
+    // latin1 view git's -z output was decoded into, so Buffer.from recovers the
+    // exact bytes on disk. A caller passing genuinely decoded UTF-8 instead
+    // would have its paths double-encoded, and no current caller does —
+    // release-notes-check.mjs and its test are the only two.
+    const path = Buffer.from(name, 'latin1');
+    // Decoded back to UTF-8 for display, so a name that is valid UTF-8 still
+    // reads correctly in the message rather than as mojibake.
+    const label = path.toString('utf-8');
     if (!fs.existsSync(path)) {
-      reportError(`Release note ${path} was added but does not exist on HEAD.`);
+      reportError(
+        `Release note ${label} was added but does not exist on HEAD.`,
+      );
       return;
     }
-    if (!validateFile(path)) {
+    if (!validateFile(path, label)) {
       return;
     }
   }
