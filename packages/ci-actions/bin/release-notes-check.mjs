@@ -2,8 +2,11 @@ import * as childProcess from 'node:child_process';
 import * as fs from 'node:fs';
 import { promisify } from 'node:util';
 
-import matter from 'gray-matter';
-
+import {
+  describeFailure,
+  parseNote,
+  readReadme,
+} from '../src/release-notes/failures.mjs';
 import {
   categoryAutocorrections,
   categoryOrder,
@@ -31,12 +34,11 @@ function reportError(message) {
   // file collapses it onto this single notice line: piping it raw would let a
   // PR put live `::add-mask::` or `::notice::` lines in this job's log. It is
   // also the file a PR is most likely to delete, and this function's contract
-  // is to report an error rather than throw one, so a missing one degrades to
-  // an empty notice instead of failing on the way to the message.
-  const readmePath = `${NOTES_DIR}/README.md`;
-  const readme = fs.existsSync(readmePath)
-    ? fs.readFileSync(readmePath, 'utf-8')
-    : '';
+  // is to report an error rather than throw one, so an unreadable one degrades
+  // to an empty notice instead of failing on the way to the message — which
+  // includes a PR that replaces it with a directory, where the read raises
+  // EISDIR rather than ENOENT.
+  const readme = readReadme(`${NOTES_DIR}/README.md`);
   console.log(`::notice::${sanitizeWorkflowCommandData(readme)}`);
 
   // GITHUB_STEP_SUMMARY is supplied by the runner, so it is always set in
@@ -76,7 +78,16 @@ function reportError(message) {
  * a Buffer stringifies to its raw bytes, so the two cannot be one argument.
  */
 function validateFile(path, label) {
-  const { data, content } = matter(fs.readFileSync(path, 'utf-8'));
+  // The front matter is whatever a PR author typed, so it can fail to parse —
+  // and the gate's whole job is to say which file and why rather than to exit
+  // on a stack trace. This is the one place that can name the offending note,
+  // because only here is the label in hand.
+  const parsed = parseNote(path);
+  if (!parsed.ok) {
+    reportError(`Release note ${label} could not be parsed: ${parsed.message}`);
+    return false;
+  }
+  const { data, content } = parsed;
 
   if (!data.category) {
     reportError(`Release note ${label} is missing a category.`);
@@ -123,12 +134,12 @@ function validateFile(path, label) {
   return true;
 }
 
-void (async () => {
+async function main() {
   // A base ref that cannot be fetched — deleted, renamed, or unreachable for a
-  // moment — rejects this promise, and an async IIFE with no catch turns that
-  // into an unhandled rejection: a raw `Command failed` stack in the job log and
-  // no ::error:: line at all. This function's contract is to report rather than
-  // throw, so the same treatment the file reads get applies here.
+  // moment — rejects this promise. The guard below reports it as an annotation
+  // with the ref named in it; the boundary under `main` would report it too,
+  // but as a `Command failed` echo of the git invocation, so the message that
+  // reached a contributor's log is kept as it is.
   try {
     await execFile('git', ['fetch', 'origin', baseRef]);
   } catch (e) {
@@ -160,7 +171,15 @@ void (async () => {
     // existing as far as `fs.existsSync` is concerned. latin1 maps bytes to
     // code points one for one, so it is the exact inverse of what -z produced
     // and every path below round-trips to the bytes git reported.
-    { encoding: 'latin1' },
+    //
+    // `maxBuffer` overrides Node's 1MB default, which is a ceiling on the size
+    // of a legitimate branch rather than a failure: a release-note batch of a
+    // few thousand notes with long filenames overflows it, and the gate then
+    // reports a branch that ought to pass. 64MB is ~64x the default and ~35x
+    // the 1.8MB a large batch measures, so no human-authored branch reaches
+    // it — and if one ever did, the boundary below reports it as an
+    // annotation that names itself rather than as a stack trace.
+    { encoding: 'latin1', maxBuffer: 64 * 1024 * 1024 },
   );
   const { added, changed } = selectReleaseNotePaths(stdout, NOTES_DIR);
 
@@ -193,4 +212,15 @@ void (async () => {
   }
 
   console.log(`Validated ${changed.length} release note(s). \u{1f389}`);
-})();
+}
+
+// The one boundary under the whole pipeline. Every throw above it — a git call
+// that rejects, a filename the filesystem cannot answer for, a bug in this file
+// — otherwise escapes as an unhandled rejection and ends the process with a
+// stack trace on stderr and no `::error::` line at all, which for a check whose
+// entire output is that annotation is the worst possible ending. The handler
+// reports through the same path every other error takes, so the job always
+// says something and always exits 1.
+void main().catch(e => {
+  reportError(`Release notes check failed: ${describeFailure(e)}`);
+});
