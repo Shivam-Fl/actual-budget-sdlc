@@ -257,7 +257,12 @@
       "Findings on commit 3b7ff1a are no longer actionable now the PR is merged and issue #17 closed: the work order it was reviewed against cannot be amended and the commit cannot be split, so both of its own remedies are impossible. Its four substantive sub-items are exactly the README sink, the quotePath flag, the AMRC filter and the selectReleaseNotePaths extraction, all covered by this change."
     ]
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/ci-actions/src/release-notes/util.mjs",
+    "packages/ci-actions/bin/release-notes-check.mjs",
+    "packages/ci-actions/src/release-notes/util.test.js",
+    "packages/ci-actions/src/release-notes/util.test.js"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
