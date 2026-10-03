@@ -248,6 +248,7 @@ __metadata:
     "@internationalized/date": "npm:^3.12.2"
     "@lezer/highlight": "npm:^1.2.3"
     "@playwright/test": "npm:1.61.1"
+    "@radix-ui/react-dialog": "npm:^1.1.6"
     "@react-aria/interactions": "npm:^3.28.1"
     "@reduxjs/toolkit": "npm:^2.12.0"
     "@rolldown/plugin-babel": "npm:~0.2.3"
