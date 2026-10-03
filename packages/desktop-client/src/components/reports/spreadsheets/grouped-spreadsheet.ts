@@ -9,6 +9,7 @@ import {
 import type { QueryDataEntity } from '#components/reports/ReportOptions';
 import type { useSpreadsheet } from '#hooks/useSpreadsheet';
 
+import { narrowCategoriesByConditions } from './budgetDataQuery';
 import type { createCustomSpreadsheetProps } from './custom-spreadsheet';
 import { fetchSpreadsheetQueryData } from './fetchSpreadsheetQueryData';
 import { filterEmptyRows } from './filterEmptyRows';
@@ -36,7 +37,16 @@ export function createGroupedSpreadsheet({
   sortByOp,
   firstDayOfWeekIdx,
 }: createCustomSpreadsheetProps) {
-  const [categoryList, categoryGroup] = categoryLists(categories);
+  // Both halves of the axis are narrowed: the table view renders `groupedData`,
+  // built below from `categoryGroup`, so narrowing `categoryList` alone would
+  // leave unselected categories on screen at 0.00 when `showEmpty` is on.
+  const [categoryList, categoryGroup] = categoryLists(
+    narrowCategoriesByConditions(
+      categories,
+      conditions,
+      conditionsOp === 'or' ? 'or' : 'and',
+    ),
+  );
 
   return async (
     spreadsheet: ReturnType<typeof useSpreadsheet>,

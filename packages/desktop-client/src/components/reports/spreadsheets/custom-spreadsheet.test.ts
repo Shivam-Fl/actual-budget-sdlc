@@ -1,338 +1,459 @@
-import {
-  clearServer,
-  initServer,
-} from '@actual-app/core/platform/client/connection';
-import * as monthUtils from '@actual-app/core/shared/months';
 import type {
   CategoryEntity,
   CategoryGroupEntity,
+  DataEntity,
+  GroupedEntity,
+  RuleConditionEntity,
 } from '@actual-app/core/types/models';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { QueryDataEntity } from '#components/reports/ReportOptions';
+
+import type { createCustomSpreadsheetProps } from './custom-spreadsheet';
 import { createCustomSpreadsheet } from './custom-spreadsheet';
 import { createGroupedSpreadsheet } from './grouped-spreadsheet';
 
-vi.mock(
-  '@actual-app/core/platform/client/connection',
-  () => import('#mocks/connection'),
-);
+// The budgeted path goes through the real `fetchSpreadsheetQueryData`, so the
+// stubs below stand in for the server only - never for the data layer.
+vi.mock('@actual-app/core/platform/client/connection', () => ({
+  send: vi.fn(async (name: string, args: unknown) => {
+    if (name === 'make-filters-from-conditions') {
+      return { filters: [] };
+    }
 
-type CustomData = Parameters<
-  Parameters<ReturnType<typeof createCustomSpreadsheet>>[1]
->[0];
-type GroupedData = Parameters<
-  Parameters<ReturnType<typeof createGroupedSpreadsheet>>[1]
->[0];
+    if (name === 'envelope-budget-month' || name === 'tracking-budget-month') {
+      const month = (args as { month: string }).month;
+      return [
+        { name: `budget-c-cell`, value: 500 },
+        { name: `${month}-budget-total`, value: 500 },
+      ];
+    }
 
-const categoryGroups = [
-  { id: 'group-food', name: 'Food', is_income: false, sort_order: 0 },
-] satisfies CategoryGroupEntity[];
+    throw new Error(`Unexpected send() in test: ${name}`);
+  }),
+}));
 
-const categories = [
-  { id: 'cat-groceries', name: 'Groceries', group: 'group-food' },
-] satisfies CategoryEntity[];
+// The rows the server would return for the query, standing in for it exactly
+// as the `send` stub above stands in for the budget endpoints. A test sets them
+// per case and `aqlQuery` splits them into assets and debts the way the query's
+// `amount` filter would, so a case can assert on money rather than on shape.
+// `vi.hoisted` because `vi.mock` is hoisted above this declaration.
+const { serverRows } = vi.hoisted(() => ({
+  serverRows: { current: [] as QueryDataEntity[] },
+}));
 
-/** A single day of spending inside the final week, keyed by day. */
-const weeklyRows = [
-  { date: '2026-08-31', amount: 10 },
-  { date: '2026-09-07', amount: 20 },
-  { date: '2026-09-14', amount: 30 },
-  { date: '2026-09-21', amount: 40 },
-  { date: '2026-09-28', amount: 50 },
-  { date: '2026-09-29', amount: 60 },
-  { date: '2026-09-30', amount: 70 },
-  { date: '2026-10-01', amount: 80 },
-  { date: '2026-10-02', amount: 90 },
-  { date: '2026-10-05', amount: 100 },
+function serveTheseRows(rows: QueryDataEntity[]) {
+  serverRows.current = rows;
+}
+
+vi.mock('#queries/aqlQuery', () => ({
+  aqlQuery: async (query: {
+    state: {
+      filterExpressions: Array<Record<string, Record<string, unknown>>>;
+    };
+  }) => {
+    const wantsDebts = query.state.filterExpressions.some(filter =>
+      Object.hasOwn(filter.amount ?? {}, '$lt'),
+    );
+
+    return {
+      data: serverRows.current.filter(row =>
+        wantsDebts ? row.amount < 0 : row.amount > 0,
+      ),
+    };
+  },
+}));
+
+// A debt as the server would return it: `makeQuery` groups by `$month`, so
+// `date` comes back already transformed to the report's interval key ('2024-01',
+// not a date). Debts are negative amounts, so they reach the report through the
+// debts query rather than the assets one.
+function debtRow(
+  category: string,
+  amount: number,
+  date = '2024-01',
+): QueryDataEntity {
+  return {
+    date,
+    category,
+    categoryHidden: false,
+    categoryGroup: category === 'c-cell' ? 'g-bills' : 'g-usual',
+    categoryGroupHidden: false,
+    account: 'a-checking',
+    accountOffBudget: false,
+    payee: 'p-store',
+    transferAccount: '',
+    amount,
+  };
+}
+
+const categoryGroups: CategoryGroupEntity[] = [
+  { id: 'g-usual', name: 'Usual Expenses', sort_order: 0 },
+  { id: 'g-bills', name: 'Bills', sort_order: 1 },
 ];
 
-/**
- * `monthUtils.currentDay()` is hardcoded under the test setup (it short-circuits
- * on `global.IS_TESTING`), so the clamp cannot be moved with fake timers — the
- * module function itself has to be replaced.
- */
-function pinToday(today: string) {
-  vi.spyOn(monthUtils, 'currentDay').mockReturnValue(today);
+const categories: CategoryEntity[] = [
+  { id: 'c-food', name: 'Food', group: 'g-usual', sort_order: 0 },
+  { id: 'c-rent', name: 'Rent', group: 'g-usual', sort_order: 1 },
+  { id: 'c-cell', name: 'Cell', group: 'g-bills', sort_order: 0 },
+];
+
+function makeFixture({ includeEmptyGroup = false } = {}) {
+  const groups = includeEmptyGroup
+    ? [...categoryGroups, { id: 'g-empty', name: 'Empty Group' }]
+    : categoryGroups;
+
+  return {
+    list: categories,
+    grouped: groups.map(group =>
+      group.id === 'g-empty'
+        ? { ...group, categories: [] }
+        : {
+            ...group,
+            categories: categories.filter(c => c.group === group.id),
+          },
+    ),
+  };
 }
 
-/**
- * Stand up a server that honours the query's own date bounds, the way the real
- * AQL layer does, and record the end bound each query was given. A mock that
- * ignored the filter would return every row and make the bucket totals
- * independent of the bound, which is the thing under test.
- */
-function getQueryEndDates(): string[] {
-  const endDates: string[] = [];
-  initServer({
-    'make-filters-from-conditions': async () => ({ filters: [] }),
-    query: async query => {
-      let lower: string | undefined;
-      let upper: string | undefined;
-      // The conditions filter is also an `$and`, so match on the one that
-      // actually carries the date range.
-      for (const expression of query.filterExpressions) {
-        const clauses = (expression as { $and?: unknown[] }).$and;
-        if (!Array.isArray(clauses)) {
-          continue;
-        }
-        for (const clause of clauses) {
-          const date = (clause as { date?: Record<string, string> }).date;
-          if (date?.$lte) {
-            upper = date.$lte;
-            endDates.push(date.$lte);
-          }
-          if (date?.$gte) {
-            lower = date.$gte;
-          }
-        }
-      }
-      const data = weeklyRows.filter(
-        row =>
-          (lower === undefined || row.date >= lower) &&
-          (upper === undefined || row.date <= upper),
-      );
-      return { data, dependencies: [] };
-    },
-  });
-  return endDates;
-}
-
-async function runCustom({
-  startDate = '2026-08-30',
-  endDate,
-  interval = 'Weekly',
-  firstDayOfWeekIdx = '0',
-}: {
-  startDate?: string;
-  endDate: string;
-  interval?: string;
-  firstDayOfWeekIdx?: '0' | '1';
-}): Promise<{ data: CustomData; queryEndDates: string[] }> {
-  const queryEndDates = getQueryEndDates();
-
-  const spreadsheet = createCustomSpreadsheet({
-    startDate,
-    endDate,
-    interval,
-    categories: { list: categories, grouped: categoryGroups },
+function baseProps(
+  categoriesFixture: {
+    list: CategoryEntity[];
+    grouped: CategoryGroupEntity[];
+  },
+  overrides: Partial<createCustomSpreadsheetProps> = {},
+): createCustomSpreadsheetProps {
+  return {
+    startDate: '2024-01-01',
+    endDate: '2024-03-31',
+    interval: 'Monthly',
+    categories: categoriesFixture,
     conditions: [],
     conditionsOp: 'and',
-    showEmpty: true,
-    showOffBudget: true,
-    showHiddenCategories: true,
-    showUncategorized: true,
-    trimIntervals: false,
     groupBy: 'Category',
-    firstDayOfWeekIdx,
-  });
-
-  let data: CustomData | undefined;
-  await spreadsheet(undefined as never, result => {
-    data = result;
-  });
-
-  if (!data) {
-    throw new Error('Spreadsheet did not produce report data');
-  }
-  return { data, queryEndDates };
-}
-
-async function runGrouped({
-  startDate = '2026-08-30',
-  endDate,
-  interval = 'Weekly',
-  firstDayOfWeekIdx = '0',
-}: {
-  startDate?: string;
-  endDate: string;
-  interval?: string;
-  firstDayOfWeekIdx?: '0' | '1';
-}): Promise<GroupedData> {
-  getQueryEndDates();
-
-  const spreadsheet = createGroupedSpreadsheet({
-    startDate,
-    endDate,
-    interval,
-    categories: { list: categories, grouped: categoryGroups },
-    conditions: [],
-    conditionsOp: 'and',
     showEmpty: true,
     showOffBudget: true,
-    showHiddenCategories: true,
+    showHiddenCategories: false,
     showUncategorized: true,
     trimIntervals: false,
-    firstDayOfWeekIdx,
-  });
-
-  let data: GroupedData | undefined;
-  await spreadsheet(undefined as never, result => {
-    data = result;
-  });
-
-  return data ?? [];
+    ...overrides,
+  };
 }
 
-afterEach(async () => {
-  vi.restoreAllMocks();
-  await clearServer();
-});
+async function runCustom(props: createCustomSpreadsheetProps) {
+  const run = createCustomSpreadsheet(props);
+  let captured: DataEntity | undefined;
+  await run({} as never, data => {
+    captured = data;
+  });
+  if (!captured) {
+    throw new Error('createCustomSpreadsheet never called setData');
+  }
+  return { ...captured, data: captured.data ?? [] };
+}
 
-describe('weekly custom report end bound', () => {
-  it('covers the whole final week once that week has elapsed', async () => {
-    pinToday('2026-10-05');
+async function runGrouped(props: createCustomSpreadsheetProps) {
+  const run = createGroupedSpreadsheet(props);
+  let captured: GroupedEntity[] | undefined;
+  await run({} as never, data => {
+    captured = data;
+  });
+  if (!captured) {
+    throw new Error('createGroupedSpreadsheet never called setData');
+  }
+  return captured;
+}
 
-    const { data, queryEndDates } = await runCustom({
-      endDate: '2026-10-03',
-    });
+const selectCellOnly = [
+  { field: 'category', op: 'oneOf', value: ['c-cell'] },
+] as RuleConditionEntity[];
 
-    // 2026-10-03 is a Saturday, so it is already the week's true end.
-    expect(queryEndDates).toEqual(['2026-10-03', '2026-10-03']);
-    expect(
-      data.intervalData[data.intervalData.length - 1].intervalEndDate,
-    ).toBe('2026-10-03');
+// The synthetic Uncategorized / Off budget / Transfers rows share an empty id,
+// so axis identity is the row's id with its name as the tiebreaker.
+function axisNames(rows: Array<{ id: string; name: string }>) {
+  return rows.map(row => row.id || row.name);
+}
+
+describe('category axis narrowing', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    serveTheseRows([]);
   });
 
-  it('widens a week-start end date to the week it labels', async () => {
-    pinToday('2026-10-05');
+  it('drops unselected categories from the Category axis', async () => {
+    const data = await runCustom(
+      baseProps(makeFixture(), { conditions: selectCellOnly }),
+    );
 
-    const { data, queryEndDates } = await runCustom({
-      endDate: '2026-09-27',
-    });
-
-    expect(queryEndDates).toEqual(['2026-10-03', '2026-10-03']);
-    expect(
-      data.intervalData[data.intervalData.length - 1].intervalEndDate,
-    ).toBe('2026-10-03');
+    // The synthetic Uncategorized / Off budget / Transfers block is appended
+    // by `categoryLists` after the narrowing and must survive it.
+    expect(axisNames(data.data)).toEqual([
+      'c-cell',
+      'Uncategorized',
+      'Off budget',
+      'Transfers',
+    ]);
+    expect(axisNames(data.data)).not.toContain('c-food');
+    expect(axisNames(data.data)).not.toContain('c-rent');
   });
 
-  it('clamps to today while the final week is still in progress', async () => {
-    pinToday('2026-10-02');
+  it('drops unselected groups from the grouped data used by the table view', async () => {
+    const groups = await runGrouped(
+      baseProps(makeFixture(), { conditions: selectCellOnly }),
+    );
 
-    const { data, queryEndDates } = await runCustom({
-      endDate: '2026-09-27',
-    });
-
-    expect(queryEndDates).toEqual(['2026-10-02', '2026-10-02']);
+    expect(groups.map(group => group.id)).toEqual(['g-bills', 'uncategorized']);
     expect(
-      data.intervalData[data.intervalData.length - 1].intervalEndDate,
-    ).toBe('2026-10-02');
+      groups
+        .find(group => group.id === 'g-bills')!
+        .categories!.map(category => category.id),
+    ).toEqual(['c-cell']);
   });
 
-  it('does not report the final week beyond the days that have happened', async () => {
-    pinToday('2026-10-02');
+  it('drops unselected groups from the Group split', async () => {
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: selectCellOnly,
+        groupBy: 'Group',
+      }),
+    );
 
-    const { data } = await runCustom({ endDate: '2026-09-27' });
-    const lastBucket = data.intervalData[data.intervalData.length - 1];
-
-    // 50 + 60 + 70 + 80 + 90 — 10/03 has not happened yet, so its 100 is absent.
-    expect(lastBucket.totalAssets).toBe(350);
+    expect(axisNames(data.data)).toEqual(['g-bills', 'uncategorized']);
   });
 
-  it('leaves the non-final buckets on their existing day-before-next rule', async () => {
-    pinToday('2026-10-05');
+  it('narrows the axis but not the amounts for Type=Budgeted', async () => {
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: selectCellOnly,
+        balanceTypeOp: 'totalBudgeted',
+      }),
+    );
 
-    const { data } = await runCustom({ endDate: '2026-10-03' });
+    expect(axisNames(data.data)).toEqual([
+      'c-cell',
+      'Uncategorized',
+      'Off budget',
+      'Transfers',
+    ]);
 
+    const cell = data.data.find(row => row.id === 'c-cell')!;
+    expect(cell.intervalData!.map(interval => interval.totalBudgeted)).toEqual([
+      500, 500, 500,
+    ]);
+
+    // No unselected category picks up an amount by being on the axis.
+    const others = data.data.filter(row => row.id !== 'c-cell');
     expect(
-      data.intervalData.map(bucket => [
-        bucket.intervalStartDate,
-        bucket.intervalEndDate,
-      ]),
-    ).toEqual([
-      ['2026-08-30', '2026-09-05'],
-      ['2026-09-06', '2026-09-12'],
-      ['2026-09-13', '2026-09-19'],
-      ['2026-09-20', '2026-09-26'],
-      ['2026-09-27', '2026-10-03'],
+      others.every(row => row.totalBudgeted === 0 && row.totalDebts === 0),
+    ).toBe(true);
+  });
+
+  it('leaves the axis untouched with no conditions', async () => {
+    const fixture = makeFixture({ includeEmptyGroup: true });
+    const data = await runCustom(baseProps(fixture, { conditions: [] }));
+
+    expect(axisNames(data.data)).toEqual([
+      'c-food',
+      'c-rent',
+      'c-cell',
+      'Uncategorized',
+      'Off budget',
+      'Transfers',
+    ]);
+
+    const groups = await runGrouped(baseProps(fixture, { conditions: [] }));
+
+    // A group that is legitimately empty must not be dropped by the helper.
+    expect(groups.map(group => group.id)).toEqual([
+      'g-usual',
+      'g-bills',
+      'g-empty',
+      'uncategorized',
     ]);
   });
 
-  it('honours a Monday first day of week rather than assuming Sunday', async () => {
-    pinToday('2026-10-05');
+  it('falls back to no narrowing for a condition it cannot interpret', async () => {
+    // Neither of these narrows the category axis, and both must leave the axis
+    // alone rather than dropping rows: a report filtered by something the
+    // category filter does not understand keeps every category on screen.
+    const uninterpretableConditions: RuleConditionEntity[][] = [
+      // No category condition at all.
+      [{ field: 'notes', op: 'hasTags', value: 'x' }],
+      // A category condition whose operator the filter cannot evaluate. Not
+      // expressible in RuleConditionEntity, hence the cast.
+      [
+        {
+          field: 'category',
+          op: 'hasTags',
+          value: 'x',
+        } as unknown as RuleConditionEntity,
+      ],
+    ];
 
-    const { data, queryEndDates } = await runCustom({
-      startDate: '2026-09-28',
-      endDate: '2026-09-28',
-      firstDayOfWeekIdx: '1',
-    });
+    for (const conditions of uninterpretableConditions) {
+      const data = await runCustom(baseProps(makeFixture(), { conditions }));
 
-    expect(queryEndDates).toEqual(['2026-10-04', '2026-10-04']);
-    expect(
-      data.intervalData[data.intervalData.length - 1].intervalEndDate,
-    ).toBe('2026-10-04');
+      expect(axisNames(data.data)).toEqual([
+        'c-food',
+        'c-rent',
+        'c-cell',
+        'Uncategorized',
+        'Off budget',
+        'Transfers',
+      ]);
+
+      const groups = await runGrouped(baseProps(makeFixture(), { conditions }));
+
+      expect(groups.map(group => group.id)).toEqual([
+        'g-usual',
+        'g-bills',
+        'uncategorized',
+      ]);
+    }
   });
 
-  it('leaves Daily and Monthly on their existing end bounds', async () => {
-    pinToday('2026-10-05');
+  it('narrows the axis by group for a category_group condition', async () => {
+    const conditions = [
+      { field: 'category_group', op: 'is', value: 'g-bills' },
+    ] as RuleConditionEntity[];
 
-    const daily = await runCustom({
-      startDate: '2026-09-27',
-      endDate: '2026-09-29',
-      interval: 'Daily',
-    });
-    expect(daily.queryEndDates).toEqual(['2026-09-29', '2026-09-29']);
-    expect(
-      daily.data.intervalData[daily.data.intervalData.length - 1]
-        .intervalEndDate,
-    ).toBe('2026-09-29');
+    const data = await runCustom(baseProps(makeFixture(), { conditions }));
+    expect(axisNames(data.data)).toEqual([
+      'c-cell',
+      'Uncategorized',
+      'Off budget',
+      'Transfers',
+    ]);
 
-    const monthly = await runCustom({
-      startDate: '2026-08-01',
-      endDate: '2026-09-30',
-      interval: 'Monthly',
-    });
-    expect(monthly.queryEndDates).toEqual(['2026-09-30', '2026-09-30']);
-    expect(
-      monthly.data.intervalData[monthly.data.intervalData.length - 1]
-        .intervalEndDate,
-    ).toBe('2026-09-30');
+    const groupData = await runCustom(
+      baseProps(makeFixture(), { conditions, groupBy: 'Group' }),
+    );
+    expect(axisNames(groupData.data)).toEqual(['g-bills', 'uncategorized']);
   });
 });
 
-describe('weekly grouped report end bound', () => {
-  it('applies the same bound as the custom spreadsheet', async () => {
-    pinToday('2026-10-05');
+describe("'any of' must not narrow the axis past what the query fetches", () => {
+  // The query side unions every disjunct under 'any of' - `makeQuery` wraps the
+  // whole filter list in `$or`. An axis narrowed by one disjunct therefore
+  // renders fewer rows than the report fetched, and `recalculate` finds no row
+  // to attach the rest to, so their amounts vanish from every total with no
+  // error on screen. These cases pin the money, not just the shape.
+  const notesPlusCell = [
+    { field: 'notes', op: 'contains', value: 'e' },
+    { field: 'category', op: 'oneOf', value: ['c-cell'] },
+  ] as RuleConditionEntity[];
 
-    const custom = await runCustom({ endDate: '2026-10-03' });
-    const grouped = await runGrouped({ endDate: '2026-10-03' });
-
-    const customLast =
-      custom.data.intervalData[custom.data.intervalData.length - 1];
-    const group = grouped.find(g => g.categories?.length);
-    const groupedLast = group!.intervalData[group!.intervalData.length - 1];
-
-    expect(groupedLast.intervalEndDate).toBe(customLast.intervalEndDate);
-    expect(groupedLast.intervalEndDate).toBe('2026-10-03');
+  beforeEach(() => {
+    vi.clearAllMocks();
+    serveTheseRows([]);
   });
 
-  it('clamps to today the same way the custom spreadsheet does', async () => {
-    pinToday('2026-10-02');
+  it("keeps the rows 'any of' fetched money for", async () => {
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
 
-    const custom = await runCustom({ endDate: '2026-09-27' });
-    const grouped = await runGrouped({ endDate: '2026-09-27' });
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: notesPlusCell,
+        conditionsOp: 'or',
+      }),
+    );
 
-    const customLast =
-      custom.data.intervalData[custom.data.intervalData.length - 1];
-    const group = grouped.find(g => g.categories?.length);
-    const groupedLast = group!.intervalData[group!.intervalData.length - 1];
+    // Both categories the query fetched are on the axis... (rows are sorted by
+    // amount, so compare the set rather than the order)
+    expect([...axisNames(data.data)].sort()).toEqual([
+      'Off budget',
+      'Transfers',
+      'Uncategorized',
+      'c-cell',
+      'c-food',
+      'c-rent',
+    ]);
 
-    expect(groupedLast.intervalEndDate).toBe(customLast.intervalEndDate);
-    expect(groupedLast.intervalEndDate).toBe('2026-10-02');
+    // ...so all of it reaches the totals: -1000 (Food) + -500 (Cell).
+    expect(data.totalDebts).toBe(-1500);
+    expect(data.totalTotals).toBe(-1500);
+    expect(data.data.find(row => row.id === 'c-food')!.totalDebts).toBe(-1000);
   });
 
-  it('widens a week-start end date in the table view too', async () => {
-    pinToday('2026-10-05');
+  it("keeps both groups on the axis under 'any of'", async () => {
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
 
-    const custom = await runCustom({ endDate: '2026-09-27' });
-    const grouped = await runGrouped({ endDate: '2026-09-27' });
+    const groups = await runGrouped(
+      baseProps(makeFixture(), {
+        conditions: notesPlusCell,
+        conditionsOp: 'or',
+      }),
+    );
 
-    const customLast =
-      custom.data.intervalData[custom.data.intervalData.length - 1];
-    const group = grouped.find(g => g.categories?.length);
-    const groupedLast = group!.intervalData[group!.intervalData.length - 1];
+    // 'g-usual' is here because the notes disjunct populates it, and its
+    // categories are here because the table view renders them.
+    expect(groups.map(group => group.id)).toEqual([
+      'g-usual',
+      'g-bills',
+      'uncategorized',
+    ]);
+    expect(
+      groups
+        .find(group => group.id === 'g-usual')!
+        .categories!.map(category => category.id)
+        .sort(),
+    ).toEqual(['c-food', 'c-rent']);
+  });
 
-    expect(groupedLast.intervalEndDate).toBe(customLast.intervalEndDate);
-    expect(groupedLast.intervalEndDate).toBe('2026-10-03');
+  it("keeps the notes-populated group on the Group split under 'any of'", async () => {
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
+
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: notesPlusCell,
+        conditionsOp: 'or',
+        groupBy: 'Group',
+      }),
+    );
+
+    expect(axisNames(data.data)).toEqual([
+      'g-usual',
+      'g-bills',
+      'uncategorized',
+    ]);
+    expect(data.data.find(row => row.id === 'g-usual')!.totalDebts).toBe(-1000);
+  });
+
+  it("still narrows 'all of', so the fix cannot be narrowing switched off", async () => {
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
+
+    const data = await runCustom(
+      baseProps(makeFixture(), { conditions: selectCellOnly }),
+    );
+
+    expect(axisNames(data.data)).toEqual([
+      'c-cell',
+      'Uncategorized',
+      'Off budget',
+      'Transfers',
+    ]);
+    // 'all of' with only the Bills category selected keeps only Cell's money.
+    expect(data.totalDebts).toBe(-500);
+  });
+
+  it("still narrows a single category condition under 'any of'", async () => {
+    // One disjunct is trivially a union of one, so the gate must not degenerate
+    // into 'op === or means never narrow'.
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
+
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: selectCellOnly,
+        conditionsOp: 'or',
+      }),
+    );
+
+    expect(axisNames(data.data)).toEqual([
+      'c-cell',
+      'Uncategorized',
+      'Off budget',
+      'Transfers',
+    ]);
+    expect(data.totalDebts).toBe(-500);
   });
 });

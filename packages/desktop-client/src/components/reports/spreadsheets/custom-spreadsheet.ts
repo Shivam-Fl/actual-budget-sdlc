@@ -27,6 +27,7 @@ import type {
 } from '#components/reports/ReportOptions';
 import type { useSpreadsheet } from '#hooks/useSpreadsheet';
 
+import { narrowCategoriesByConditions } from './budgetDataQuery';
 import { calculateLegend } from './calculateLegend';
 import { fetchSpreadsheetQueryData } from './fetchSpreadsheetQueryData';
 import { filterEmptyRows } from './filterEmptyRows';
@@ -84,7 +85,16 @@ export function createCustomSpreadsheet({
   firstDayOfWeekIdx,
   dateFormat,
 }: createCustomSpreadsheetProps) {
-  const [categoryList, categoryGroup] = categoryLists(categories);
+  // The category conditions narrow the row axis, not just the query data:
+  // without this, unselected categories still get a row whenever
+  // `showEmpty` is on, at 0.00.
+  const [categoryList, categoryGroup] = categoryLists(
+    narrowCategoriesByConditions(
+      categories,
+      conditions,
+      conditionsOp === 'or' ? 'or' : 'and',
+    ),
+  );
 
   const [groupByList, groupByLabel]: [
     groupByList: UncategorizedEntity[],

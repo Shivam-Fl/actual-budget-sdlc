@@ -72,6 +72,99 @@ export function isSupportedCategoryCondition(
   return false;
 }
 
+/**
+ * Whether the category conditions are allowed to narrow the row axis at all.
+ *
+ * The query side unions every disjunct, so an axis that is narrower than the
+ * result set silently drops that set's money from every total - the rows are
+ * gone, with no error and no empty state. Narrowing is therefore only sound when
+ * the conditions are a statement about the category axis and nothing else.
+ *
+ * `customName` conditions are excluded because the query side excludes them too
+ * (they are filtered out before 'make-filters-from-conditions'), so they are not
+ * disjuncts of the result set either.
+ */
+export function canNarrowAxisByConditions(
+  conditions: RuleConditionEntity[] | undefined,
+  conditionsOp: BudgetDataConditionsOp | undefined,
+): boolean {
+  if (!conditions || conditions.length === 0) {
+    return false;
+  }
+
+  // Conjunctive: a returned transaction satisfies every condition, so a category
+  // condition describes the axis by itself. This is the behaviour QA validated.
+  if (conditionsOp !== 'or') {
+    return true;
+  }
+
+  // Disjunctive: a returned transaction satisfies only ONE condition, so a
+  // category condition is a single disjunct among several and describes the
+  // result set only when every disjunct is itself about the category axis.
+  const effective = conditions.filter(cond => !cond.customName);
+  return (
+    effective.length > 0 &&
+    effective.every(
+      cond => cond.field === 'category' || cond.field === 'category_group',
+    )
+  );
+}
+
+/**
+ * Narrows both halves of the report's category axis - the flat `list` and the
+ * `grouped` array whose members carry their own nested `categories` - using the
+ * same conditions the query side is filtered by.
+ *
+ * When no condition narrows anything, the input is returned unchanged by
+ * identity: that keeps `filterCategoriesByConditions`'s conservative
+ * "cannot safely interpret -> do not filter" fallback intact, and means a
+ * category group that is legitimately empty in an unfiltered report is not
+ * dropped on every load.
+ */
+export function narrowCategoriesByConditions(
+  categories: {
+    list: CategoryEntity[];
+    grouped: CategoryGroupEntity[];
+  },
+  conditions: RuleConditionEntity[] | undefined,
+  conditionsOp: BudgetDataConditionsOp | undefined,
+): { list: CategoryEntity[]; grouped: CategoryGroupEntity[] } {
+  // An unnarrowed axis is main's behaviour and the safe direction: it is a
+  // superset of the true result set, which costs empty rows under "Show empty
+  // rows" and never costs money.
+  if (!canNarrowAxisByConditions(conditions, conditionsOp)) {
+    return categories;
+  }
+
+  const list = filterCategoriesByConditions(
+    categories.list,
+    categories.grouped,
+    conditions,
+    conditionsOp,
+  );
+
+  // `filterCategoriesByConditions` returns its input untouched whenever it
+  // cannot safely narrow, so the identity check keeps us from rebuilding the
+  // grouped array (and deleting empty groups) for nothing.
+  if (list === categories.list) {
+    return categories;
+  }
+
+  const keep = new Set(list.map(category => category.id));
+
+  return {
+    list,
+    grouped: categories.grouped
+      .map(group => ({
+        ...group,
+        categories: (group.categories ?? []).filter(category =>
+          keep.has(category.id),
+        ),
+      }))
+      .filter(group => group.categories.length > 0),
+  };
+}
+
 export function filterCategoriesByConditions(
   categories: CategoryEntity[],
   categoryGroups: CategoryGroupEntity[],
