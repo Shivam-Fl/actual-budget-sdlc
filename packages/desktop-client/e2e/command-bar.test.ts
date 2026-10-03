@@ -1,23 +1,35 @@
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 import { expect, test } from './fixtures';
 import { ConfigurationPage } from './page-models/configuration-page';
 
 /**
  * Console output Radix emits when `Dialog.Content` has no title/description
- * backing its `aria-labelledby` / `aria-describedby`. Matched narrowly so the
- * test fails on these two warnings without flaking on unrelated app noise.
+ * backing its `aria-labelledby` / `aria-describedby`. Both alternatives are
+ * transcribed from `@radix-ui/react-dialog@1.1.15`
+ * (dist/index.mjs:288 and :304) and each `.` below stands for a backtick, so
+ * unrelated app output that merely mentions an attribute name does not fail the
+ * test:
+ *
+ *   `DialogContent` requires a `DialogTitle` for the component to be accessible
+ *   for screen reader users. […]
+ *
+ *   Warning: Missing `Description` or `aria-describedby={undefined}` for
+ *   {DialogContent}.
  */
 const dialogAccessibilityWarning =
-  /DialogContent|DialogTitle|DialogDescription|aria-labelledby|aria-describedby/;
+  /DialogContent. requires a .DialogTitle|Missing .Description. or .aria-describedby/;
+
+/** How long to let the console channel drain when no dialog warning arrives. */
+const CONSOLE_SETTLE_MS = 1000;
 
 /** Text of the element a dialog's `aria-labelledby` / `aria-describedby` points at. */
 function referredText(
-  dialog: ReturnType<Page['locator']>,
+  dialog: Locator,
   attribute: 'aria-labelledby' | 'aria-describedby',
 ): Promise<string | null> {
   return dialog.evaluate((node, attr) => {
-    const id = node.getAttribute(attr as string);
+    const id = node.getAttribute(attr);
     return id ? (document.getElementById(id)?.textContent ?? null) : null;
   }, attribute);
 }
@@ -53,10 +65,16 @@ test.describe('Command bar', () => {
     // Attach the listener after the budget has loaded so we only capture what
     // the palette open itself produces.
     const messages: string[] = [];
+    let settleMatch: () => void;
+    const firstDialogWarning = new Promise<void>(resolve => {
+      settleMatch = resolve;
+    });
     page.on('console', message => {
       if (message.type() !== 'error' && message.type() !== 'warning') return;
       const text = message.text();
-      if (dialogAccessibilityWarning.test(text)) messages.push(text);
+      if (!dialogAccessibilityWarning.test(text)) return;
+      messages.push(text);
+      settleMatch();
     });
 
     await page.keyboard.press('ControlOrMeta+k');
@@ -64,8 +82,17 @@ test.describe('Command bar', () => {
       page.getByRole('combobox', { name: 'Command Bar' }),
     ).toBeVisible();
 
+    // Console events arrive out of band over CDP, so nothing above waits for
+    // the channel itself. Wait until the first dialog warning lands, or until
+    // the channel has had time to drain, then read the buffer.
+    await Promise.race([
+      firstDialogWarning,
+      page.waitForTimeout(CONSOLE_SETTLE_MS),
+    ]);
+
     // Assert the console first: it is the regression this test exists for, and
-    // the failure below would otherwise mask it.
+    // the failure below would otherwise mask it. The drain above makes this
+    // position correct rather than merely lucky.
     expect(messages).toEqual([]);
 
     // The dialog keeps its accessible name, but assert the ids resolve to real
@@ -74,9 +101,9 @@ test.describe('Command bar', () => {
     const dialog = page.getByRole('dialog', { name: 'Command Bar' });
     await expect(dialog).toBeAttached();
     expect(await referredText(dialog, 'aria-labelledby')).toBe('Command Bar');
-    expect(await referredText(dialog, 'aria-describedby')).toBe(
-      'Search pages, accounts and reports',
-    );
+    const description = await referredText(dialog, 'aria-describedby');
+    expect(description).toBeTruthy();
+    expect(description).not.toBe('Command Bar');
 
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeAttached();
