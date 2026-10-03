@@ -140,7 +140,7 @@ describe('Native sqlite REGEXP guard', () => {
     const db = openDatabase(':memory:');
     handles.push(db);
     // Two handles, so the teardown's loop has to run more than once: with one
-    // handle, `expect(handles).toHaveLength(0)` above is satisfied by the
+    // handle, `expect(handles).toHaveLength(0)` below is satisfied by the
     // splice whether or not close() was called on anything.
     const db2 = openDatabase(':memory:');
     handles.push(db2);
