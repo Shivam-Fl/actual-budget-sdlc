@@ -99,6 +99,21 @@
     "context": {
       "run_url": "https://github.com/Shivam-Fl/actual-budget-sdlc/actions/runs/37155921289",
       "prior_signatures": []
+    },
+    "triage": {
+      "verdict": "wait",
+      "diagnosis": "GitHub's GraphQL API was down when the plan gate checked the split criteria. check-split-criteria.mjs:24 reads the issue body with `gh issue view 58 --json body`, and the call came back HTTP 503 \"No server is currently available to service your request\" from api.github.com/graphql, which gh rethrows as a non-zero exit and .sdlc/bin/lib/actions.js:103 rejects on. Nothing in this repository is wrong: the planner itself finished successfully (num_turns 37, subtype success, is_error false), wrote an 18957-character work-order.json, and the very next step validated it as `valid`. The step that went red is a bookkeeping read of the issue body, three minutes after it started, and nothing it read was wrong — the service was unavailable. That is an outage outside the repository, so the stage parks and runs again on its own rather than being retried immediately against the same endpoint. It is worth naming what this costs: the plan did NOT survive. In sdlc-plan.yml the split-criteria check (line 1010) runs BEFORE \"Keep the validated plan\" (line 1025), deliberately, so a refused plan is never stashed — and the ledger confirms the consequence: state/58.json on sdlc-state has work_order, validated_work_order and approved_work_order all null. The plan exists only as the plan-output artifact of run 37155921289 (ID 11285477541), and nothing in .sdlc/bin reads a previous run's artifacts — plan-strategy.mjs restores a plan only from ledger.validated_work_order or ledger.approved_work_order. So there is nothing for `resume` to resume, and the next run will spend a fresh planner pass. That is a cost of this outage, not a second defect, and not a reason to escalate a transient one.",
+      "evidence": "failed-run.log:1433-1439, gate job, step \"The split's criteria are answered\": `sdlc: uncaughtException: 1: gh issue failed (1): HTTP 503: No server is currently available to service your request. Sorry about that. Please try resubmitting your request and contact us if the problem persists. (https://api.github.com/graphql)` at `ChildProcess.<anonymous> (…/.sdlc/bin/lib/actions.js:103:19)`; the command in that step is `node .sdlc/bin/check-split-criteria.mjs`, whose line 24 is the only network call (`ghJson(['issue','view',issue,'--json','body'])`). The same excerpt shows the planner SUCCEEDED immediately before — `Write …/work-order.json (18957 chars)`, `result {\"subtype\":\"success\",\"is_error\":false,\"num_turns\":37}` — and the following step printed `valid`. The step began 21:49:39.82Z and failed 21:52:40.04Z, a ~3 minute gap consistent with gh's own internal retry being exhausted. This is GitHub's service-unavailable response, not a rate limit: a quota or secondary-limit refusal is 403/429 naming the limit, and `gh api rate_limit` at triage time reports core 5000/5000 and graphql 4999 remaining. failure-packet.json: attempt 1, occurrences 1, error_type \"unknown\", context.prior_signatures [] — the first time this has failed on this issue."
     }
-  }
+  },
+  "triage_history": [
+    {
+      "at": "2026-10-03T22:00:44.855Z",
+      "stage": "plan",
+      "verdict": "wait",
+      "confidence": 95,
+      "diagnosis": "GitHub's GraphQL API was down when the plan gate checked the split criteria. check-split-criteria.mjs:24 reads the issue body with `gh issue view 58 --json body`, and the call came back HTTP 503 \"No server is currently available to service your request\" from api.github.com/graphql, which gh rethrows as a non-zero exit and .sdlc/bin/lib/actions.js:103 rejects on. Nothing in this repository is wrong: the planner itself finished successfully (num_turns 37, subtype success, is_error false), wrote an",
+      "run": "37155921289"
+    }
+  ]
 }
