@@ -209,6 +209,38 @@ describe('Sync', () => {
       ]),
     ).toThrow(expect.objectContaining({ reason: 'clock-drift' }));
   });
+
+  it('should carry schedule_occurrence to another client', async () => {
+    // Which schedule occurrence a posted transaction discharges is carried in
+    // a column, so it has to survive the trip: a peer that received the
+    // transaction without it would read the occurrence as unpaid.
+    void prefs.loadPrefs();
+    void prefs.savePrefs({ groupId: 'group' });
+
+    await sendMessages([
+      global.stepForwardInTime() || {
+        dataset: 'transactions',
+        row: 'foo',
+        column: 'schedule_occurrence',
+        value: 20261102,
+        timestamp: Timestamp.send(),
+      },
+    ]);
+
+    // Become the peer the messages above were sent to.
+    await asSecondClient(async () => {
+      expect(mockSyncServer.getMessages().length).toBeGreaterThan(0);
+    });
+
+    await applyMessages(mockSyncServer.getMessages());
+
+    expect(
+      await db.all<{ schedule_occurrence: number }>(
+        'SELECT schedule_occurrence FROM transactions WHERE id = ?',
+        ['foo'],
+      ),
+    ).toEqual([{ schedule_occurrence: 20261102 }]);
+  });
 });
 
 function registerBudgetMonths(months) {
