@@ -214,13 +214,11 @@ export async function setNextDate({
   conditions,
   reset,
   advance,
-  nextDate,
 }: {
   id: string;
   conditions?;
   reset?: boolean;
   advance?: boolean;
-  nextDate?: string;
 }) {
   if (conditions == null) {
     const rule = await getRuleForSchedule(id);
@@ -236,16 +234,12 @@ export async function setNextDate({
     q('schedules').filter({ id }).calculate('next_date'),
   );
 
-  // An explicit `nextDate` comes from a caller that has already resolved which
-  // occurrence to land on, so it is written directly rather than stepped to.
-  const newNextDate =
-    nextDate ??
-    // Only derive one if a date condition exists
-    (dateCond
-      ? advance
-        ? getNextDateAfter(dateCond, currentNextDate)
-        : getNextDate(dateCond, new Date())
-      : null);
+  // Only derive one if a date condition exists
+  const newNextDate = dateCond
+    ? advance
+      ? getNextDateAfter(dateCond, currentNextDate)
+      : getNextDate(dateCond, new Date())
+    : null;
 
   if (newNextDate != null && newNextDate !== currentNextDate) {
     // Our `update` functon requires the id of the item and we don't
@@ -553,52 +547,6 @@ function onApplySync(oldValues, newValues) {
 // This is the service that move schedules forward automatically and
 // posts transactions
 
-// Move a schedule's next date onto `date`, the occurrence that was just
-// posted, without moving past it.
-//
-// Landing exactly on the posted occurrence is what makes the register stop
-// rendering its preview row: `getHasTransactionsQuery` matches a
-// `posts_transaction` schedule from `next_date` onward, so the new transaction
-// makes the status 'paid', and computeSchedulePreviewTransactions drops the
-// leading previewed date for it.
-async function advanceScheduleToDate(schedule: ScheduleEntity, date: string) {
-  const { date: dateCond } = extractScheduleConds(schedule._conditions);
-
-  if (dateCond == null) {
-    return;
-  }
-
-  // Resolve the occurrence to land on by walking the recurrence, rather than
-  // stepping the schedule through the database one occurrence at a time. The
-  // gap between next_date and the posted date is bounded only by the user's
-  // upcoming-length setting, which has no upper bound, so any fixed number of
-  // database steps could be too few — this is pure computation over the
-  // recurrence and ends up writing next_date once.
-  let candidate = schedule.next_date;
-  while (candidate < date) {
-    const next = getNextDateAfter(dateCond, candidate);
-    if (next == null || next <= candidate) {
-      // The recurrence stopped moving forward — leave next_date alone rather
-      // than write an occurrence we can't justify.
-      return;
-    }
-    candidate = next;
-  }
-
-  if (candidate !== date) {
-    // We overshot the posted date, so it isn't an occurrence of this schedule
-    // after all. Advancing onto the next occurrence instead would leave the
-    // schedule pointing at a date nothing was posted for.
-    return;
-  }
-
-  await setNextDate({
-    id: schedule.id,
-    conditions: schedule._conditions,
-    nextDate: candidate,
-  });
-}
-
 async function postTransactionForSchedule({
   id,
   date,
@@ -614,6 +562,40 @@ async function postTransactionForSchedule({
     return;
   }
 
+  // The occurrence this post discharges. Posting from the register can select a
+  // LATER occurrence than the one `next_date` sits on, and that has to be the
+  // one recorded — `next_date` here is simply the earliest one still owed.
+  // `today` is the exception: it pays `next_date` early and leaves that
+  // occurrence pending, so it discharges `next_date` whatever `date` says.
+  const occurrence = today ? schedule.next_date : (date ?? schedule.next_date);
+
+  // Consuming an occurrence is idempotent: the stamp below IS the identity the
+  // whole per-occurrence model rests on, so a second message for an occurrence
+  // that is already posted must not write again. A double-clicked menu item, or
+  // a message redelivered because the first reply was lost, would otherwise
+  // leave two transactions stamped for one occurrence.
+  //
+  // This is safe without a lock because the handler is registered as
+  // `mutator(undoable(...))`, and `runHandler` routes every marked handler
+  // through `runMutator`, which is `sequential(_runMutator)` — two dispatches
+  // cannot interleave, so the second check always sees the first write.
+  //
+  // Deliberately not applied to `today`, which discharges `next_date` early
+  // and can legitimately be invoked more than once.
+  if (!today) {
+    const {
+      data: [alreadyPosted],
+    } = await aqlQuery(
+      q('transactions')
+        .filter({ schedule: schedule.id, schedule_occurrence: occurrence })
+        .select('id'),
+    );
+
+    if (alreadyPosted != null) {
+      return;
+    }
+  }
+
   const transaction = {
     payee: schedule._payee,
     account: schedule._account,
@@ -623,36 +605,12 @@ async function postTransactionForSchedule({
     // Records WHICH occurrence this discharges. The date above is the user's to
     // edit; this is not, and matching on it is what keeps a re-dated payment
     // from un-paying the occurrence it was posted for.
-    //
-    // It is the occurrence the caller selected, not `next_date` as read here:
-    // posting from the register can discharge a LATER occurrence, and the
-    // advance below then moves `next_date` onto it — so a stamp taken before
-    // that advance would name the stale occurrence and leave the paid one
-    // looking due. `today` is the exception: it pays `next_date` early and
-    // leaves that occurrence pending, so it is still the one discharged.
-    schedule_occurrence: today
-      ? schedule.next_date
-      : (date ?? schedule.next_date),
+    schedule_occurrence: occurrence,
     cleared: false,
   };
 
   if (transaction.account) {
     await addTransactions(transaction.account, [transaction]);
-  }
-
-  // Consume the occurrence that was posted, so its preview row goes away too.
-  //
-  // Gated on an explicit `date`: auto-posting calls this with a bare id and
-  // advances the schedule itself, so advancing here too would skip an
-  // occurrence on every sync. `today` pays an occurrence early and
-  // deliberately leaves it pending, so it never advances either.
-  if (
-    !today &&
-    date != null &&
-    schedule.next_date != null &&
-    date > schedule.next_date
-  ) {
-    await advanceScheduleToDate(schedule, date);
   }
 }
 
