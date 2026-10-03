@@ -730,8 +730,5 @@
       "diagnosis": "QA did its whole job and the run was still failed by a cleanup expression. The QA agent wrote a complete qa-report.json and 323 evidence files (112 cited, all present, uploaded as the 10.5 MB qa-evidence artifact), but it returned its result by writing the file rather than calling StructuredOutput, so the SDK reported error_max_structured_output_retries; the workflow's own 'Finish' session then returned subtype:success and still emitted no structured_output. Neither of those made the run red - b",
       "run": "37111505204"
     }
-  ],
-  "retry_after": "2026-10-03T14:50:25.175Z",
-  "retry_stage": "qa",
-  "parked_at": "2026-10-03T10:50:25.175Z"
+  ]
 }
