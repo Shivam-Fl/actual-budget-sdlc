@@ -368,5 +368,31 @@
       }
     ],
     "pr": "26"
-  }
+  },
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 2,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6"
+    ],
+    "sha": "8424dc94dc76297dbe444f59fb325576231cf906",
+    "run_id": "37086105105",
+    "work_order_version": 1,
+    "at": "2026-10-03T02:51:07.122Z"
+  },
+  "qa_open_bugs": [
+    {
+      "id": "BUG-001",
+      "title": "Dashboard cards no longer show any hover background"
+    },
+    {
+      "id": "BUG-002",
+      "title": "Holding Space on a focused dashboard card pushes one history entry per key auto-repeat"
+    }
+  ]
 }
