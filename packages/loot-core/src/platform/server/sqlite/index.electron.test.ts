@@ -20,7 +20,38 @@ const PATTERN_ONE = '(?<electron-lifetime-one';
 const PATTERN_TWO = '(?<electron-lifetime-two';
 
 describe('Native sqlite REGEXP guard', () => {
+  // Teardown lives here rather than at the tail of a test body: an assertion
+  // failing above it would skip the cleanup and leave a mocked console.log and
+  // an open handle behind for the next test. Mirrors
+  // ../connection/index.api.test.ts:6-8.
+  const handles: Database[] = [];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const handle of handles.splice(0)) {
+      handle.close();
+    }
+  });
+
+  // The failure below is deliberate — this test is meant to fail, so that the
+  // afterEach above is the only thing standing between it and the next test.
+  // Its aftermath is observed by the test below, which asserts it starts from
+  // an unmocked console.log; this one cannot observe its own teardown, because
+  // it passes whether or not the afterEach exists.
+  it.fails('leaves nothing behind when an assertion fails mid-test', () => {
+    vi.spyOn(console, 'log').mockImplementation(() => null);
+    const db = openDatabase(':memory:');
+    handles.push(db);
+    execQuery(db, initSQL);
+
+    expect('never called').toBe('called');
+  });
+
   it('reports an unparseable pattern once per database handle, not once per process', () => {
+    // Only meaningful above this test's own spy: below it, this would observe
+    // the mock installed two statements down and pass unconditionally.
+    expect(vi.isMockFunction(console.log)).toBe(false);
+
     // SQLite calls the REGEXP function once per candidate row, so a single-row
     // table cannot tell per-pattern logging apart from per-row logging. Several
     // rows, therefore.
@@ -35,8 +66,10 @@ describe('Native sqlite REGEXP guard', () => {
     };
 
     const db1 = openDatabase(':memory:');
+    handles.push(db1);
     seed(db1);
     const db2 = openDatabase(':memory:');
+    handles.push(db2);
     seed(db2);
 
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => null);
@@ -77,9 +110,5 @@ describe('Native sqlite REGEXP guard', () => {
     // And a valid pattern still matches every row, silently.
     expect(query(db1, '#mortgage')).toHaveLength(3);
     expect(invalidRegexLogs()).toBe(3);
-
-    consoleSpy.mockRestore();
-    db1.close();
-    db2.close();
   });
 });
