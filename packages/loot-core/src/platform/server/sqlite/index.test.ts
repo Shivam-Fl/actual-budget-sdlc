@@ -12,11 +12,24 @@ import {
   transaction,
 } from './index';
 
+const baseURL = `${__dirname}/../../../../../../node_modules/@jlongster/sql.js/dist/`;
+
 beforeAll(async () => {
-  const baseURL = `${__dirname}/../../../../../../node_modules/@jlongster/sql.js/dist/`;
   patchFetchForSqlJS(baseURL);
 
   return init({ baseURL });
+});
+
+// The afterEach below calls vi.restoreAllMocks(), which is file-scoped rather
+// than spy-scoped, so it takes down the global.fetch spy this file's beforeAll
+// installed along with the console spies. Nothing breaks today, because init()
+// has already run and sql.js caches the compiled wasm — but from the second
+// test on, global.fetch is the real jsdom fetch again. patchFetchForSqlJS is a
+// vi.spyOn(...).mockImplementation(...) with no restore of its own, so calling
+// it once per test is idempotent and the blanket restore can no longer outrun
+// it.
+beforeEach(() => {
+  patchFetchForSqlJS(baseURL);
 });
 
 const initSQL = `
@@ -26,9 +39,24 @@ CREATE TABLE textstrings (id TEXT PRIMARY KEY, string TEXT);
 
 describe('Web sqlite', () => {
   // Teardown lives here rather than at the tail of a test body: an assertion
-  // failing above it would skip the cleanup and leave an open handle and a
-  // mocked console.log behind for the next test. Mirrors ./index.electron.test.ts
-  // on both halves — restore mocks, then close handles.
+  // failing above it would skip the cleanup. What survives that is narrower
+  // than it looks, so each half is scoped to what it actually covers.
+  //
+  // vi.restoreAllMocks() restores every spy in the file. Five of the ten tests
+  // mock console.log — the three transaction tests, the once-per-pattern test
+  // and the once-per-handle test — and each of those restores its own spy at
+  // the tail of its body anyway; this is the backstop for an assertion that
+  // fails before it gets there. The other five mock no console.log, so for them
+  // there is nothing to restore.
+  //
+  // The loop closes the handles that were pushed into it, and exactly one test
+  // pushes any: 'should report an unparseable pattern once per database handle,
+  // not once per process'. Eight of the other nine call openDatabase() without
+  // registering the handle, so those are untouched either way; the fetch-patch
+  // test at the end opens no database at all.
+  //
+  // Mirrors ./index.electron.test.ts on both halves — restore mocks, then
+  // close handles — where each of that file's three tests registers both.
   const handles: Database[] = [];
 
   afterEach(() => {
@@ -415,4 +443,14 @@ describe('Web sqlite', () => {
       ),
     ).toEqual([]);
   });
+
+  // Last on purpose, and the position is load-bearing. Placed first this would
+  // still see the beforeAll's patch, because no afterEach has run yet, so it
+  // would pass for the wrong reason; and it would be vacuous whenever -t
+  // selects it alone (measured: with the beforeEach above removed,
+  // `vitest --run --config vitest.web.config.ts -t 'keeps the sql.js wasm fetch
+  // patched'` still reports 1 passed | 15 skipped). This test therefore has
+  // power only in a full-file run.
+  it('keeps the sql.js wasm fetch patched for each test, not just the first', () =>
+    expect(vi.isMockFunction(globalThis.fetch)).toBe(true));
 });
