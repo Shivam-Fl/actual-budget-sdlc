@@ -205,7 +205,14 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/server/transactions/merge.ts",
+    "packages/loot-core/src/server/transactions/transfer.ts",
+    "packages/loot-core/migrations/1790969762045_add_schedule_occurrence_to_transactions.sql",
+    "packages/loot-core/src/server/transactions/merge.test.ts",
+    "packages/loot-core/src/server/transactions/transfer.test.ts",
+    "packages/loot-core/src/server/schedules/app.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
