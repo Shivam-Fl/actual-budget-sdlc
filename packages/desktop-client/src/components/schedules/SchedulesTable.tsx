@@ -12,7 +12,11 @@ import { theme } from '@actual-app/components/theme';
 import { View } from '@actual-app/components/view';
 import { format as monthUtilFormat } from '@actual-app/core/shared/months';
 import { getNormalisedString } from '@actual-app/core/shared/normalisation';
-import { getScheduledAmount } from '@actual-app/core/shared/schedules';
+import {
+  extractScheduleConds,
+  getScheduledAmount,
+  scheduleIsRecurring,
+} from '@actual-app/core/shared/schedules';
 import type { ScheduleStatuses } from '@actual-app/core/shared/schedules';
 import type { ScheduleEntity } from '@actual-app/core/types/models';
 
@@ -166,6 +170,11 @@ function ScheduleRow({
   const buttonRef = useRef(null);
 
   const status = statuses.get(schedule.id);
+  const { date: dateCond } = extractScheduleConds(schedule._conditions);
+  // A one-off's date condition is a plain date with no next occurrence, so
+  // getNextDateAfter returns null and setNextDate drops the write: skipping one
+  // is a silent no-op, so the item is hidden rather than offered.
+  const canSkip = scheduleIsRecurring(dateCond);
   useContextMenu({
     triggerRef: rowRef,
     items: !minimal
@@ -190,7 +199,7 @@ function ScheduleRow({
             name: 'skip',
             text: t('Skip next scheduled date'),
             onClick: () => onAction('skip', schedule.id),
-            hidden: status === 'completed',
+            hidden: status === 'completed' || !canSkip,
           },
           {
             name: 'complete',

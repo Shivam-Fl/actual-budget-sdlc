@@ -115,16 +115,19 @@ void (async () => {
     // with whatever is in its authors list, and HEAD holds it at the new path.
     // Deletions publish nothing. C is deliberately absent — the invocation asks
     // for no copy detection, so git reports a copy as an addition anyway.
+    // `changed` (A, M, R) is what the emptiness guard below has to test, not
+    // `added` (A only): the validation loop walks `changed`, so a diff that only
+    // edits or renames a note has something to validate and must not be refused.
     '--diff-filter=AMR',
     `origin/${baseRef}...HEAD`,
     '--',
     `${NOTES_DIR}/`,
   ]);
-  const { added, changed } = selectReleaseNotePaths(stdout, NOTES_DIR);
+  const { changed } = selectReleaseNotePaths(stdout, NOTES_DIR);
 
-  if (added.length === 0) {
+  if (changed.length === 0) {
     reportError(
-      `No release note added under ${NOTES_DIR}/. Add a *.md file describing your change.`,
+      `No release note added or modified under ${NOTES_DIR}/. Add a *.md file describing your change, or edit an existing note.`,
     );
     return;
   }

@@ -158,6 +158,8 @@ describe('selectReleaseNotePaths', () => {
     });
   });
 
+  // This is the invariant bin/release-notes-check.mjs's emptiness guard rests
+  // on: it has to test `changed`, because the validation loop below walks that.
   it('reads an edited note as changed but not added', () => {
     expect(select(`M\0${dir}/old-note.md\0`)).toEqual({
       added: [],
