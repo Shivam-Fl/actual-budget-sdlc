@@ -1,3 +1,4 @@
+import * as d from 'date-fns';
 // @ts-strict-ignore
 import MockDate from 'mockdate';
 
@@ -8,9 +9,26 @@ import { toDateRepr } from '#server/models';
 import { runHandler } from '#server/mutators';
 import { mergeTransactions } from '#server/transactions/merge';
 import { loadRules, updateRule } from '#server/transactions/transaction-rules';
-import { addDays, currentDay, subDays } from '#shared/months';
+import {
+  addDays,
+  currentDay,
+  dayFromDate,
+  parseDate,
+  subDays,
+} from '#shared/months';
 import { q } from '#shared/query';
-import { getHasTransactionsQuery, getNextDate } from '#shared/schedules';
+import {
+  computeSchedulePreviewTransactions,
+  getHasTransactionsQuery,
+  getNextDate,
+  getPostedScheduleTransactionsQuery,
+  getStatus,
+  indexPostedScheduleTransactions,
+} from '#shared/schedules';
+import type {
+  PostedScheduleTransaction,
+  ScheduleStatuses,
+} from '#shared/schedules';
 
 import {
   advanceSchedulesService,
@@ -1142,6 +1160,446 @@ describe('schedule app', () => {
         MockDate.reset();
         await schedulesApp.stopServices();
       }
+    });
+  });
+
+  // Posting a specific occurrence from the register used to throw the
+  // occurrence date away and date the transaction on the schedule's first
+  // un-posted `next_date`, leaving the preview row for the occurrence the user
+  // actually clicked in place.
+  describe('posting a specific occurrence', () => {
+    // `currentDay()` is pinned to 2017-01-01 under test, so the recurrence is
+    // built forward from there: a Monday, weekly, five occurrences inside a
+    // 30-day preview window.
+    const UPCOMING = '30-day';
+    const OCCURRENCES = [
+      '2017-01-02',
+      '2017-01-09',
+      '2017-01-16',
+      '2017-01-23',
+      '2017-01-30',
+    ];
+
+    async function createWeeklySchedule() {
+      const accountId = await db.insertAccount({
+        name: 'Checking',
+        offbudget: 0,
+        closed: 0,
+      });
+
+      const id = await createSchedule({
+        schedule: { posts_transaction: true },
+        conditions: [
+          { op: 'is', field: 'account', value: accountId },
+          { op: 'is', field: 'amount', value: -10000 },
+          {
+            op: 'is',
+            field: 'date',
+            value: {
+              start: OCCURRENCES[0],
+              frequency: 'weekly',
+              patterns: [],
+            },
+          },
+        ],
+      });
+
+      // createSchedule derives next_date from the `start` condition, which is
+      // OCCURRENCES[0] — `currentDay()` is pinned under test, so no pinning is
+      // needed to make this deterministic.
+      return id;
+    }
+
+    async function getSchedule(id: string) {
+      const { data } = await aqlQuery(
+        q('schedules').filter({ id }).select('*'),
+      );
+      return data[0];
+    }
+
+    async function getTransactionDates(id: string) {
+      const { data } = await aqlQuery(
+        q('transactions')
+          .filter({ schedule: id })
+          .select(['date'])
+          .orderBy({ date: 'asc' }),
+      );
+      return data.map(({ date }) => date);
+    }
+
+    async function getPreviewDates(id: string, upcomingLength = UPCOMING) {
+      const schedule = await getSchedule(id);
+      const { data: hasTransData } = await aqlQuery(
+        getHasTransactionsQuery([schedule]),
+      );
+      const hasTrans = hasTransData
+        .filter(Boolean)
+        .some(row => row.schedule === id);
+
+      const statuses: ScheduleStatuses = new Map([
+        [
+          id,
+          getStatus(
+            schedule.next_date,
+            schedule.completed,
+            hasTrans,
+            upcomingLength,
+          ),
+        ],
+      ]);
+
+      const { data: posted } = await aqlQuery(
+        getPostedScheduleTransactionsQuery([schedule]),
+      );
+
+      return computeSchedulePreviewTransactions(
+        [schedule],
+        statuses,
+        upcomingLength,
+        undefined,
+        indexPostedScheduleTransactions(
+          posted.filter(Boolean) as PostedScheduleTransaction[],
+        ),
+      )
+        .filter(({ schedule: scheduleId }) => scheduleId === id)
+        .map(({ date }) => date)
+        .sort();
+    }
+
+    function post(id: string, args: { date?: string; today?: boolean } = {}) {
+      return runHandler(schedulesApp.handlers['schedule/post-transaction'], {
+        id,
+        ...args,
+      });
+    }
+
+    beforeEach(() => {
+      // `_account` and the other rule-derived fields on a schedule only
+      // resolve once the JSON-path mappings are populated.
+      schedulesApp.startServices();
+    });
+
+    afterEach(async () => {
+      await schedulesApp.stopServices();
+    });
+
+    it('consumes exactly the occurrence that was posted', async () => {
+      const id = await createWeeklySchedule();
+
+      expect(await getPreviewDates(id)).toEqual(OCCURRENCES);
+
+      // Post occurrence #1, the schedule's own next_date.
+      await post(id, { date: OCCURRENCES[0] });
+
+      expect(await getTransactionDates(id)).toEqual([OCCURRENCES[0]]);
+      expect(await getPreviewDates(id)).toEqual(OCCURRENCES.slice(1));
+
+      // Now post occurrence #2 — the bug: this used to create a *second*
+      // transaction on occurrence #1's date and leave occurrence #2 previewed.
+      await post(id, { date: OCCURRENCES[1] });
+
+      expect(await getTransactionDates(id)).toEqual([
+        OCCURRENCES[0],
+        OCCURRENCES[1],
+      ]);
+
+      // The posted occurrence is gone and the later ones are untouched — one
+      // occurrence consumed, not the whole window.
+      expect(await getPreviewDates(id)).toEqual(OCCURRENCES.slice(2));
+    });
+
+    // The regression that failed QA's T-12 on the previous revision. Posting a
+    // LATER occurrence used to walk `next_date` forward over every occurrence
+    // between, writing nothing for any of them: the skipped-over occurrence
+    // stopped being previewed AND could never be posted, because
+    // `getHasTransactionsQuery` only ever asks about `next_date`.
+    it('leaves an earlier unpaid occurrence previewed and payable', async () => {
+      const id = await createWeeklySchedule();
+
+      // Post occurrence #2 while occurrence #1 is still owed — do NOT post #1
+      // first. This is the exact repro.
+      await post(id, { date: OCCURRENCES[1] });
+
+      // (a) exactly one transaction, dated on the occurrence that was posted.
+      expect(await getTransactionDates(id)).toEqual([OCCURRENCES[1]]);
+
+      // (b) `next_date` stays on the unpaid occurrence, so #1 is still owed.
+      expect((await getSchedule(id)).next_date).toBe(OCCURRENCES[0]);
+
+      // (c) #1 is still previewed and every later occurrence is undamaged.
+      expect(await getPreviewDates(id)).toEqual([
+        OCCURRENCES[0],
+        OCCURRENCES[2],
+        OCCURRENCES[3],
+        OCCURRENCES[4],
+      ]);
+
+      // And #1 is genuinely payable: posting it now creates a transaction on
+      // its own date rather than duplicating #2.
+      await post(id, { date: OCCURRENCES[0] });
+
+      expect(await getTransactionDates(id)).toEqual([
+        OCCURRENCES[0],
+        OCCURRENCES[1],
+      ]);
+      expect(await getPreviewDates(id)).toEqual(OCCURRENCES.slice(2));
+    });
+
+    it('dates the transaction on the occurrence it was given, not next_date', async () => {
+      const id = await createWeeklySchedule();
+
+      await post(id, { date: OCCURRENCES[2] });
+
+      expect(await getTransactionDates(id)).toEqual([OCCURRENCES[2]]);
+      expect(await getPreviewDates(id)).not.toContain(OCCURRENCES[2]);
+    });
+
+    it('stamps the occurrence that was posted, not the next_date it sat on', async () => {
+      // The occurrence stamp is the identity the whole per-occurrence model
+      // rests on: the register drops an occurrence by matching on it, so a
+      // stamp naming `next_date` would leave the occurrence the user actually
+      // posted still previewed.
+      const id = await createWeeklySchedule();
+
+      await post(id, { date: OCCURRENCES[2] });
+
+      const { data } = await aqlQuery(
+        q('transactions')
+          .filter({ schedule: id })
+          .select(['schedule_occurrence']),
+      );
+
+      expect(data[0].schedule_occurrence).toBe(OCCURRENCES[2]);
+      expect((await getSchedule(id)).next_date).toBe(OCCURRENCES[0]);
+    });
+
+    it('posts on next_date and leaves it alone when no date is given', async () => {
+      // The Schedules page and auto-posting both send a bare id, and neither
+      // may advance the schedule: `advanceSchedulesService` owns `next_date`.
+      const id = await createWeeklySchedule();
+
+      await post(id);
+
+      expect(await getTransactionDates(id)).toEqual([OCCURRENCES[0]]);
+      expect((await getSchedule(id)).next_date).toBe(OCCURRENCES[0]);
+    });
+
+    it("'post today' dates today and does not consume the occurrence", async () => {
+      const id = await createWeeklySchedule();
+
+      await post(id, { date: OCCURRENCES[2], today: true });
+
+      expect(await getTransactionDates(id)).toEqual(['2017-01-01']);
+      expect((await getSchedule(id)).next_date).toBe(OCCURRENCES[0]);
+      expect(await getPreviewDates(id)).toContain(OCCURRENCES[2]);
+    });
+
+    it('adds a second transaction on a later occurrence rather than repeating the first', async () => {
+      const id = await createWeeklySchedule();
+
+      await post(id, { date: OCCURRENCES[0] });
+      await post(id, { date: OCCURRENCES[3] });
+
+      const dates = await getTransactionDates(id);
+
+      expect(dates).toEqual([OCCURRENCES[0], OCCURRENCES[3]]);
+      // AC-6: no two posted transactions share a date.
+      expect(new Set(dates).size).toBe(dates.length);
+    });
+
+    it('consumes every occurrence when posted in order', async () => {
+      const id = await createWeeklySchedule();
+
+      for (const occurrence of OCCURRENCES) {
+        await post(id, { date: occurrence });
+
+        const posted = await getTransactionDates(id);
+        expect(posted).toContain(occurrence);
+        expect(await getPreviewDates(id)).not.toContain(occurrence);
+        // Every later occurrence is still previewed: a post consumes exactly
+        // one occurrence, never the rest of the window.
+        expect(await getPreviewDates(id)).toEqual(
+          OCCURRENCES.slice(OCCURRENCES.indexOf(occurrence) + 1),
+        );
+      }
+
+      const dates = await getTransactionDates(id);
+      expect(dates).toEqual(OCCURRENCES);
+      // AC-6.
+      expect(new Set(dates).size).toBe(dates.length);
+      // AC-6: nothing is ever dated before the occurrence that was selected.
+      expect(await getPreviewDates(id)).toEqual([]);
+    });
+
+    it('consumes an occurrence further out than any fixed step budget', async () => {
+      // A daily schedule over a long upcoming window previews hundreds of
+      // occurrences, and `CustomUpcomingLength` puts no upper bound on the
+      // window — so the gap between next_date and the clicked occurrence is
+      // not bounded by anything the user controls. The occurrence consumed
+      // here is found by matching, not by stepping that gap.
+      const START = '2017-01-02';
+      const GAP = 150;
+      const TARGET = dayFromDate(d.addDays(parseDate(START), GAP));
+
+      const accountId = await db.insertAccount({
+        name: 'Checking',
+        offbudget: 0,
+        closed: 0,
+      });
+
+      const id = await createSchedule({
+        schedule: { posts_transaction: true },
+        conditions: [
+          { op: 'is', field: 'account', value: accountId },
+          { op: 'is', field: 'amount', value: -10000 },
+          {
+            op: 'is',
+            field: 'date',
+            value: { start: START, frequency: 'daily', patterns: [] },
+          },
+        ],
+      });
+
+      await post(id, { date: TARGET });
+
+      // The transaction lands on the requested date regardless.
+      expect(await getTransactionDates(id)).toEqual([TARGET]);
+
+      const preview = await getPreviewDates(id, '1-year');
+      expect(preview).not.toContain(TARGET);
+      // The occurrences after it are still previewed.
+      expect(preview.length).toBeGreaterThan(0);
+    });
+
+    describe('consuming an occurrence twice', async () => {
+      // The occurrence stamp IS the identity this whole design rests on, so a
+      // handler that can write it twice makes it meaningless. These two calls
+      // are what a double-clicked menu item or a redelivered message look
+      // like.
+      it('writes one transaction when posted twice in sequence', async () => {
+        const id = await createWeeklySchedule();
+
+        await post(id, { date: OCCURRENCES[1] });
+        await post(id, { date: OCCURRENCES[1] });
+
+        expect(await getTransactionDates(id)).toEqual([OCCURRENCES[1]]);
+
+        const { data } = await aqlQuery(
+          q('transactions')
+            .filter({ schedule: id })
+            .select(['schedule_occurrence']),
+        );
+        expect(
+          data.map(({ schedule_occurrence }) => schedule_occurrence),
+        ).toEqual([OCCURRENCES[1]]);
+      });
+
+      it('writes one transaction when both calls are dispatched together', async () => {
+        const id = await createWeeklySchedule();
+
+        // Not awaited individually: the second call is queued behind the
+        // first, because `runHandler` routes a mutating handler through the
+        // sequential `runMutator`. If this ever fails, the guard is in the
+        // wrong place — do not weaken the test.
+        await Promise.all([
+          post(id, { date: OCCURRENCES[1] }),
+          post(id, { date: OCCURRENCES[1] }),
+        ]);
+
+        expect(await getTransactionDates(id)).toEqual([OCCURRENCES[1]]);
+      });
+
+      it('does not guard `today`, which may legitimately be posted twice', async () => {
+        // `today` pays `next_date` early and deliberately leaves that
+        // occurrence pending, so paying it again must still write again.
+        const id = await createWeeklySchedule();
+
+        await post(id, { date: OCCURRENCES[1], today: true });
+        await post(id, { date: OCCURRENCES[1], today: true });
+
+        expect(await getTransactionDates(id)).toEqual([
+          '2017-01-01',
+          '2017-01-01',
+        ]);
+        expect(await getPreviewDates(id)).toContain(OCCURRENCES[1]);
+      });
+    });
+
+    // `next_date` has exactly one owner now: `advanceSchedulesService`. Posting
+    // no longer moves it, so a schedule left pointing at an occurrence the user
+    // posted PAST is still owed that occurrence — and the service must post it
+    // rather than walk past it.
+    describe('auto-posting a schedule left behind by an out-of-order post', async () => {
+      const MISSED = '2016-12-26';
+      const SKIPPED_PAST = '2017-01-02';
+
+      async function createOverdueWeeklySchedule() {
+        const accountId = await db.insertAccount({
+          name: 'Checking',
+          offbudget: 0,
+          closed: 0,
+        });
+
+        const id = await createSchedule({
+          schedule: { posts_transaction: true },
+          conditions: [
+            { op: 'is', field: 'account', value: accountId },
+            { op: 'is', field: 'amount', value: -10000 },
+            {
+              op: 'is',
+              field: 'date',
+              value: { start: MISSED, frequency: 'weekly', patterns: [] },
+            },
+          ],
+        });
+
+        // `createSchedule` derives next_date from today onwards; pin it to an
+        // occurrence that has already passed.
+        const nextDateRow = await db.first<{ id: string }>(
+          'SELECT id FROM schedules_next_date WHERE schedule_id = ?',
+          [id],
+        );
+        await db.update('schedules_next_date', {
+          id: nextDateRow.id,
+          local_next_date: toDateRepr(MISSED),
+          local_next_date_ts: Date.now(),
+          base_next_date: toDateRepr(MISSED),
+          base_next_date_ts: Date.now(),
+        });
+
+        return id;
+      }
+
+      it('posts the occurrence the user skipped past, not the one after it', async () => {
+        const id = await createOverdueWeeklySchedule();
+
+        // The user posts a later occurrence while the earlier one is unpaid.
+        await post(id, { date: SKIPPED_PAST });
+
+        expect((await getSchedule(id)).next_date).toBe(MISSED);
+
+        await advanceSchedulesService(true);
+
+        // The skipped-over occurrence is auto-posted — it was never paid — and
+        // the already-paid one is not posted a second time.
+        expect(await getTransactionDates(id)).toEqual([MISSED, SKIPPED_PAST]);
+
+        // No gap: next_date lands on the occurrence after the one already paid.
+        expect((await getSchedule(id)).next_date).toBe('2017-01-09');
+      });
+
+      it('does not double-advance across a second sync', async () => {
+        const id = await createOverdueWeeklySchedule();
+
+        await post(id, { date: SKIPPED_PAST });
+        await advanceSchedulesService(true);
+        expect((await getSchedule(id)).next_date).toBe('2017-01-09');
+
+        await advanceSchedulesService(true);
+
+        expect((await getSchedule(id)).next_date).toBe('2017-01-09');
+        expect(await getTransactionDates(id)).toEqual([MISSED, SKIPPED_PAST]);
+      });
     });
   });
 
