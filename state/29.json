@@ -358,7 +358,8 @@
         "detail": "Confirms and sharpens A's index-1 finding: the web file's three cleanup statements are not merely 'still at the tail' — they are the same defect the electron file's afterEach was written to remove, in the same PR, one file apart. The diff establishes teardown-in-afterEach as the convention and then does not apply it twenty lines after importing closeDatabase for exactly that purpose.\n\n`packages/loot-core/src/platform/server/sqlite/index.test.ts:361`\n\nEvidence: `git show pr34:.../index.test.ts | sed -n '355,364p'` shows the case ending `consoleSpy.mockRestore(); closeDatabase(db1); closeDatabase(db2);` — byte-for-byte the shape deleted from index.electron.test.ts:81-83. grep counts on the PR head: closeDatabase 3 (1 import + 2 calls), openDatabase 11, so eight handles opened by the file's nine cases still leak. The work order's out_of_scope excludes retrofitting 'the other eight cases' and 'the pre-existing consoleSpy.mockRestore() calls', which is a defensible scope line, but it does not exclude moving THIS case's three new statements into an afterEach — those closeDatabase calls are new in this diff, not pre-existing.\n\nFix: Since the two closeDatabase calls are new code in this PR, hoisting them (with consoleSpy.mockRestore) into a describe-level afterEach keyed on a local handles array is within the ticket's own scope and would make the two files consistent. If judged too broad, say so in the PR so the asymmetry reads as a decision rather than an oversight."
       }
     ],
-    "pr": "34"
+    "pr": "34",
+    "filed": 35
   },
   "qa": {
     "verdict": "pass",
