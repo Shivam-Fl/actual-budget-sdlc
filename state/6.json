@@ -604,7 +604,7 @@
   "work_order_posted_at": "2026-10-03T05:28:57.657Z",
   "work_order_from": "root-cause",
   "work_order_comment": "5965957297",
-  "implemented_version": 1,
+  "implemented_version": 2,
   "failure_packet": {
     "issue": 6,
     "pr": 15,
