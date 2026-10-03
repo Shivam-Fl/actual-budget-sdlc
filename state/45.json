@@ -196,7 +196,13 @@
       "Applied the proposed matcher to packages/loot-core/src/shared/schedules.ts and packages/loot-core/src/server/forecast/forecast-schedules.ts and ran the three affected suites: src/shared/schedules.test.ts (80 tests), src/server/schedules/app.test.ts (48 tests), src/server/forecast/app.test.ts (15 tests) — 143 passed, 0 failed, no pre-existing case changed result. Both source files were then restored from backup; `git diff --stat` is empty."
     ]
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/shared/schedules.ts",
+    "packages/loot-core/src/server/forecast/forecast-schedules.ts",
+    "packages/loot-core/src/shared/schedules.test.ts",
+    "packages/loot-core/src/server/schedules/app.test.ts",
+    "packages/loot-core/src/server/forecast/app.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
