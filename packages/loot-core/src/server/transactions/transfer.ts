@@ -66,6 +66,7 @@ export async function addTransfer(transaction, transferredAccount) {
     transfer_id: transaction.id,
     notes: transaction.notes || null,
     schedule: transaction.schedule,
+    schedule_occurrence: transaction.schedule_occurrence,
     cleared: false,
   };
   const { notes, cleared, schedule } = await runRules(transferTransaction);
@@ -129,6 +130,10 @@ export async function updateTransfer(transaction, transferredAccount) {
     notes: transaction.notes,
     amount: -transaction.amount,
     schedule: transaction.schedule,
+    // Passed through verbatim, never `?? null`: an update that does not
+    // mention the field leaves it undefined, and undefined is dropped rather
+    // than written, so the mirror keeps the stamp it already has.
+    schedule_occurrence: transaction.schedule_occurrence,
   });
 
   const categoryCleared = await clearCategory(transaction, transferredAccount);
