@@ -106,7 +106,7 @@
         ],
         "kind": "bug",
         "risk": "This narrows what counts as paid, on the preview path that decides which rows a user can still pay. A narrowing that is too aggressive re-offers an occurrence they already paid and risks a double payment; one that is too loose is the current defect. Note the dependency in the other direction: the refresh tear above makes rows disappear for a round trip, so ship that first or QA will see its symptom here.",
-        "issue": null
+        "issue": 45
       },
       {
         "title": "Housekeeping from the schedule-occurrence PR: preview id parse, duplicate release note, setNextDate shape",
@@ -127,6 +127,7 @@
   "children": [
     42,
     43,
-    44
+    44,
+    45
   ]
 }
