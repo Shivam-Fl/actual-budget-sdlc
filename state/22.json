@@ -377,7 +377,30 @@
         "detail": "The IntersectionObserver stub is over-specified for what useIsInViewport reads. Four members (takeRecords, root, rootMargin, scrollMargin, thresholds) exist only to satisfy the IntersectionObserver interface shape and are never called; the stub is cast with `as unknown as typeof IntersectionObserver` anyway, so none of them are needed for the cast to typecheck.\n\n`packages/desktop-client/src/components/reports/ReportCard.test.tsx:32`\n\nEvidence: ReportCard.test.tsx:32-62 defines takeRecords() (54), root (58), rootMargin (59), scrollMargin (60) and thresholds (61). The replacement at line 41 is `global.IntersectionObserver = AlwaysIntersectingObserver as unknown as typeof IntersectionObserver` — a double assertion that erases the class's type entirely, so the interface members buy nothing. packages/desktop-client/src/hooks/useIsInViewport.ts:12 constructs the observer and reads only the first entry's isIntersecting; observe/unobserve/disconnect are the only lifecycle it drives. A minimal stub holding just the callback and observe() satisfies it.\n\nFix: Reduce the stub to the callback plus observe(), or at minimum drop the `as unknown as` and implement the interface honestly so the extra members are load-bearing."
       }
     ],
-    "pr": "26"
+    "pr": "26",
+    "qa": [
+      {
+        "id": "BUG-003",
+        "severity": "major",
+        "area": "reports / Spending",
+        "title": "/reports/spending never finishes loading on the demo budget",
+        "expected": "The Monthly Spending report renders its table, as /reports/net-worth and /reports/custom do.",
+        "actual": "The route mounts ReportBoundary and Spending and then shows the loading spinner indefinitely — still spinning after 50 s, with an empty console and no failed request. /reports/crossover shows the same symptom. The dashboard is unaffected.",
+        "repro": [
+          "Open the app and choose 'Try the demo' so a budget is loaded.",
+          "Navigate to Reports, then to /reports/spending directly.",
+          "Wait: the spinner never resolves and the report body never appears."
+        ],
+        "evidence": [
+          "qa-evidence/diag-reports-spending.png",
+          "qa-evidence/test-results/dashboard-cards-T-5-report-ab037-a-clean-console-and-renders-chromium/error-context.md",
+          "qa-evidence/test-results/dashboard-cards-T-5-report-ab037-a-clean-console-and-renders-chromium/test-failed-1.png"
+        ],
+        "suspected_cause": "Not established. Reported because it is visible and out of this PR's scope: neither Spending.tsx nor Crossover.tsx imports ReportCard — only the dashboard *Card* components do — so this PR's diff cannot reach this code path. AC-2's console-clean half does hold; it is the render that never completes.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "fail",
