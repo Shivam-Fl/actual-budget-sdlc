@@ -32,6 +32,10 @@ export const NON_PERSON_AUTHORS = ['claude', 'github-actions'];
 
 const BOT_SUFFIX = /\[bot\]$/;
 
+// Statuses whose file is still present on HEAD, so it is worth validating. A
+// deletion is not: there is nothing left to publish.
+const SELECTED_STATUSES = ['A', 'M', 'R', 'C'];
+
 /**
  * Returns every author that is not a credit to a person — a known bot or agent,
  * or any value that is not a string — in input order, so the caller can name
@@ -68,6 +72,42 @@ export function sanitizeWorkflowCommandData(value) {
     .replace(/%/g, '%25')
     .replace(/\r/g, '%0D')
     .replace(/\n/g, '%0A');
+}
+
+/**
+ * Turns `git diff --name-status` output into the release notes a check run has
+ * to look at, as `{ added, changed }`.
+ *
+ * `changed` covers modifications, renames and copies as well as additions: a
+ * note edited — or moved to a fresh filename — to credit a bot is as much a
+ * gate concern as one added with a bot in it. A rename or copy row carries
+ * three fields (status, old path, new path) and HEAD holds the new one, which
+ * is the file that would ship; binding the old path instead would validate a
+ * file that no longer exists.
+ *
+ * `added` is derived from the status column alone, so "did this branch add a
+ * note?" keeps answering exactly as it did when only added files were read.
+ * Only the four statuses that leave a file on HEAD are considered, and the
+ * README is filtered out because it is documentation, not a note.
+ */
+export function selectReleaseNotePaths(diffOutput, notesDir) {
+  const rows = diffOutput
+    .split('\n')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(line => line.split('\t'))
+    .filter(([status]) => SELECTED_STATUSES.includes(status[0]))
+    .map(([status, oldPath, newPath]) => [status, newPath ?? oldPath])
+    .filter(
+      ([, path]) => path?.endsWith('.md') && path !== `${notesDir}/README.md`,
+    );
+
+  return {
+    added: rows
+      .filter(([status]) => status.startsWith('A'))
+      .map(([, path]) => path),
+    changed: rows.map(([, path]) => path),
+  };
 }
 
 export async function parseReleaseNotes(dir, owner, repo, historyRef, only) {

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { findNonPersonAuthors, sanitizeWorkflowCommandData } from './util.mjs';
+import {
+  findNonPersonAuthors,
+  sanitizeWorkflowCommandData,
+  selectReleaseNotePaths,
+} from './util.mjs';
 
 describe('findNonPersonAuthors', () => {
   it('passes a real person', () => {
@@ -95,5 +99,75 @@ describe('sanitizeWorkflowCommandData', () => {
       sanitizeWorkflowCommandData('upcoming-release-notes/add-note.md'),
     ).toBe('upcoming-release-notes/add-note.md');
     expect(sanitizeWorkflowCommandData('50% off')).toBe('50%25 off');
+  });
+});
+
+describe('selectReleaseNotePaths', () => {
+  const dir = 'upcoming-release-notes';
+  const select = output => selectReleaseNotePaths(output, dir);
+
+  it('reads an added note as both added and changed', () => {
+    expect(select(`A\t${dir}/add-note.md\n`)).toEqual({
+      added: [`${dir}/add-note.md`],
+      changed: [`${dir}/add-note.md`],
+    });
+  });
+
+  it('reads an edited note as changed but not added', () => {
+    expect(select(`M\t${dir}/old-note.md\n`)).toEqual({
+      added: [],
+      changed: [`${dir}/old-note.md`],
+    });
+  });
+
+  it('validates the new path of a rename, not the old one', () => {
+    // The old path no longer exists on HEAD, so validating it would trip the
+    // "added but does not exist" guard instead of the author check.
+    expect(select(`R100\t${dir}/seed.md\t${dir}/seed-renamed.md\n`)).toEqual({
+      added: [],
+      changed: [`${dir}/seed-renamed.md`],
+    });
+  });
+
+  it('validates the new path of a copy', () => {
+    expect(select(`C75\t${dir}/seed.md\t${dir}/seed-copy.md\n`)).toEqual({
+      added: [],
+      changed: [`${dir}/seed-copy.md`],
+    });
+  });
+
+  it('does not count a rename as adding a note', () => {
+    expect(
+      select(`R100\t${dir}/seed.md\t${dir}/seed-renamed.md\n`).added,
+    ).toEqual([]);
+  });
+
+  it('keeps the order git reported and separates added from the rest', () => {
+    const output = [
+      `A\t${dir}/newone.md`,
+      `M\t${dir}/seed.md`,
+      `R100\t${dir}/old.md\t${dir}/moved.md`,
+      `D\t${dir}/gone.md`,
+      '',
+    ].join('\n');
+    expect(select(output)).toEqual({
+      added: [`${dir}/newone.md`],
+      changed: [`${dir}/newone.md`, `${dir}/seed.md`, `${dir}/moved.md`],
+    });
+  });
+
+  it('drops the README, non-markdown files and blank output', () => {
+    expect(
+      select(
+        [`A\t${dir}/README.md`, `A\t${dir}/notes.txt`, '   ', ''].join('\n'),
+      ),
+    ).toEqual({ added: [], changed: [] });
+  });
+
+  it('keeps a non-ASCII filename once git is told not to quote it', () => {
+    expect(select(`A\t${dir}/café-note.md\n`)).toEqual({
+      added: [`${dir}/café-note.md`],
+      changed: [`${dir}/café-note.md`],
+    });
   });
 });
