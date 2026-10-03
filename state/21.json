@@ -122,7 +122,13 @@
     "confidence": 88,
     "confidence_rationale": "The defect is reproduced and the fix is verified against the exact locked dependency versions, with both aria-*by ids resolving and the existing e2e selectors confirmed unaffected. What is not verified here is what needs a running app: whether yarn install regenerates the lockfile exactly as predicted, and whether the two VRT baselines stay byte-identical with two extra hidden nodes. Both are concrete and cheap for the implementer to confirm, and neither can make the fix wrong — only the test artifacts could need regenerating."
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/CommandBar.tsx",
+    "packages/desktop-client/package.json",
+    "yarn.lock",
+    "upcoming-release-notes/fix-command-bar-dialog-title-warning.md",
+    "packages/desktop-client/e2e/command-bar.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
