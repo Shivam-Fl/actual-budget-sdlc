@@ -68,5 +68,167 @@
     "decided_at": "2026-10-04T00:35:29.225Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "plan"
+  "dispatched_stage": "plan",
+  "validated_work_order": {
+    "issue": 63,
+    "version": 1,
+    "kind": "chore",
+    "mode": "committed",
+    "understanding": "Six non-blocking review findings from PR #60 (merged as dff184c). Five still reproduce verbatim on main and are fixed here; the sixth (PR #60's title lacks the mandatory `[AI]` prefix) is dropped, because that PR is merged and its squash subject `fix: Follow-ups from #48: 7 from the review (#60)` is already on main — retitelling the PR cannot change the commit, and this ticket must not rewrite published history. All five live changes are internal to two e2e files plus one release-note front-matter key; nothing under packages/*/src changes, so no user-visible behaviour moves. The shared theme is PR #60's own stated principle — a channel that stops delivering, or a comment that claims more than the code checks, must fail on every run — applied consistently to the sibling file and to the comments it left. Concretely: (1) command-bar.test.ts:132 claims each regex alternative has *its own* probe while the assertion above it only proves each has *at least one* matching probe; (2) reports.test.ts:272 drains the pageerror channel with a bare waitForTimeout and asserts it is empty, with nothing proving the channel still delivers — the exact vacuous-pass hole PR #60 closed in its own file, left open in the sibling file PR #60 edits; (3) the DIALOG_WARNING_PROBES doc block (lines 40-41) and the inline block above the probe (lines 148-150) state the probe's property near-verbatim, 108 lines apart; (4) CONSOLE_SETTLE_MS now backs two waits with different meanings while its doc names one; (5) the release note is categorised Bugfix for a diff that touches no production code.",
+    "reproduced": true,
+    "root_cause": "PR #60 added a self-checking probe to the file it was about (command-bar.test.ts) and left two seams unclosed: the sibling file that shares the same channel-assertion shape (reports.test.ts), and its own file's comments and constants, which were extended past what they were written to describe. Nothing here is a product defect; it is a test-hardening change whose own documentation drifted from its code.",
+    "approach": "Four edits across two e2e files and one release note, plus one documented drop. (a) In reports.test.ts, give the pageerror channel the same self-check command-bar.test.ts already has: keep `expect(pageErrors).toEqual([])` where it is, and immediately after it attach a *second* `page.on('pageerror')` collector, throw once from inside the page via `page.evaluate(() => { setTimeout(() => { throw new Error('probe') }, 0) })`, and `await expect.poll(() => probeErrors.length, { timeout: PAGE_ERROR_SETTLE_MS }).toBeGreaterThan(0)`. Order is load-bearing and mirrors command-bar.test.ts:146-147 — the throw must come after the emptiness assertion or it poisons the buffer it is meant to be independent of. (b) In command-bar.test.ts, reword the coverage comment at :132 to state what `.some()` actually enforces (at least one matching probe per alternative) instead of the stronger bijection it does not enforce, and delete the duplicated 'They are emitted from the page by the probe below so every run re-proves that both channels deliver and the filter still matches the transcribed wording.' sentence from the DIALOG_WARNING_PROBES doc block — the transcription-drift caveat immediately above it already covers what only that block knows. (c) In the same file, give the probe's `expect.poll` its own constant, PROBE_SETTLE_MS, documented as the probe's deadline, leaving CONSOLE_SETTLE_MS documented as and used only for the drain. (d) Re-categorise upcoming-release-notes/fix-command-bar-dialog-console-drain.md from Bugfix to Maintenance, which is also this PR's own release note and satisfies the release-notes gate. No new helper is extracted: watchDialogWarnings is console-channel-and-filter specific and has exactly one caller, so a shared pageerror helper would have one caller too.",
+    "files": [
+      {
+        "path": "packages/desktop-client/e2e/reports.test.ts",
+        "action": "edit",
+        "change": "In `test('creates a custom report in an empty budget')`, keep lines 246-247 (`const pageErrors: Error[] = []` / `page.on('pageerror', error => pageErrors.push(error))`) and lines 272-273 (`await page.waitForTimeout(PAGE_ERROR_SETTLE_MS);` / `expect(pageErrors).toEqual([]);`) exactly as they are. Immediately after `expect(pageErrors).toEqual([])` and before the closing `});` of the test, add a self-check that proves the pageerror channel still delivers, mirroring command-bar.test.ts:155-167: `const probeErrors: Error[] = [];` then `page.on('pageerror', error => probeErrors.push(error));` (a SECOND collector — do not reuse pageErrors), then `await page.evaluate(() => { setTimeout(() => { throw new Error('pageerror probe') }, 0); });`, then `await expect.poll(() => probeErrors.length, { timeout: PAGE_ERROR_SETTLE_MS }).toBeGreaterThan(0);`. The `setTimeout` wrapper is required: throwing synchronously inside page.evaluate rejects the evaluate call instead of surfacing as an uncaught page error. Add a comment above the block, in the voice of the existing ones, stating (1) it must stay after the emptiness assertion because the throw is a real page error and would fail it, (2) it proves the channel delivers into a collector within PAGE_ERROR_SETTLE_MS so a channel that stops delivering turns this test red on every run instead of passing vacuously, and (3) it does NOT prove the app is free of page errors — only that the channel works.",
+        "why": "The single finding with real code in it, and the one the route note names as the reason QA stays. `grep -rn 'probe\\|evaluate\\|poll' reports.test.ts` shows the only `poll` uses are chart-scroll geometry at 197-211 — nothing near line 272 self-checks the channel, so `expect(pageErrors).toEqual([])` still passes vacuously if pageerror stops delivering."
+      },
+      {
+        "path": "packages/desktop-client/e2e/command-bar.test.ts",
+        "action": "edit",
+        "change": "Three edits. (1) Coverage comment at line 132: change the first sentence from `// Every alternative in the filter needs its own probe, or the arm nobody` `// probes is a blind spot:` to `// Every alternative in the filter needs a probe that matches it, or the` `// arm nobody probes is a blind spot:` — dropping `its own`, which is the bijection the `.some()` below does not enforce. Leave the rest of that comment block (the blind-spot rationale, and the note that the naive `split('|')` is correct only for a flat alternation) as it is; the assertion itself at lines 137-144 is NOT changed. (2) DIALOG_WARNING_PROBES doc block: delete the trailing two lines ` * the page by the probe below so every run re-proves that both channels deliver` ` * and the filter still matches the transcribed wording.` and rewrite the sentence they complete (`These are held as literals rather than read out of the installed package, so they can rot if a patch release rewords either message.`) so the block ends there. The block keeps the channel mapping and the first-line-only truncation note; the full claim about what the probe proves stays in the inline block at 146-154, which is what a reader hits while debugging. (3) Constants: after `const CONSOLE_SETTLE_MS = 1000;` at line 24 add `/** How long the probe's expect.poll waits for the emitted warnings to arrive. */` `const PROBE_SETTLE_MS = 1000;` (same value, so no runtime change today), and change the poll timeout at line 166 from `{ timeout: CONSOLE_SETTLE_MS }` to `{ timeout: PROBE_SETTLE_MS }`. Line 125, the drain, keeps CONSOLE_SETTLE_MS.",
+        "why": "Findings 1, 3 and 4. After the edit, `grep -n 'filter still matches' command-bar.test.ts` returns exactly one line, and `grep -n CONSOLE_SETTLE_MS` returns the declaration, its doc, and the drain at 125 — not the poll."
+      },
+      {
+        "path": "upcoming-release-notes/fix-command-bar-dialog-console-drain.md",
+        "action": "edit",
+        "change": "Change the front-matter `category: Bugfix` to `category: Maintenance`. Leave `authors: [Shivam-Fl]` and the one-line body unchanged.",
+        "why": "`Maintenance` is the documented category for \"Internal changes that don't directly affect users\" (packages/docs/docs/contributing/index.md, \"Valid categories\"). Same-class precedent: fix-e2e-long-note-flake.md and stabilize-e2e-timing.md are both Maintenance for e2e-only changes. Editing this note also satisfies the release-notes gate, which requires an added-or-modified note under upcoming-release-notes/ on every PR."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/e2e/reports.test.ts",
+        "action": "edit",
+        "cases": [
+          "`creates a custom report in an empty budget` still passes with the new probe in place — the thrown page error arrives after the emptiness assertion, so pageErrors stays empty and the test is green (proves the probe does not poison the assertion it sits under).",
+          "The probe fails the test if the pageerror channel stops delivering: with `page.on('pageerror')` for the probe collector removed or the throw removed, `expect.poll(...).toBeGreaterThan(0)` times out at PAGE_ERROR_SETTLE_MS and the test goes red — this is the case the finding is about and the one that must be verified by temporarily breaking the collector, then reverted.",
+          "The probe fails the test if a `pageerror` emitted *before* the assertion is missed — i.e. the existing regression the test guards is still caught by `expect(pageErrors).toEqual([]` unchanged."
+        ]
+      },
+      {
+        "path": "packages/desktop-client/e2e/command-bar.test.ts",
+        "action": "edit",
+        "cases": [
+          "`Opening the command bar logs no dialog accessibility warnings` still passes with PROBE_SETTLE_MS in place and the probe comment trimmed.",
+          "The coverage assertion still fails when an alternative is narrowed out of probe range — `MissingZZ` gives covered=false, and `DialogContent requires a DialogTitle` (dropping the `DialogTitle` alternative) also gives covered=false — so the reworded comment describes a guard that is still real.",
+          "The probe poll still fails when the filter stops matching the transcribed Radix wording, i.e. PROBE_SETTLE_MS did not decouple the probe's deadline in a way that lets it pass vacuously."
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "reports.test.ts's `creates a custom report in an empty budget` proves the pageerror channel delivers inside PAGE_ERROR_SETTLE_MS: a second `page.on('pageerror')` collector is attached, an error is thrown once from inside the page, and an `expect.poll` asserts the collector's length becomes greater than 0.",
+        "how_to_verify": "CI runs `yarn workspace @actual-app/web run playwright test reports.test.ts --browser=chromium`. To prove the guard is real rather than vacuous, temporarily delete the `page.on('pageerror', ...)` line that feeds `probeErrors` and confirm the poll times out and the test fails; revert.",
+        "source": "TR-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "The probe in reports.test.ts sits AFTER `expect(pageErrors).toEqual([])`, so the deliberate throw cannot fail the emptiness assertion it is meant to be independent of.",
+        "how_to_verify": "Read reports.test.ts in the PR diff: the `expect.poll(...).toBeGreaterThan(0)` block appears below the `expect(pageErrors).toEqual([])` line, and `pageErrors` and `probeErrors` are two separate arrays. Then run the reports test and confirm it is green — a probe placed before the assertion would turn it red.",
+        "source": "TR-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "The coverage-assertion comment in command-bar.test.ts states the property the code enforces — each alternative has at least one matching probe — and no longer claims a one-probe-per-alternative bijection that `.some()` does not check.",
+        "how_to_verify": "`grep -n 'its own probe' packages/desktop-client/e2e/command-bar.test.ts` returns nothing, and the comment above the `for (const alternative of ...)` loop reads 'needs a probe that matches it'.",
+        "source": "TR-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "The probe's property is stated once in command-bar.test.ts, in the inline block above the probe, and not duplicated in the DIALOG_WARNING_PROBES doc block.",
+        "how_to_verify": "`grep -n 'filter still matches\\|re-proves that both channels' packages/desktop-client/e2e/command-bar.test.ts` returns exactly one hit, inside the inline block at ~line 149, and none from the constant's doc block.",
+        "source": "TR-3",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "The probe's poll timeout is its own constant PROBE_SETTLE_MS, and CONSOLE_SETTLE_MS is used only for the unconditional drain above the emptiness assertion, so shortening the drain cannot shrink the probe's deadline.",
+        "how_to_verify": "`grep -n 'CONSOLE_SETTLE_MS\\|PROBE_SETTLE_MS' packages/desktop-client/e2e/command-bar.test.ts` shows PROBE_SETTLE_MS declared with its own doc and used at the `expect.poll` timeout, and CONSOLE_SETTLE_MS used only at the `waitForTimeout` drain.",
+        "source": "TR-4",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "upcoming-release-notes/fix-command-bar-dialog-console-drain.md is categorised Maintenance, matching a diff that touches no production code.",
+        "how_to_verify": "Read the file's front matter: `category: Maintenance`. The release-notes gate accepts it because the note is modified on this branch (packages/ci-actions/bin/release-notes-check.mjs walks `--diff-filter=AMR` under upcoming-release-notes/).",
+        "source": "TR-5",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "yarn install && yarn prepare",
+      "yarn workspace @actual-app/web run playwright test command-bar.test.ts reports.test.ts --browser=chromium",
+      "Proof the new reports.test.ts guard is not vacuous: temporarily comment out the `page.on('pageerror', ...)` that feeds `probeErrors`, re-run reports.test.ts, confirm it FAILS at the `expect.poll(...).toBeGreaterThan(0)` (not somewhere else), then revert the temporary edit and re-run to confirm green.",
+      "Proof the reworded coverage comment matches the guard: temporarily change `dialogAccessibilityWarning`'s description alternative to `/MissingZZ/`, re-run command-bar.test.ts, confirm it fails on the coverage assertion, then revert.",
+      "yarn workspace @actual-app/web run playwright test command-bar.test.ts reports.test.ts --browser=chromium",
+      "yarn lint && yarn typecheck"
+    ],
+    "risks": [
+      "The reports.test.ts probe deliberately throws inside the page. If it were ever moved above the emptiness assertion it would turn the test red permanently — the ordering is the one thing a future edit can silently break, which is why AC-2 pins it.",
+      "PROBE_SETTLE_MS is introduced at the same 1000ms value as CONSOLE_SETTLE_MS, so no test runtime changes today; the risk is future, that someone tunes the drain down for speed and is surprised the probe no longer follows — hence the two separately documented constants.",
+      "Rewording the coverage comment (AC-3) weakens no guard but makes the file's stated property slightly less ambitious than the comment previously read. If a future reader wants the bijection enforced, that is a real follow-up, not something this change half-does.",
+      "No file under packages/*/src is touched and no host is added to env.api_allowlist, so neither the forbidden-paths gate nor the network allowlist should stop QA.",
+      "The dropped finding (retitling merged PR #60) cannot be fixed from here and its squash subject is already published on main. This PR's own title must carry the `[AI]` prefix itself."
+    ],
+    "out_of_scope": [
+      "Retitling PR #60 to `[AI] Follow-ups from #48: 7 from the review` — PR #60 is merged (verified: `gh api .../pulls/60` returns merged:true, title `fix: Follow-ups from #48: 7 from the review`) and its squash subject is already on main as dff184c, so retitelling cannot change the commit. Rewriting published main history is not this ticket's job. The `[AI]` rule is honoured forward: this PR's title carries the prefix.",
+      "Enforcing the one-probe-per-alternative bijection in the coverage assertion (asserting exactly one matching probe per alternative instead of rewording the comment). The reviewer's own evidence shows this is not a live blind spot — narrowing either alternative still fails `.some()` — and a strict-count assertion would make the test fail on a future broadening that is harmless. Recorded as TR-2's cheaper alternative, not taken.",
+      "Extracting a shared `watchPageErrors` helper alongside `watchDialogWarnings`. The two differ in channel (pageerror vs console) and in filtering (none vs a regex), and each would have exactly one caller, so the abstraction would exist for its own sake.",
+      "Rewriting the command-bar.test.ts screenshot snapshots or touching any other e2e file. `grep -rn \"page.on(\" packages/desktop-client/e2e/` returns only command-bar.test.ts:75 and reports.test.ts:247, which is the complete blast radius of this finding.",
+      "Backporting `PROBE_SETTLE_MS` to PAGE_ERROR_SETTLE_MS in reports.test.ts — that constant already backs exactly one wait, so there is nothing to split."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Enforce the bijection in the coverage assertion: replace `.some()` with a count of probes matching each alternative asserted to be exactly 1, leaving the comment as written.",
+        "rejected_because": "It makes the comment true by strengthening the guard rather than correcting the comment, but the reviewer's evidence says the guard is not currently a live blind spot (narrowing either alternative still fails `.some()`, verified both ways). It also introduces a new failure mode: a future broadening that legitimately lets one probe match two alternatives turns the test red for a change that broke nothing."
+      },
+      {
+        "approach": "Delete the inline comment block above the probe (148-154) instead of trimming the constant's doc block, keeping one copy in the doc block where the constant is declared.",
+        "rejected_because": "The finding itself directs the other way, and rightly: the inline block is what a reader hits while debugging the failing poll, and it is the only one that explains why the probe is sequenced after the assertion. The constant's doc block keeps what only it knows — the channel mapping, the first-line-only truncation, and the transcription-drift limit."
+      },
+      {
+        "approach": "Give PROBE_SETTLE_MS a smaller value than CONSOLE_SETTLE_MS to trim the ~1s the probe adds to the test.",
+        "rejected_because": "That is precisely the coupling the finding objects to, just inverted: the probe's deadline would then be the number someone trims for runtime. Same value today (1000ms), separate constant, separately documented."
+      },
+      {
+        "approach": "Add a new release note for this PR instead of editing fix-command-bar-dialog-console-drain.md.",
+        "rejected_because": "The finding asks for the existing note's category to be corrected, and one Maintenance note describing the same e2e console-drain work would be a second entry saying the same thing. Editing the existing note also satisfies the release-notes gate, which accepts a modified note (--diff-filter=AMR). Precedent: dbcdcee and 07406d2 both edited existing notes rather than adding new ones."
+      }
+    ],
+    "assumptions": [
+      "PR #60's squash merge (dff184c) is the current shape of main for these two files — verified by grepping the exact lines the findings cite, all of which are present.",
+      "`page.evaluate` throwing inside a `setTimeout(..., 0)` surfaces as a Playwright `pageerror` event, the same way `console.error` surfaces as a `console` event; this is the CDP behaviour the command-bar probe already relies on, applied to the uncaught-exception channel.",
+      "Both e2e files run headless in CI under `yarn workspace @actual-app/web run playwright test`, so the `Page` import and the `expect` imported from './fixtures' are already in scope in both files and no new import is needed."
+    ],
+    "unknowns": [
+      "Whether `expect.poll` is available in reports.test.ts's context — it imports `expect` from './fixtures' exactly as command-bar.test.ts does and uses `.toBeVisible()` from the same object, so the poll matcher should resolve; the implementer should confirm on first run rather than assume.",
+      "Whether the release-notes gate treats a *modified* note as satisfying the per-PR requirement in this repo's CI configuration — release-notes-check.mjs explicitly walks changed (A/M/R) notes and errors only when none changed, and dbcdcee/07406d2 shipped by editing notes, so this is close to settled but worth watching in the CI log."
+    ],
+    "evidence": [
+      "command-bar.test.ts:132 — `// Every alternative in the filter needs its own probe, or the arm nobody` above a `.some()` loop at 137-144 that only proves at-least-one; `.some()` cannot distinguish one probe satisfying two alternatives from one probe per alternative.",
+      "reports.test.ts:272-273 — `await page.waitForTimeout(PAGE_ERROR_SETTLE_MS); expect(pageErrors).toEqual([]);` with no probe; `grep -rn 'probe\\|evaluate\\|poll' packages/desktop-client/e2e/reports.test.ts` returns nothing near line 272 (only chart-scroll `poll` at 197-211), so the emptiness assertion can still pass vacuously.",
+      "`grep -rn \"page.on(\" packages/desktop-client/e2e/` returns exactly command-bar.test.ts:75 and reports.test.ts:247 — the complete blast radius of the pageerror finding.",
+      "command-bar.test.ts — `grep -n 'filter still matches'` returns lines 41 and 149: near-verbatim duplication of one claim, not paraphrase.",
+      "command-bar.test.ts — `grep -n CONSOLE_SETTLE_MS` returns 24 (declaration), 125 (the drain) and 166 (the probe's poll timeout), against a doc comment naming only the drain.",
+      "upcoming-release-notes/fix-command-bar-dialog-console-drain.md has `category: Bugfix`; `git diff --stat main pr60` for that PR touches command-bar.test.ts, reports.test.ts and the note only — no file under packages/*/src, so Maintenance is the documented category.",
+      "`gh api repos/Shivam-Fl/actual-budget-sdlc/pulls/60 --jq '{title,state,merged}'` returns merged:true with title `fix: Follow-ups from #48: 7 from the review`; `git log -1 --format=%s dff184c` confirms the unprefixed subject is already on main — this is why that finding is dropped rather than implemented."
+    ],
+    "confidence": 88,
+    "confidence_rationale": "Every code finding was verified by reading the exact cited lines on main rather than trusting the issue's reproduction, and each edit is a comment, a constant, or one mirrored probe block — no behaviour of the app changes and no new abstraction is introduced. The main residual uncertainty is mechanical: `expect.poll` on the pageerror channel in reports.test.ts has not been executed here, and the release-notes gate's acceptance of a modified note is inferred from the script's diff-filter and two prior commits rather than read off a green CI run. Confidence is below 90 for that reason.",
+    "route_request": {
+      "type": "insert_stage",
+      "stage": "maintainer",
+      "reason": "Two of the six findings (retitling the merged PR #60, and correcting a shipped Bugfix release note whose diff touched no production code) are decisions about already-published history rather than code anyone can still change, and no stage on this route can carry them: implement cannot touch a closed PR, and the note's category edit lands in this PR as a side effect of an unrelated fix. A maintainer should decide whether the published changelog entry and the merged commit subject are corrected out of band."
+    }
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-04T00:42:27.780Z",
+  "validated_ac_changes": []
 }
