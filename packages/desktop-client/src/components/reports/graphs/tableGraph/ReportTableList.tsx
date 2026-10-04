@@ -74,7 +74,14 @@ export function ReportTableList({
                         (category: GroupedEntity, i: number) => {
                           return (
                             <RenderTableRow
-                              key={category.id}
+                              // Uncategorized, Transfers and Off budget all
+                              // carry `id: ''` on purpose — the query layer and
+                              // the filters match on that empty id — so `id`
+                              // collides for all three. `uncategorizedId` is
+                              // the field that tells them apart. Real
+                              // categories have no uncategorizedId and keep
+                              // being keyed by their uuid.
+                              key={category.uncategorizedId ?? category.id}
                               index={i}
                               renderRow={renderRow}
                               mode={mode}
