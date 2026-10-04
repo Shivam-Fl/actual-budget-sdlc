@@ -7,6 +7,7 @@ import * as db from '#server/db';
 import { loadMappings } from '#server/db/mappings';
 import { toDateRepr } from '#server/models';
 import { runHandler } from '#server/mutators';
+import { app as transactionsApp } from '#server/transactions/app';
 import { mergeTransactions } from '#server/transactions/merge';
 import { loadRules, updateRule } from '#server/transactions/transaction-rules';
 import {
@@ -29,6 +30,10 @@ import type {
   PostedScheduleTransaction,
   ScheduleStatuses,
 } from '#shared/schedules';
+import {
+  makeEmptySplitSubtransactions,
+  splitTransaction,
+} from '#shared/transactions';
 
 import {
   advanceSchedulesService,
@@ -1507,6 +1512,167 @@ describe('schedule app', () => {
         ]);
 
         expect(await getTransactionDates(id)).toEqual([OCCURRENCES[1]]);
+      });
+
+      // Splitting is not an edge case here: it is what the register's Split
+      // affordance does to a posted transaction, and it moves the occurrence
+      // stamp onto a row the guard's default query cannot see.
+      //
+      // Every assertion below goes through `readStampedRows` rather than
+      // `getTransactionDates`, because that helper queries with the default
+      // 'inline' splits and reports zero rows for a split parent — reusing it
+      // would make a correct implementation look broken.
+      async function readStampedRows(scheduleId: string, occurrence?: string) {
+        const { data } = await aqlQuery(
+          q('transactions')
+            .options({ splits: 'all' })
+            .filter({
+              schedule: scheduleId,
+              ...(occurrence != null
+                ? { schedule_occurrence: occurrence }
+                : {}),
+            })
+            .select(['id', 'is_parent', 'date', 'schedule_occurrence'])
+            .orderBy({ date: 'asc' }),
+        );
+        return data;
+      }
+
+      // Driven through the same two calls the UI makes, so a failure here is
+      // attributable to the guard rather than to a hand-written row that never
+      // went through the split.
+      async function splitPostedTransaction(
+        scheduleId: string,
+        occurrence: string,
+      ) {
+        const [parent] = await readStampedRows(scheduleId, occurrence);
+        const { diff } = splitTransaction(
+          [await db.getTransaction(parent.id)],
+          parent.id,
+          makeEmptySplitSubtransactions,
+        );
+
+        await runHandler(
+          transactionsApp.handlers['transactions-batch-update'],
+          diff,
+        );
+      }
+
+      // The split parent and its children, straight from the db view — the
+      // only place the stamp's fate across a split is observable. Columns are
+      // named rather than `*` because `DbViewTransactionInternal` does not
+      // declare `schedule_occurrence`.
+      async function readSplitFamily(parentId: string) {
+        return db.all<{
+          id: string;
+          is_parent: number;
+          parent_id: string | null;
+          schedule: string | null;
+          schedule_occurrence: number | null;
+        }>(
+          `SELECT id, is_parent, parent_id, schedule, schedule_occurrence
+             FROM v_transactions_internal
+            WHERE id = ? OR parent_id = ?`,
+          [parentId, parentId],
+        );
+      }
+
+      it('writes no second transaction when the posted one has been split', async () => {
+        const id = await createWeeklySchedule();
+
+        // Posted with no `date`, which is what the Schedules page's menu item
+        // sends: the occurrence is `next_date`, and a second such call targets
+        // the same one.
+        await post(id);
+        await splitPostedTransaction(id, OCCURRENCES[0]);
+        await post(id);
+
+        // The split parent, and nothing else. Before the guard was widened to
+        // read split parents, this second post wrote a fresh un-split row and
+        // the occurrence was paid twice.
+        const stamped = await readStampedRows(id, OCCURRENCES[0]);
+        expect(stamped).toHaveLength(1);
+        expect(stamped[0].is_parent).toBe(true);
+      });
+
+      it('keeps the occurrence stamp on the split parent and off its children', async () => {
+        // Isolates WHERE the stamp lives, so a failure in the case above is
+        // attributable to the guard's row set rather than to the split having
+        // dropped or duplicated the stamp. It is also why the guard has to
+        // widen: the stamp survives on exactly one row, and it is a parent.
+        const id = await createWeeklySchedule();
+
+        await post(id);
+        const [parent] = await readStampedRows(id, OCCURRENCES[0]);
+        await splitPostedTransaction(id, OCCURRENCES[0]);
+
+        const family = await readSplitFamily(parent.id);
+        const splitParent = family.find(row => row.id === parent.id);
+        expect(splitParent).toMatchObject({ is_parent: 1, schedule: id });
+
+        // Read through AQL rather than off the raw view above, which stores the
+        // occurrence as a `20170102` integer.
+        expect(
+          (await readStampedRows(id, OCCURRENCES[0])).map(row => row.id),
+        ).toEqual([parent.id]);
+
+        // makeChild copies neither field, so a widened guard cannot newly
+        // match a child and over-block on it.
+        const children = family.filter(row => row.parent_id === parent.id);
+        expect(children).toHaveLength(2);
+        for (const child of children) {
+          expect(child.schedule).toBeNull();
+          expect(child.schedule_occurrence).toBeNull();
+        }
+      });
+
+      it('does not let a split occurrence mark a later one paid', async () => {
+        // The direction the widening could plausibly over-reach: a guard that
+        // matched on anything coarser than an exact stamp — the date, the
+        // schedule alone — would swallow the next, still-owed occurrence and a
+        // payment would silently not happen.
+        const id = await createWeeklySchedule();
+
+        await post(id);
+        await splitPostedTransaction(id, OCCURRENCES[0]);
+        await post(id, { date: OCCURRENCES[1] });
+
+        const stamped = await readStampedRows(id);
+        expect(stamped.map(row => row.schedule_occurrence)).toEqual([
+          OCCURRENCES[0],
+          OCCURRENCES[1],
+        ]);
+        expect(await readStampedRows(id, OCCURRENCES[1])).toHaveLength(1);
+      });
+
+      it('leaves the status queries agreeing with the guard after a split', async () => {
+        // Both status queries already read split parents, so a split parent
+        // stamped for this occurrence keeps the Schedules page showing it as
+        // paid. The guard used to disagree, which is what let a second post
+        // through; this pins the three together.
+        const id = await createWeeklySchedule();
+
+        await post(id);
+        await splitPostedTransaction(id, OCCURRENCES[0]);
+
+        const schedule = await getSchedule(id);
+
+        const { data: hasTrans } = await aqlQuery(
+          getHasTransactionsQuery([schedule]),
+        );
+        expect(
+          hasTrans.filter(Boolean).filter(row => row.schedule === id),
+        ).toHaveLength(1);
+
+        const { data: posted } = await aqlQuery(
+          getPostedScheduleTransactionsQuery([schedule]),
+        );
+        expect(
+          posted
+            .filter(Boolean)
+            .filter(row => row.schedule === id)
+            .map(row => row.schedule_occurrence),
+        ).toEqual([OCCURRENCES[0]]);
       });
 
       it('does not guard `today`, which may legitimately be posted twice', async () => {

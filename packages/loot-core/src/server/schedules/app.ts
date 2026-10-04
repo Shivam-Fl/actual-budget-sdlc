@@ -582,11 +582,25 @@ async function postTransactionForSchedule({
   //
   // Deliberately not applied to `today`, which discharges `next_date` early
   // and can legitimately be invoked more than once.
+  //
+  // `splits: 'all'` is REQUIRED here, and omitting it is the trap this whole
+  // guard sits on. The default is 'inline', which appends `is_parent = 0` and
+  // so excludes split parents — and the split parent is the ONE row that keeps
+  // the stamp: `splitTransaction` leaves `schedule` and `schedule_occurrence`
+  // on the row it turns into a parent, while `makeChild` copies neither onto
+  // the children. A guard reading the default row set therefore sees nothing
+  // after a user splits a posted occurrence, the occurrence looks unspent, and
+  // it gets paid twice. `getHasTransactionsQuery` and
+  // `getPostedScheduleTransactionsQuery` already pass 'all', so the guard and
+  // the status queries agree on whether an occurrence is posted — keep it that
+  // way. This cannot over-block: children never carry the stamp, so the widened
+  // filter matches no row the narrower one did not.
   if (!today) {
     const {
       data: [alreadyPosted],
     } = await aqlQuery(
       q('transactions')
+        .options({ splits: 'all' })
         .filter({ schedule: schedule.id, schedule_occurrence: occurrence })
         .select('id'),
     );
