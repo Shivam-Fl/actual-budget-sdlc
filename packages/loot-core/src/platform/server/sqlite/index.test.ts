@@ -1,13 +1,36 @@
 // @ts-strict-ignore
+import type { Database } from '@jlongster/sql.js';
+
 import { patchFetchForSqlJS } from '#mocks/util';
 
-import { execQuery, init, openDatabase, runQuery, transaction } from './index';
+import {
+  closeDatabase,
+  execQuery,
+  init,
+  openDatabase,
+  runQuery,
+  transaction,
+} from './index';
+
+const baseURL = `${__dirname}/../../../../../../node_modules/@jlongster/sql.js/dist/`;
 
 beforeAll(async () => {
-  const baseURL = `${__dirname}/../../../../../../node_modules/@jlongster/sql.js/dist/`;
   patchFetchForSqlJS(baseURL);
 
   return init({ baseURL });
+});
+
+// The afterEach below calls vi.restoreAllMocks(), which is file-scoped rather
+// than spy-scoped, so it takes down the global.fetch spy this file's beforeAll
+// installed, along with any console spies a test has installed. Nothing breaks
+// today, because init() has already run and sql.js caches the compiled wasm —
+// but before the beforeEach below re-armed the fetch patch, from the second
+// test on, global.fetch was the real jsdom fetch again. patchFetchForSqlJS is
+// a vi.spyOn(...).mockImplementation(...) with no restore of its own, so
+// calling it once per test is idempotent and the blanket restore can no longer
+// outrun it.
+beforeEach(() => {
+  patchFetchForSqlJS(baseURL);
 });
 
 const initSQL = `
@@ -16,6 +39,34 @@ CREATE TABLE textstrings (id TEXT PRIMARY KEY, string TEXT);
 `;
 
 describe('Web sqlite', () => {
+  // Teardown lives here rather than at the tail of a test body: an assertion
+  // failing above it would skip the cleanup. What survives that is narrower
+  // than it looks, so each half is scoped to what it actually covers.
+  //
+  // vi.restoreAllMocks() restores every spy in the file. Five of the ten tests
+  // mock console.log — the three transaction tests, the once-per-pattern test
+  // and the once-per-handle test — and each of those restores its own spy at
+  // the tail of its body anyway; this is the backstop for an assertion that
+  // fails before it gets there. The other five mock no console.log, so for them
+  // there is nothing to restore.
+  //
+  // The loop closes the handles that were pushed into it, and exactly one test
+  // pushes any: 'should report an unparseable pattern once per database handle,
+  // not once per process'. Eight of the other nine call openDatabase() without
+  // registering the handle, so those are untouched either way; the fetch-patch
+  // test at the end opens no database at all.
+  //
+  // Mirrors ./index.electron.test.ts on both halves — restore mocks, then
+  // close handles — where each of that file's three tests registers both.
+  const handles: Database[] = [];
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const handle of handles.splice(0)) {
+      closeDatabase(handle);
+    }
+  });
+
   it('should rollback transactions', async () => {
     const db = await openDatabase();
     execQuery(db, initSQL);
@@ -252,9 +303,11 @@ describe('Web sqlite', () => {
       );
     }
 
-    // Patterns used by no other case in this file, and the dedupe set below is
-    // scoped to this database handle, so the count starts from an unreported
-    // pattern regardless of which tests ran before this one.
+    // Patterns used by no other case in this file, so the count starts from an
+    // unreported pattern. That each is reported exactly once is a statement
+    // about this handle's rows, not about the lifetime of the dedupe set — the
+    // Set lives in the closure createRegexp returns in ./index.ts, and the test
+    // below is what pins that lifetime.
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => null);
     const invalidRegexLogs = () =>
       consoleSpy.mock.calls.filter(
@@ -298,6 +351,62 @@ describe('Web sqlite', () => {
     consoleSpy.mockRestore();
   });
 
+  it('should report an unparseable pattern once per database handle, not once per process', async () => {
+    // The assertion above cannot tell a Set scoped to createRegexp()'s closure
+    // from one at module scope: every pattern it uses is unique to this file,
+    // so both implementations report the same number of lines. Two handles
+    // reporting the same pattern is what separates them — a process-wide Set
+    // silences the second handle and the count stays at 1.
+    const seed = db => {
+      execQuery(db, initSQL);
+      for (const id of ['1', '2', '3']) {
+        runQuery(
+          db,
+          `INSERT INTO textstrings (id, string) VALUES ('id${id}', '#mortgage note')`,
+        );
+      }
+    };
+
+    const db1 = await openDatabase();
+    handles.push(db1);
+    seed(db1);
+    const db2 = await openDatabase();
+    handles.push(db2);
+    seed(db2);
+
+    // A pattern used by no other case in this file, so the count starts from
+    // zero regardless of which tests ran before this one.
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => null);
+    const invalidRegexLogs = () =>
+      consoleSpy.mock.calls.filter(
+        call => call[0] === 'invalid regexp in sqlite REGEXP',
+      ).length;
+
+    // This backend binds its params, so it takes null where the native one
+    // takes [].
+    const query = (db, pattern) =>
+      runQuery(
+        db,
+        `SELECT id FROM textstrings where REGEXP('${pattern}', string)`,
+        null,
+        true,
+      );
+
+    expect(query(db1, '(?<handle')).toEqual([]);
+    expect(invalidRegexLogs()).toBe(1);
+
+    // The same pattern over a second handle in the same process is reported
+    // again: the dedupe set belongs to the handle, not the process.
+    expect(query(db2, '(?<handle')).toEqual([]);
+    expect(invalidRegexLogs()).toBe(2);
+
+    // And each handle still dedupes on its own afterwards.
+    expect(query(db1, '(?<handle')).toEqual([]);
+    expect(invalidRegexLogs()).toBe(2);
+
+    consoleSpy.mockRestore();
+  });
+
   it('should still match a valid regex that does match, and not throw on one that does not', async () => {
     const db = await openDatabase();
     execQuery(db, initSQL);
@@ -334,5 +443,19 @@ describe('Web sqlite', () => {
         true,
       ),
     ).toEqual([]);
+  });
+
+  // Last on purpose, and the position is load-bearing. Placed first this would
+  // still see the beforeAll's patch, because no afterEach has run yet, so it
+  // would pass for the wrong reason; and it would be vacuous whenever -t
+  // selects it alone (measured: with the beforeEach above removed,
+  // `vitest --run --config vitest.web.config.ts -t 'keeps the sql.js wasm fetch
+  // patched'` still reports 1 passed | 15 skipped). This test therefore has
+  // power only in a full-file run.
+  it('keeps the sql.js wasm fetch patched for each test, not just the first', async () => {
+    expect(vi.isMockFunction(globalThis.fetch)).toBe(true);
+
+    const res = await globalThis.fetch(`${baseURL}sql-wasm.wasm`);
+    expect(res.status).toBe(200);
   });
 });

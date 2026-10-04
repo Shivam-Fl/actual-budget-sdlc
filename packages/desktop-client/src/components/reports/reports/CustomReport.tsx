@@ -1076,6 +1076,7 @@ function CustomReportInner({
                     data={data}
                     interval={interval}
                     intervalsCount={intervals.length}
+                    firstDayOfWeekIdx={firstDayOfWeekIdx}
                   />
                 )}
                 {viewLegend && (

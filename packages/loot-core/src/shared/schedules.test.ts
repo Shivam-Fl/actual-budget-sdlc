@@ -9,17 +9,21 @@ import {
   getHasTransactionsQuery,
   getNextDate,
   getNextDateAfter,
+  getPostedScheduleTransactionsQuery,
   getScheduleOccurrenceMatchStartDate,
   getStatus,
   getUpcomingDays,
   indexPostedScheduleTransactions,
   isCustomUpcomingLength,
   isScheduleOccurrencePosted,
+  scheduleIsRecurring,
+  scheduleIsSkippable,
   UPCOMING_LENGTH_PRESET_LABELS,
   UPCOMING_LENGTH_PRESET_OPTIONS,
   UPCOMING_LENGTH_PRESET_VALUES,
 } from './schedules';
 import type {
+  PostedScheduleTransaction,
   ScheduleOccurrenceMatchInput,
   ScheduleStatuses,
 } from './schedules';
@@ -376,6 +380,34 @@ describe('schedules', () => {
       ).toBe('2026-11-02');
     });
 
+    it('only ever asks about next_date, and must keep doing so', () => {
+      // Asserted directly rather than relied on: widening this to match any
+      // occurrence is what would reintroduce BUG-1 inside
+      // `advanceSchedulesService`, where a later posted occurrence would mark an
+      // earlier, still-unpaid one paid and skip it. Per-occurrence matching
+      // belongs to `getPostedScheduleTransactionsQuery`, not here.
+      const [{ $or: perSchedule }] = getHasTransactionsQuery([
+        {
+          id: 'schedule-1',
+          next_date: '2024-03-10',
+          _conditions: [{ op: 'is', field: 'date', value: '2024-03-10' }],
+        },
+      ]).serialize().filterExpressions as [
+        { $or: Array<{ $and: { $or: unknown[] } }> },
+      ];
+
+      // The one occurrence identity it names is `next_date`, and nothing else
+      // about an occurrence is constrained.
+      expect(
+        perSchedule[0].$and.$or.filter(
+          arm =>
+            typeof arm === 'object' &&
+            arm != null &&
+            'schedule_occurrence' in arm,
+        ),
+      ).toEqual([{ schedule_occurrence: '2024-03-10' }]);
+    });
+
     it('compiles the fallback arm with AND, not OR', () => {
       // AQL's `compileOr` joins the conditions *inside* a branch with OR, so
       // the object form `{ schedule_occurrence: null, date: {...} }` compiles
@@ -405,6 +437,251 @@ describe('schedules', () => {
           'AND (schedule_occurrence = 20161202 ' +
           'OR (schedule_occurrence IS NULL AND date >= 20161202)))))',
       );
+    });
+  });
+
+  describe('getPostedScheduleTransactionsQuery', () => {
+    it('matches nothing when there are no schedules', () => {
+      const filters = getPostedScheduleTransactionsQuery([]).serialize()
+        .filterExpressions;
+
+      expect(filters).toEqual([{ id: null }]);
+      expect(filters[0]).not.toHaveProperty('$or');
+    });
+
+    it('asks about every occurrence of every schedule, not just next_date', () => {
+      // The query `getHasTransactionsQuery` cannot express: it filters on
+      // `schedule_occurrence: next_date`, so it can never return a transaction
+      // posted for a later occurrence. This one only constrains `schedule`.
+      const filters = getPostedScheduleTransactionsQuery([
+        { id: 'schedule-1' },
+        { id: 'schedule-2' },
+      ]).serialize().filterExpressions;
+
+      expect(filters).toEqual([
+        { $or: [{ schedule: 'schedule-1' }, { schedule: 'schedule-2' }] },
+      ]);
+    });
+
+    it('selects only the three columns the occurrence matcher reads', () => {
+      const query = getPostedScheduleTransactionsQuery([{ id: 'schedule-1' }]);
+
+      expect(query.serialize().selectExpressions).toEqual([
+        'schedule',
+        'date',
+        'schedule_occurrence',
+      ]);
+    });
+  });
+
+  describe('per-occurrence preview filtering', () => {
+    function makeSchedule(
+      overrides: Partial<ScheduleEntity> = {},
+    ): ScheduleEntity {
+      return {
+        id: 'sched-1',
+        rule: 'rule-1',
+        next_date: '2017-01-02',
+        completed: false,
+        posts_transaction: true,
+        tombstone: false,
+        _payee: 'payee-1',
+        _account: 'acct-1',
+        _amount: -10000,
+        _amountOp: 'is',
+        _date: '2017-01-02',
+        _actions: [],
+        _conditions: [
+          {
+            field: 'date',
+            op: 'is',
+            value: { start: '2017-01-02', frequency: 'weekly', patterns: [] },
+          },
+        ],
+        ...overrides,
+      };
+    }
+
+    // `currentDay()` is 2017-01-01, so a weekly schedule from 2017-01-02
+    // previews five Mondays inside a 30-day window.
+    const OCCURRENCES = [
+      '2017-01-02',
+      '2017-01-09',
+      '2017-01-16',
+      '2017-01-23',
+      '2017-01-30',
+    ];
+
+    function previewDates(
+      schedule: ScheduleEntity,
+      statuses: ScheduleStatuses,
+      posted?: PostedScheduleTransaction[],
+    ) {
+      const postedTransactionsBySchedule = new Map();
+      if (posted) {
+        for (const tx of posted) {
+          const existing = postedTransactionsBySchedule.get(tx.schedule!);
+          postedTransactionsBySchedule.set(
+            tx.schedule!,
+            existing ? [...existing, tx] : [tx],
+          );
+        }
+      }
+
+      return computeSchedulePreviewTransactions(
+        [schedule],
+        statuses,
+        '30-day',
+        undefined,
+        postedTransactionsBySchedule,
+      )
+        .map(({ date }) => date)
+        .sort();
+    }
+
+    it('drops a stamped occurrence wherever it sits in the list', () => {
+      // `status` is one bit per schedule and only ever describes next_date, so
+      // the `dates.shift()` cannot remove occurrence #2. Only the per-occurrence
+      // match can.
+      const schedule = makeSchedule();
+      const statuses: ScheduleStatuses = new Map([['sched-1', 'due']]);
+
+      expect(previewDates(schedule, statuses)).toEqual(OCCURRENCES);
+
+      expect(
+        previewDates(schedule, statuses, [
+          {
+            schedule: 'sched-1',
+            date: OCCURRENCES[1],
+            schedule_occurrence: OCCURRENCES[1],
+          },
+        ]),
+      ).toEqual([
+        OCCURRENCES[0],
+        OCCURRENCES[2],
+        OCCURRENCES[3],
+        OCCURRENCES[4],
+      ]);
+    });
+
+    it('drops several occurrences of the same schedule at once', () => {
+      const schedule = makeSchedule();
+      const statuses: ScheduleStatuses = new Map([['sched-1', 'due']]);
+
+      expect(
+        previewDates(schedule, statuses, [
+          {
+            schedule: 'sched-1',
+            date: OCCURRENCES[1],
+            schedule_occurrence: OCCURRENCES[1],
+          },
+          {
+            schedule: 'sched-1',
+            date: OCCURRENCES[3],
+            schedule_occurrence: OCCURRENCES[3],
+          },
+        ]),
+      ).toEqual([OCCURRENCES[0], OCCURRENCES[2], OCCURRENCES[4]]);
+    });
+
+    it('drops nothing when the map is omitted, so existing callers are unaffected', () => {
+      const schedule = makeSchedule();
+      const statuses: ScheduleStatuses = new Map([['sched-1', 'due']]);
+
+      expect(
+        computeSchedulePreviewTransactions([schedule], statuses, '30-day')
+          .map(({ date }) => date)
+          .sort(),
+      ).toEqual(OCCURRENCES);
+
+      expect(previewDates(schedule, statuses, [])).toEqual(OCCURRENCES);
+    });
+
+    it('leaves a schedule with no posted transactions alone', () => {
+      const schedule = makeSchedule();
+      const statuses: ScheduleStatuses = new Map([['sched-1', 'due']]);
+
+      expect(
+        previewDates(schedule, statuses, [
+          {
+            schedule: 'some-other-schedule',
+            date: OCCURRENCES[1],
+            schedule_occurrence: OCCURRENCES[1],
+          },
+        ]),
+      ).toEqual(OCCURRENCES);
+    });
+
+    it('still drops next_date when the status is paid', () => {
+      const schedule = makeSchedule();
+      const statuses: ScheduleStatuses = new Map([['sched-1', 'paid']]);
+
+      expect(previewDates(schedule, statuses)).toEqual(OCCURRENCES.slice(1));
+    });
+
+    it('drops a stamped occurrence even when the transaction carries another date', () => {
+      // The re-dating case `isScheduleOccurrencePosted` exists for: the date is
+      // the user's to edit, the occurrence it discharges is not.
+      const schedule = makeSchedule();
+      const statuses: ScheduleStatuses = new Map([['sched-1', 'due']]);
+
+      expect(
+        previewDates(schedule, statuses, [
+          {
+            schedule: 'sched-1',
+            date: '2016-12-20',
+            schedule_occurrence: OCCURRENCES[2],
+          },
+        ]),
+      ).toEqual([
+        OCCURRENCES[0],
+        OCCURRENCES[1],
+        OCCURRENCES[3],
+        OCCURRENCES[4],
+      ]);
+    });
+
+    it('does not let an unstamped transaction between occurrences un-pay any of them', () => {
+      // The two filters deliberately disagree here, and this is the safe
+      // direction. `getHasTransactionsQuery`'s fallback is a lower bound, so a
+      // legacy unstamped payment dated 2017-01-25 makes the schedule read
+      // 'paid' and shifts next_date off 2017-01-02. The per-occurrence match is
+      // two-sided, so it discharges nothing: the payment belongs to no
+      // occurrence. The extra preview row that costs is better than the missing
+      // one the reverse disagreement would produce, which is why the shift is
+      // kept rather than replaced by this filter.
+      const schedule = makeSchedule();
+      const betweenOccurrences = '2017-01-25';
+
+      expect(
+        previewDates(makeSchedule(), new Map([['sched-1', 'paid']]), [
+          { schedule: 'sched-1', date: betweenOccurrences },
+        ]),
+      ).toEqual(OCCURRENCES.slice(1));
+
+      expect(
+        previewDates(schedule, new Map([['sched-1', 'due']]), [
+          { schedule: 'sched-1', date: betweenOccurrences },
+        ]),
+      ).toEqual(OCCURRENCES);
+    });
+
+    it('lets an unstamped transaction on the occurrence date discharge it', () => {
+      // The counterpart: budgets that predate the stamp still consume the
+      // occurrence they were paid for, so the fix does not depend on a backfill.
+      const schedule = makeSchedule();
+      const statuses: ScheduleStatuses = new Map([['sched-1', 'due']]);
+
+      expect(
+        previewDates(schedule, statuses, [
+          { schedule: 'sched-1', date: OCCURRENCES[1] },
+        ]),
+      ).toEqual([
+        OCCURRENCES[0],
+        OCCURRENCES[2],
+        OCCURRENCES[3],
+        OCCURRENCES[4],
+      ]);
     });
   });
 
@@ -772,6 +1049,135 @@ describe('schedules', () => {
 
       expect(getNextDateAfter(dateCond, '2020-12-05')).toBe('2020-12-12');
       expect(getNextDateAfter(dateCond, '2020-12-12')).toBeNull();
+    });
+  });
+
+  describe('scheduleIsSkippable', () => {
+    /* This block's own copy of the Saturday fixture, because
+      `scheduleIsSkippable` takes a `RuleConditionEntity | null` and so needs
+      the typed one — `getNextDateAfter` reads only `op` and `value`, so its
+      copy above stays shaped like the conditions the app actually stores. */
+    function weeklyOnSaturday(extra = {}): RuleConditionEntity {
+      return {
+        field: 'date',
+        op: 'isapprox',
+        value: {
+          start: '2020-12-05',
+          frequency: 'weekly',
+          patterns: [],
+          ...extra,
+        },
+      };
+    }
+
+    /* Whether "Skip next scheduled date" can be offered is not the same
+      question as "is this recurring?": `setNextDate` moves the schedule to
+      `getNextDateAfter(...)` and writes nothing when that is null, so a
+      recurrence whose occurrences are all used up is skippable-by-recurrence
+      but not skippable at all. These cases pin the two apart. */
+    it('returns false for a null date condition', () => {
+      expect(scheduleIsSkippable(null, '2020-12-05')).toBe(false);
+    });
+
+    it('returns false for a null next date', () => {
+      expect(scheduleIsSkippable(weeklyOnSaturday(), null)).toBe(false);
+    });
+
+    it('returns false for an undefined next date', () => {
+      expect(scheduleIsSkippable(weeklyOnSaturday(), undefined)).toBe(false);
+    });
+
+    it('returns true for a never-ending rule with an occurrence ahead', () => {
+      expect(scheduleIsSkippable(weeklyOnSaturday(), '2020-12-05')).toBe(true);
+    });
+
+    it('returns false for a one-off, whose date condition is a plain date', () => {
+      // A one-off's value is the date string itself, not a `{ start }` object —
+      // `Condition` only reads an object as a recurring date when it has a
+      // `frequency`.
+      const oneOff: RuleConditionEntity = {
+        field: 'date',
+        op: 'is',
+        value: '2020-12-05',
+      };
+
+      expect(scheduleIsSkippable(oneOff, '2020-12-05')).toBe(false);
+    });
+
+    it('returns true while an after_n_occurrences rule still has an occurrence ahead', () => {
+      const dateCond = weeklyOnSaturday({
+        endMode: 'after_n_occurrences',
+        endOccurrences: 2,
+      });
+
+      expect(scheduleIsSkippable(dateCond, '2020-12-05')).toBe(true);
+    });
+
+    it('returns false once the last occurrence of an after_n_occurrences rule is showing', () => {
+      const dateCond = weeklyOnSaturday({
+        endMode: 'after_n_occurrences',
+        endOccurrences: 2,
+      });
+
+      expect(scheduleIsSkippable(dateCond, '2020-12-12')).toBe(false);
+    });
+
+    it('returns false for an on_date rule that ended in the past', () => {
+      const dateCond = weeklyOnSaturday({
+        endMode: 'on_date',
+        endDate: '2020-12-05',
+      });
+
+      expect(scheduleIsSkippable(dateCond, '2020-12-12')).toBe(false);
+    });
+
+    it('returns false for the UI-shaped fixture of a schedule for one occurrence', () => {
+      // The Schedules table seeds a new schedule's start to today, so "for 1
+      // occurrence" spends its only occurrence on today and leaves nothing to
+      // skip to. `endOccurrences` is a number here; the picker collects a
+      // string and parses it.
+      const today = monthUtils.currentDay();
+      const uiFixture = weeklyOnSaturday({
+        start: today,
+        endMode: 'after_n_occurrences',
+        endOccurrences: 1,
+      });
+
+      expect(scheduleIsSkippable(uiFixture, today)).toBe(false);
+    });
+
+    it('returns true for the same UI-shaped fixture when it is for two occurrences', () => {
+      const today = monthUtils.currentDay();
+      const uiFixture = weeklyOnSaturday({
+        start: today,
+        endMode: 'after_n_occurrences',
+        endOccurrences: 2,
+      });
+
+      expect(scheduleIsSkippable(uiFixture, today)).toBe(true);
+    });
+
+    it('leaves scheduleIsRecurring answering the weaker question', () => {
+      const today = monthUtils.currentDay();
+      const exhausted = weeklyOnSaturday({
+        start: today,
+        endMode: 'after_n_occurrences',
+        endOccurrences: 1,
+      });
+
+      // Still a recurrence, even though there is nothing left to skip to: three
+      // callers read this predicate inverted to decide a schedule is *not*
+      // recurring, so it must not answer the skip question too.
+      expect(scheduleIsRecurring(exhausted)).toBe(true);
+      expect(scheduleIsSkippable(exhausted, today)).toBe(false);
+      expect(scheduleIsRecurring(weeklyOnSaturday())).toBe(true);
+      const oneOffCond: RuleConditionEntity = {
+        field: 'date',
+        op: 'is',
+        value: '2020-12-05',
+      };
+      expect(scheduleIsRecurring(oneOffCond)).toBe(false);
+      expect(scheduleIsRecurring(null)).toBe(false);
     });
   });
 

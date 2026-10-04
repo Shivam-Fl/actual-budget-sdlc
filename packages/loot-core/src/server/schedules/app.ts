@@ -549,9 +549,11 @@ function onApplySync(oldValues, newValues) {
 
 async function postTransactionForSchedule({
   id,
+  date,
   today,
 }: {
   id: string;
+  date?: string;
   today?: boolean;
 }) {
   const { data } = await aqlQuery(q('schedules').filter({ id }).select('*'));
@@ -560,16 +562,64 @@ async function postTransactionForSchedule({
     return;
   }
 
+  // The occurrence this post discharges. Posting from the register can select a
+  // LATER occurrence than the one `next_date` sits on, and that has to be the
+  // one recorded — `next_date` here is simply the earliest one still owed.
+  // `today` is the exception: it pays `next_date` early and leaves that
+  // occurrence pending, so it discharges `next_date` whatever `date` says.
+  const occurrence = today ? schedule.next_date : (date ?? schedule.next_date);
+
+  // Consuming an occurrence is idempotent: the stamp below IS the identity the
+  // whole per-occurrence model rests on, so a second message for an occurrence
+  // that is already posted must not write again. A double-clicked menu item, or
+  // a message redelivered because the first reply was lost, would otherwise
+  // leave two transactions stamped for one occurrence.
+  //
+  // This is safe without a lock because the handler is registered as
+  // `mutator(undoable(...))`, and `runHandler` routes every marked handler
+  // through `runMutator`, which is `sequential(_runMutator)` — two dispatches
+  // cannot interleave, so the second check always sees the first write.
+  //
+  // Deliberately not applied to `today`, which discharges `next_date` early
+  // and can legitimately be invoked more than once.
+  //
+  // `splits: 'all'` is REQUIRED here, and omitting it is the trap this whole
+  // guard sits on. The default is 'inline', which appends `is_parent = 0` and
+  // so excludes split parents — and the split parent is the ONE row that keeps
+  // the stamp: `splitTransaction` leaves `schedule` and `schedule_occurrence`
+  // on the row it turns into a parent, while `makeChild` copies neither onto
+  // the children. A guard reading the default row set therefore sees nothing
+  // after a user splits a posted occurrence, the occurrence looks unspent, and
+  // it gets paid twice. `getHasTransactionsQuery` and
+  // `getPostedScheduleTransactionsQuery` already pass 'all', so the guard and
+  // the status queries agree on whether an occurrence is posted — keep it that
+  // way. This cannot over-block: children never carry the stamp, so the widened
+  // filter matches no row the narrower one did not.
+  if (!today) {
+    const {
+      data: [alreadyPosted],
+    } = await aqlQuery(
+      q('transactions')
+        .options({ splits: 'all' })
+        .filter({ schedule: schedule.id, schedule_occurrence: occurrence })
+        .select('id'),
+    );
+
+    if (alreadyPosted != null) {
+      return;
+    }
+  }
+
   const transaction = {
     payee: schedule._payee,
     account: schedule._account,
     amount: getScheduledAmount(schedule._amount),
-    date: today ? currentDay() : schedule.next_date,
+    date: today ? currentDay() : (date ?? schedule.next_date),
     schedule: schedule.id,
     // Records WHICH occurrence this discharges. The date above is the user's to
     // edit; this is not, and matching on it is what keeps a re-dated payment
     // from un-paying the occurrence it was posted for.
-    schedule_occurrence: schedule.next_date,
+    schedule_occurrence: occurrence,
     cleared: false,
   };
 

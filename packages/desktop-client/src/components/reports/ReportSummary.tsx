@@ -10,6 +10,7 @@ import type {
   balanceTypeOpType,
   DataEntity,
 } from '@actual-app/core/types/models';
+import type { SyncedPrefs } from '@actual-app/core/types/prefs';
 
 import { FinancialText } from '#components/FinancialText';
 import { PrivacyFilter } from '#components/PrivacyFilter';
@@ -18,6 +19,7 @@ import { useFormat } from '#hooks/useFormat';
 import { useLocale } from '#hooks/useLocale';
 
 import { getIntervalFormat, ReportOptions } from './ReportOptions';
+import { getEffectiveEndDate } from './reportRanges';
 
 type ReportSummaryProps = {
   startDate: string;
@@ -26,6 +28,7 @@ type ReportSummaryProps = {
   balanceTypeOp: balanceTypeOpType;
   interval: string;
   intervalsCount: number;
+  firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx'];
 };
 
 export function ReportSummary({
@@ -35,12 +38,24 @@ export function ReportSummary({
   balanceTypeOp,
   interval,
   intervalsCount,
+  firstDayOfWeekIdx,
 }: ReportSummaryProps) {
   const locale = useLocale();
   const { t } = useTranslation();
   const format = useFormat();
   const dateFormat = useDateFormat() || 'MM/dd/yyyy';
   const intervalFormat = getIntervalFormat(interval, dateFormat);
+
+  // Deliberate: the header names the range the report actually covers, not the
+  // raw end date the pickers were set to. A weekly report's final bucket covers
+  // its whole week, and the spreadsheet factories already widen the query to
+  // match, so formatting `endDate` here would label the data with a range it
+  // does not fill. Same helper, so the two cannot drift apart again.
+  const effectiveEndDate = getEffectiveEndDate(
+    endDate,
+    interval,
+    firstDayOfWeekIdx,
+  );
 
   const net =
     balanceTypeOp === 'netAssets'
@@ -76,8 +91,9 @@ export function ReportSummary({
         >
           {monthUtils.format(startDate, intervalFormat, locale)}
           {monthUtils.format(startDate, intervalFormat, locale) !==
-            monthUtils.format(endDate, intervalFormat, locale) &&
-            ` ${t('to')} ` + monthUtils.format(endDate, intervalFormat, locale)}
+            monthUtils.format(effectiveEndDate, intervalFormat, locale) &&
+            ` ${t('to')} ` +
+              monthUtils.format(effectiveEndDate, intervalFormat, locale)}
         </Text>
       </View>
       <View

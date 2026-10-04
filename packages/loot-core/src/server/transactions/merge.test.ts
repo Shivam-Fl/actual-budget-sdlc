@@ -87,8 +87,16 @@ async function prepareDatabase() {
   await db.insertPayee({ id: 'payee3', name: 'three' });
 }
 
+// `schedule_occurrence` is a real column on v_transactions but is absent from
+// the DbViewTransaction type, so it is intersected in locally rather than
+// widening the shared type from a test file.
+type ViewTransactionWithOccurrence = db.DbViewTransaction & {
+  payee_name: db.DbPayee['name'];
+  schedule_occurrence: number | null;
+};
+
 function getAllTransactions() {
-  return db.all<db.DbViewTransaction & { payee_name: db.DbPayee['name'] }>(
+  return db.all<ViewTransactionWithOccurrence>(
     `SELECT t.*, p.name as payee_name
        FROM v_transactions t
        LEFT JOIN payees p ON p.id = t.payee
@@ -330,6 +338,152 @@ describe('Merging success', () => {
     const transactions = await getAllTransactions();
     expect(transactions.length).toBe(1);
     expect(transactions[0].schedule).toBe('schedule-keep');
+  });
+
+  // A schedule link and its occurrence stamp only mean anything together: a
+  // stamp names WHICH occurrence of the schedule paid, so a row carrying one
+  // schedule's link and another's stamp matches neither branch of
+  // getHasTransactionsQuery and the occurrence reads as unpaid. Both fields
+  // must come from the same side of the merge.
+  //
+  // Value shape differs by reader: `getAllTransactions()` is a plain db.all
+  // over v_transactions, so schedule_occurrence arrives as the RAW INTEGER.
+  // db.getTransaction goes through the AQL schema and returns a
+  // 'YYYY-MM-DD' string. Insert it as a plain 'YYYY-MM-DD' string either way.
+
+  it("does not pair the kept transaction's schedule with the dropped one's stamp", async () => {
+    // The stamp must be taken from the side that supplied the LINK, not from
+    // whichever side happens to have one. Picking each field independently
+    // leaves this survivor stamped for a schedule it is not linked to.
+    const t1 = await db.insertTransaction({
+      ...transaction1,
+      imported_id: 'imported_1',
+      schedule: 'schedule-keep',
+    });
+    const t2 = await db.insertTransaction({
+      ...transaction2,
+      schedule: 'schedule-drop',
+      schedule_occurrence: '2025-01-20',
+    });
+
+    expect(await mergeTransactions([{ id: t1 }, { id: t2 }])).toBe(t1);
+
+    const transactions = await getAllTransactions();
+    expect(transactions.length).toBe(1);
+    expect(transactions[0].schedule).toBe('schedule-keep');
+    expect(transactions[0].schedule_occurrence).toBeNull();
+  });
+
+  it('carries the occurrence stamp from the dropped transaction when the kept one has none', async () => {
+    const t1 = await db.insertTransaction({
+      account: 'one',
+      amount: 5,
+      date: '2025-01-01',
+      imported_id: 'imported_1',
+    });
+    const t2 = await db.insertTransaction({
+      ...transaction2,
+      schedule: 'schedule-1',
+      schedule_occurrence: '2025-01-20',
+    });
+
+    expect(await mergeTransactions([{ id: t1 }, { id: t2 }])).toBe(t1);
+
+    const transactions = await getAllTransactions();
+    expect(transactions.length).toBe(1);
+    expect(transactions[0].schedule).toBe('schedule-1');
+    expect(transactions[0].schedule_occurrence).toBe(20250120);
+  });
+
+  it("keeps the kept transaction's own stamp when both carry one", async () => {
+    const t1 = await db.insertTransaction({
+      ...transaction1,
+      imported_id: 'imported_1',
+      schedule: 'schedule-keep',
+      schedule_occurrence: '2025-01-05',
+    });
+    const t2 = await db.insertTransaction({
+      ...transaction2,
+      schedule: 'schedule-drop',
+      schedule_occurrence: '2025-01-20',
+    });
+
+    expect(await mergeTransactions([{ id: t1 }, { id: t2 }])).toBe(t1);
+
+    const transactions = await getAllTransactions();
+    expect(transactions.length).toBe(1);
+    expect(transactions[0].schedule).toBe('schedule-keep');
+    expect(transactions[0].schedule_occurrence).toBe(20250105);
+  });
+
+  it("preserves the kept transaction's stamp when the dropped one has none", async () => {
+    // Guards the new field against clobbering an existing stamp with
+    // undefined, which conform() drops and leaves the stamp stale.
+    const t1 = await db.insertTransaction({
+      ...transaction1,
+      imported_id: 'imported_1',
+      schedule: 'schedule-keep',
+      schedule_occurrence: '2025-01-05',
+    });
+    const t2 = await db.insertTransaction({ ...transaction2 });
+
+    expect(await mergeTransactions([{ id: t1 }, { id: t2 }])).toBe(t1);
+
+    const transactions = await getAllTransactions();
+    expect(transactions.length).toBe(1);
+    expect(transactions[0].schedule).toBe('schedule-keep');
+    expect(transactions[0].schedule_occurrence).toBe(20250105);
+  });
+
+  it('carries the occurrence stamp when merging through the split branch', async () => {
+    // The split branch is a SEPARATE db.updateTransaction call; fixing only
+    // the normal one ships green with this half still broken.
+    const manualParent = await db.insertTransaction({
+      account: 'one',
+      amount: 100,
+      date: '2025-01-01',
+      is_parent: true,
+      category: null,
+      schedule: 'schedule-split',
+      schedule_occurrence: '2025-01-01',
+    });
+
+    await db.insertTransaction({
+      account: 'one',
+      amount: 60,
+      date: '2025-01-01',
+      category: '1',
+      is_child: true,
+      parent_id: manualParent,
+    });
+    await db.insertTransaction({
+      account: 'one',
+      amount: 40,
+      date: '2025-01-01',
+      category: '2',
+      is_child: true,
+      parent_id: manualParent,
+    });
+
+    // Imported, so it is the survivor — and it carries no schedule of its
+    // own, so both fields have to be taken from the dropped parent.
+    const imported = await db.insertTransaction({
+      account: 'one',
+      amount: 100,
+      date: '2025-01-02',
+      imported_id: 'imported_1',
+      category: null,
+    });
+
+    expect(
+      await mergeTransactions([{ id: manualParent }, { id: imported }]),
+    ).toBe(imported);
+
+    const survivor = (await getAllTransactions()).find(t => t.id === imported);
+    expect(survivor).toMatchObject({
+      schedule: 'schedule-split',
+      schedule_occurrence: 20250101,
+    });
   });
 
   it('preserves schedule link when merging manual scheduled with banksynced', async () => {
