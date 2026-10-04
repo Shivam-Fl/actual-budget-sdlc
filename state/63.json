@@ -177,7 +177,13 @@
       "reason": "Two of the six findings (retitling the merged PR #60, and correcting a shipped Bugfix release note whose diff touched no production code) are decisions about already-published history rather than code anyone can still change, and no stage on this route can carry them: implement cannot touch a closed PR, and the note's category edit lands in this PR as a side effect of an unrelated fix. A maintainer should decide whether the published changelog entry and the merged commit subject are corrected out of band."
     }
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/e2e/reports.test.ts",
+    "packages/desktop-client/e2e/command-bar.test.ts",
+    "upcoming-release-notes/fix-command-bar-dialog-console-drain.md",
+    "packages/desktop-client/e2e/reports.test.ts",
+    "packages/desktop-client/e2e/command-bar.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
