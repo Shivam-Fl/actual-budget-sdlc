@@ -443,7 +443,8 @@
         "detail": "The getHeader DOM-walking helper is applied to three of the nine tests for a reason that applies to only one of them, leaving the file with two assertion styles for the same element.\n\n`packages/desktop-client/src/components/reports/ReportSummary.test.tsx:44`\n\nEvidence: The helper's doc comment (:37-43) justifies it as needed \"rather than through getByText, because a yearly report collapses the range to a bare year and the summary body renders other strings a substring search would trip over.\" That reason is real only for the Yearly case at :200, where the assertion needs exact textContent. But :146 and :162 — the two firstDayOfWeekIdx tests — assert on full header strings ('09/28/2026 to 10/04/2026', '09/28/2026 to 10/03/2026') that are structurally identical to the ones :94, :107, :120, :133 and :174 assert via screen.getByText. Both renderings are the same <Text> with the same two expression children (ReportSummary.tsx:92-96), so nothing about those two tests needs the DOM walk. The result is that a reader comparing :94 to :146 sees two idioms for one assertion with no stated difference between them.\n\nFix: Use screen.getByText('09/28/2026 to 10/04/2026') at :146 and :162 to match the other six, and keep getHeader for :200 only, where the exact-textContent assertion is the point. If the pair at :136-163 is kept as-is deliberately — the comment at :150 says the pair exists to prove the pref is not ignored — that intent belongs in the helper's doc comment too, or the helper should be renamed to say what it is for (reading the header node itself)."
       }
     ],
-    "pr": "76"
+    "pr": "76",
+    "filed": 78
   },
   "qa": {
     "verdict": "pass",
