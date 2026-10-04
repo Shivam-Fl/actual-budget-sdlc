@@ -18,10 +18,22 @@ export class SchedulesPage {
   }
 
   /**
-   * Open the schedule edit modal.
+   * Open the schedule edit modal for a new schedule.
    */
   async addNewSchedule() {
     await this.addNewScheduleButton.click();
+
+    return new ScheduleEditModal(this.page.getByTestId('schedule-edit-modal'));
+  }
+
+  /**
+   * Open the schedule edit modal for an existing schedule.
+   */
+  async editSchedule(row: number | Locator) {
+    const scheduleRow =
+      typeof row === 'number' ? this.getNthScheduleRow(row) : row;
+
+    await scheduleRow.click();
 
     return new ScheduleEditModal(this.page.getByTestId('schedule-edit-modal'));
   }
@@ -69,8 +81,8 @@ export class SchedulesPage {
   /**
    * Does this schedule's actions menu offer an item with this name?
    */
-  async nthScheduleMenuHasItem(row: number | Locator, name: string | RegExp) {
-    const menu = await this._openNthScheduleMenu(row);
+  async scheduleMenuHasItem(row: number | Locator, name: string | RegExp) {
+    const menu = await this.openScheduleMenu(row);
     const has = await menu.getByRole('button', { name }).count();
 
     await this.page.keyboard.press('Escape');
@@ -81,8 +93,8 @@ export class SchedulesPage {
   /**
    * The names of every item in this schedule's actions menu.
    */
-  async nthScheduleMenuItemNames(row: number | Locator) {
-    const menu = await this._openNthScheduleMenu(row);
+  async scheduleMenuItemNames(row: number | Locator) {
+    const menu = await this.openScheduleMenu(row);
     const names = await menu.getByRole('button').allTextContents();
 
     await this.page.keyboard.press('Escape');
@@ -91,7 +103,7 @@ export class SchedulesPage {
   }
 
   async _performNthAction(index: number, actionName: string | RegExp) {
-    const menu = await this._openNthScheduleMenu(index);
+    const menu = await this.openScheduleMenu(index);
     await menu.getByRole('button', { name: actionName }).click();
   }
 
@@ -105,7 +117,7 @@ export class SchedulesPage {
    * it (`count`, `allTextContents`) do not retry, so the wait for the menu to
    * render belongs here — every consumer inherits it.
    */
-  async _openNthScheduleMenu(row: number | Locator) {
+  async openScheduleMenu(row: number | Locator) {
     const scheduleRow =
       typeof row === 'number' ? this.getNthScheduleRow(row) : row;
 
