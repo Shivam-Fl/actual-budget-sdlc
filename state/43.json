@@ -333,7 +333,24 @@
       "Because the critic produced nothing again this round, there is still no adversarial reading of this plan from another agent. I verified the reproduction, the plumbing and the callers myself and found the diagnosis sound, but the class of defect that survives that is the one that only shows when the code runs — which is the next stage's job, and the reason I did not score this above the low 80s."
     ]
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/migrations/<current-timestamp>_add_skipped_occurrences_to_schedules.sql",
+    "packages/loot-core/src/server/db/types/index.ts",
+    "packages/loot-core/src/server/aql/schema/index.ts",
+    "packages/loot-core/src/types/models/schedule.ts",
+    "packages/loot-core/src/server/schedules/app.ts",
+    "packages/loot-core/src/shared/schedules.ts",
+    "packages/loot-core/src/server/forecast/forecast-schedules.ts",
+    "packages/desktop-client/src/components/accounts/Account.tsx",
+    "packages/desktop-client/src/components/mobile/accounts/AccountTransactions.tsx",
+    "packages/desktop-client/src/components/mobile/accounts/OnBudgetAccountTransactions.tsx",
+    "packages/desktop-client/src/components/mobile/accounts/OffBudgetAccountTransactions.tsx",
+    "packages/desktop-client/src/components/mobile/accounts/AllAccountTransactions.tsx",
+    "upcoming-release-notes/schedule-actions-affect-the-occurrence-you-clicked.md",
+    "packages/loot-core/src/server/schedules/app.test.ts",
+    "packages/loot-core/src/shared/schedules.test.ts",
+    "packages/loot-core/src/server/forecast/app.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
