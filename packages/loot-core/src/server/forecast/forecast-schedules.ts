@@ -12,6 +12,7 @@ import {
   indexPostedScheduleTransactions,
   isScheduleOccurrencePosted,
 } from '#shared/schedules';
+import type { PostedScheduleTransaction } from '#shared/schedules';
 import type { RuleConditionEntity, TransactionEntity } from '#types/models';
 import type { RecurConfig } from '#types/models/schedule';
 
@@ -182,7 +183,15 @@ export async function buildFutureScheduleOccurrences(
   endDateObj: Date,
   accountsById: Map<string, AccountWithComputedBalance>,
   ruleAccountsById: Map<string, DbAccountForRules>,
-  postedTransactions: TransactionEntity[],
+  /**
+   * Only the three columns `indexPostedScheduleTransactions` reads, from
+   * `getPostedScheduleTransactionsQuery` (which passes `splits: 'all'`, so a
+   * split parent is visible). The narrow type DOCUMENTS that projection — it
+   * is not a guard: `TransactionEntity` is structurally assignable to
+   * `PostedScheduleTransaction`, so the inline split set would still typecheck
+   * if it were passed back here. What keeps that from happening is the tests.
+   */
+  postedTransactions: PostedScheduleTransaction[],
 ) {
   const postedByScheduleId =
     indexPostedScheduleTransactions(postedTransactions);

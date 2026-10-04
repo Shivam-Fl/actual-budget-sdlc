@@ -420,6 +420,201 @@ describe('Transactions', () => {
     });
   });
 
+  // A parent may only be deleted when the rows replacing it account for it.
+  // A split opened from the register starts as two 0.00 children, so the child
+  // COUNT says the parent is safe to delete while the amounts say it is the only
+  // row carrying any value — and, when it came from a schedule, the occurrence
+  // stamp with it.
+  describe('unsplitting a split', () => {
+    // The pair the register's Category-cell Split actually produces: two
+    // children the user never typed into, and a parent still holding the whole
+    // amount and, if it came from a schedule, its occurrence stamp.
+    function makeUnfilledSplit() {
+      return makeSplitTransaction(
+        {
+          id: 'p',
+          amount: 12345,
+          category: 'cat1',
+          schedule: 'sched-1',
+          schedule_occurrence: '2024-03-10',
+          error: splitError(12345),
+        },
+        [
+          { id: 'c1', amount: 0, category: null },
+          { id: 'c2', amount: 0, category: null },
+        ],
+      );
+    }
+
+    // `result.updated` and `result.deleted` reduced to [id, amount] pairs, which
+    // is what these cases are actually about: which rows survive, at what
+    // amount. Anything else on the row is covered elsewhere.
+    function asRows(transactions) {
+      return transactions.map(({ id, amount }) => [id, amount]);
+    }
+
+    test('keeps the parent and its amount when the children were never filled in', () => {
+      const transactions = makeUnfilledSplit();
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1], transactions[2]],
+        transactions,
+      );
+
+      expect(asRows(result.updated)).toEqual([['p', 12345]]);
+      expect(asRows(result.deleted)).toEqual([
+        ['c1', 0],
+        ['c2', 0],
+      ]);
+      // Narrowing only `deleteParentTransaction` would stop the amount loss but
+      // leave the row a split parent with no children, which the register still
+      // renders as part of a split.
+      expect(result.updated[0]).toMatchObject({
+        id: 'p',
+        is_parent: false,
+      });
+    });
+
+    test('leaves the occurrence stamp on the surviving row', () => {
+      // Asserted directly rather than inferred from the amount: the stamp is
+      // what keeps /schedules reading this occurrence Paid instead of Due.
+      const transactions = makeUnfilledSplit();
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1], transactions[2]],
+        transactions,
+      );
+
+      expect(result.updated[0]).toMatchObject({
+        schedule: 'sched-1',
+        schedule_occurrence: '2024-03-10',
+      });
+    });
+
+    test('carries no stale split error on the surviving row', () => {
+      const transactions = makeUnfilledSplit();
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1], transactions[2]],
+        transactions,
+      );
+
+      // The row is no longer part of a split and its amount is correct, so the
+      // split error the parent was carrying must not survive onto it.
+      expect(result.updated[0].error).toBeNull();
+    });
+
+    test('still splits out a filled split when both children are unsplit', () => {
+      const transactions = makeSplitTransaction({ id: 'p', amount: 12345 }, [
+        { id: 'c1', amount: 5000 },
+        { id: 'c2', amount: 7345 },
+      ]);
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1], transactions[2]],
+        transactions,
+      );
+
+      expect(asRows(result.updated)).toEqual([
+        ['c1', 5000],
+        ['c2', 7345],
+      ]);
+      expect(asRows(result.deleted)).toEqual([['p', 12345]]);
+    });
+
+    test('still splits out a filled split when ONE of two children is unsplit', () => {
+      // The regression case for the guard's set. The rows that will exist after
+      // the unsplit are the selected child PLUS the one remaining child (the
+      // function appends it when exactly one is left), so the guard must sum
+      // those, not the selection. Summing the selection alone reads 5000 as
+      // short of 12345 and collapses a correctly filled split into one 12345
+      // parent carrying the selected child's category — with BOTH children
+      // deleted, including the one the user never selected.
+      const transactions = makeSplitTransaction({ id: 'p', amount: 12345 }, [
+        { id: 'c1', amount: 5000 },
+        { id: 'c2', amount: 7345 },
+      ]);
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1]],
+        transactions,
+      );
+
+      expect(asRows(result.updated)).toEqual([
+        ['c1', 5000],
+        ['c2', 7345],
+      ]);
+      expect(asRows(result.deleted)).toEqual([['p', 12345]]);
+    });
+
+    test('still splits out a filled split when one child of 4000/4345 is unsplit', () => {
+      // Same shape, different numbers, so a guard comparing only the selected
+      // total against the parent cannot pass by coincidence.
+      const transactions = makeSplitTransaction({ id: 'p', amount: 8345 }, [
+        { id: 'c1', amount: 4000 },
+        { id: 'c2', amount: 4345 },
+      ]);
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1]],
+        transactions,
+      );
+
+      expect(asRows(result.updated)).toEqual([
+        ['c1', 4000],
+        ['c2', 4345],
+      ]);
+      expect(asRows(result.deleted)).toEqual([['p', 8345]]);
+    });
+
+    test('leaves the parent in place when one child of a filled three-child split is unsplit', () => {
+      // Two children remain, so the parent is not deleted at all and the
+      // promoted set is never summed — this is the second arm of that
+      // property, not the one that catches the regression above.
+      const transactions = makeSplitTransaction({ id: 'p', amount: 12345 }, [
+        { id: 'c1', amount: 4000 },
+        { id: 'c2', amount: 4000 },
+        { id: 'c3', amount: 4345 },
+      ]);
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1]],
+        transactions,
+      );
+
+      // The parent is reduced to what the children still account for.
+      expect(asRows(result.updated)).toEqual([
+        ['p', 8345],
+        ['c1', 4000],
+      ]);
+      expect(result.deleted).toEqual([]);
+    });
+
+    test('keeps the parent at its full amount when two of three partly-typed children are unsplit', () => {
+      // A product judgement, pinned so it is visible rather than incidental:
+      // 5000 + 4000 + 0 does not account for 12345, so the parent survives
+      // intact and the typed 9000 is discarded. Today's behaviour loses 2345
+      // instead by keeping the 9000 and deleting the parent. Both lose money.
+      const transactions = makeSplitTransaction({ id: 'p', amount: 12345 }, [
+        { id: 'c1', amount: 5000 },
+        { id: 'c2', amount: 4000 },
+        { id: 'c3', amount: 0 },
+      ]);
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1], transactions[2]],
+        transactions,
+      );
+
+      expect(asRows(result.updated)).toEqual([['p', 12345]]);
+      expect(asRows(result.deleted)).toEqual([
+        ['c1', 5000],
+        ['c2', 4000],
+        ['c3', 0],
+      ]);
+    });
+  });
+
   test('converting a simple transaction into a split stamps children with the parent account (#8207)', () => {
     const transactions = [
       makeTransaction({ amount: 2001 }),

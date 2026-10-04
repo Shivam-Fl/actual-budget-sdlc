@@ -475,6 +475,43 @@ export function makeAsNonChildTransactions(
 
   const deleteParentTransaction = remainingChildTransactions.length <= 1;
 
+  // A parent may only be deleted when the rows replacing it account for it.
+  //
+  // The rows that will exist afterwards are `nonChildTransactionsToUpdate`: the
+  // selected children, plus the one remaining child when exactly one is left
+  // (above). Summing THAT set — not the selection — is what keeps a correctly
+  // filled split split out when the user unsplits one child of two.
+  //
+  // The child count alone is not enough. A split opened from the register
+  // starts as two 0.00 children, so the count says 'safe' while the amounts say
+  // the parent is the only row carrying any value — and, if it came from a
+  // schedule, the occurrence stamp with it. Deleting it there loses the money
+  // and makes /schedules read the occurrence as Due again. The single-child
+  // branch above already behaves this way; this generalises it.
+  const promotedTotal = nonChildTransactionsToUpdate
+    .map(t => num(t.amount))
+    .reduce((total, amount) => total + amount, 0);
+
+  if (
+    deleteParentTransaction &&
+    promotedTotal !== num(parentTransaction.amount)
+  ) {
+    return {
+      updated: [
+        {
+          ...makeTransactionWithChildCategory(
+            parentTransaction,
+            newNonChildTransactions[0] ?? parentTransaction,
+          ),
+          // The row is no longer part of a split, so it carries no split error
+          // even though its children did not add up.
+          error: null,
+        },
+      ],
+      deleted: childTransactions,
+    };
+  }
+
   const updatedParentTransaction = {
     ...parentTransaction,
     ...(!deleteParentTransaction
