@@ -18,7 +18,139 @@
   },
   "halted": null,
   "pending": null,
-  "work_order": null,
+  "work_order": {
+    "files": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "change": "Two edits, both in this file. (a) The `beforeEach` comment at lines 23-30: replace the three lines reading '// has already run and sql.js caches the compiled wasm — but from the second / // test on, global.fetch is the real jsdom fetch again. patchFetchForSqlJS is a / // vi.spyOn(...).mockImplementation(...) with no restore of its own, so calling' with these four lines: '// has already run and sql.js caches the compiled wasm — but before the / // beforeEach below re-armed it, from the second test on, global.fetch was the / // real jsdom fetch again. patchFetchForSqlJS is a / // vi.spyOn(...).mockImplementation(...) with no restore of its own, so calling'. The comment becomes six lines instead of five; the trailing '// it once per test is idempotent and the blanket restore can no longer outrun / // it.' is unchanged and already reads correctly. (b) The last test in the describe block, currently the concise-arrow form 'it('keeps the sql.js wasm fetch patched for each test, not just the first', () =>\\n    expect(vi.isMockFunction(globalThis.fetch)).toBe(true));' — replace with the block-bodied async form: 'it('keeps the sql.js wasm fetch patched for each test, not just the first', async () => {\\n    expect(vi.isMockFunction(globalThis.fetch)).toBe(true);\\n\\n    const res = await globalThis.fetch(`${baseURL}sql-wasm.wasm`);\\n    expect(res.status).toBe(200);\\n  });'. Change nothing else in the file — not the beforeEach body at lines 31-33, not the 'Last on purpose' comment above the test, not any of the other nine tests.",
+        "why": "Finding 1 and finding 2 respectively. I applied both edits verbatim, ran the suite, and reverted; the resulting diff is 9 insertions and 4 deletions in this one file."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+        "action": "edit",
+        "cases": [
+          "existing suite stays green: 'yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts' reports Test Files 2 passed (2), Tests 16 passed (16), with src/platform/server/sqlite/index.test.ts at 10 tests and src/platform/server/fs/index.test.ts at 6",
+          "the strengthened assertion passes on a clean tree — the awaited fetch of ${baseURL}sql-wasm.wasm resolves with status 200",
+          "the strengthened assertion FAILS when the beforeEach body at lines 31-33 is replaced by a bare `vi.spyOn(global, 'fetch')` with no mockImplementation — this is the regression the ticket exists to close, and it is the case the old assertion missed",
+          "the strengthened assertion still FAILS when the beforeEach is deleted entirely, in a full-file run ('Tests 1 failed | 15 passed (16)'), so the test keeps its power and is not weakened by (a)",
+          "the 'Last on purpose' comment above the test remains accurate: with the beforeEach deleted, a single-test run ('vitest --run --config vitest.web.config.ts -t \\'keeps the sql.js wasm fetch patched\\'') still reports 1 passed | 15 skipped, so the test still has power only in a full-file run. If this measurement changes, that comment needs updating in the same change — do not let it go stale, which is the exact defect finding 2 is about"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "Running the web vitest suite on the changed file reports Tests 16 passed (16) and Test Files 2 passed (2) — the strengthened assertion passes against the real patch rather than failing on it",
+        "how_to_verify": "yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "The regression test fails when the beforeEach it guards is sabotaged: replacing the beforeEach body with a bare `vi.spyOn(global, 'fetch')` that serves nothing makes 'keeps the sql.js wasm fetch patched for each test, not just the first' fail, where the pre-change assertion passed. The assertion must distinguish the sql.js wasm patch from a fetch spy that serves nothing.",
+        "how_to_verify": "The tests[] case 'the strengthened assertion FAILS when the beforeEach body at lines 31-33 is replaced by a bare vi.spyOn(global, 'fetch')' — reproduce it by making that one-line substitution, re-running the suite, and restoring the file. This is a negative check by design: the suite is expected to go red while the substitution is in place.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "The test keeps its existing power: deleting the beforeEach entirely still fails the test in a full-file run ('Tests 1 failed | 15 passed (16)'), and the test remains last in the describe block, since its position is load-bearing",
+        "how_to_verify": "The tests[] cases 'the strengthened assertion still FAILS when the beforeEach is deleted entirely' and the -t isolation case; both are part of the verification this change must pass through before it is merged.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "The beforeEach comment no longer asserts a falsehood about the shipped file: it describes the re-arm as a past/conditional fact rather than claiming that from the second test on global.fetch is the real jsdom fetch again — which the beforeEach four lines below makes false. Reading the comment top to bottom, no sentence describes the pre-fix state as the current one.",
+        "how_to_verify": "Read packages/loot-core/src/platform/server/sqlite/index.test.ts lines 23-30. This is a comment; no runtime check can observe it, which is why it is verified by test-run discipline (AC-1 through AC-3 must all pass on the same tree) plus review.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "'yarn lint' and 'yarn typecheck' pass on the changed tree — this file is type-strict-ignored at the top, but the new `await globalThis.fetch(...)` and its `res.status` are ordinary TypeScript that the project's checks must accept",
+        "how_to_verify": "yarn lint && yarn typecheck, both from the repository root",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "This ticket changes no product behaviour, so there is nothing for a browser to observe. The honest QA path is the test suite, not a URL.",
+      "From the repository root: yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts — expect Test Files 2 passed (2), Tests 16 passed (16).",
+      "Confirm the diff is confined to packages/loot-core/src/platform/server/sqlite/index.test.ts (git diff --stat should show one file, roughly 9 insertions and 4 deletions) and that no source file under packages/loot-core/src/platform/server/sqlite/index.ts or packages/loot-core/src/mocks/util.ts is touched.",
+      "Then confirm the assertion is load-bearing rather than decorative: replace the beforeEach body (lines 31-33) with `vi.spyOn(global, 'fetch');` and re-run the suite. It must go red — 'Tests 1 failed | 15 passed (16)'. That is the whole point of the ticket: before the change this substitution left the suite green. Restore the file afterwards.",
+      "Second negative check: delete the beforeEach entirely and run the full file. It must still report 1 failed | 15 passed, so the change did not trade one weak assertion for a weaker one. Restore afterwards.",
+      "Read the beforeEach comment at lines 23-30 and confirm every sentence describes the shipped file, not the pre-fix one.",
+      "yarn lint && yarn typecheck from the repository root — both must pass.",
+      "Confirm git status shows no leftover scratch edits: packages/loot-core/src/platform/server/sqlite/index.test.ts should be the only modified file, and node_modules/ plus packages/loot-core/test-results/ must not be committed."
+    ],
+    "risks": [
+      "Low overall. The change is confined to one test file and touches no source file, no interface, no screen, no data and no persisted state; nothing here deletes anything.",
+      "The added `await globalThis.fetch(...)` reads sql-wasm.wasm (~1.1 MB) off disk once per run. That is already what init() does in the file's beforeAll, so it adds no new dependency on the wasm asset being present — but the test does now fail in a checkout where @jlongster/sql.js is not installed, where previously it would not have. I confirmed the file exists at node_modules/@jlongster/sql.js/dist/sql-wasm.wasm after a normal `yarn install`.",
+      "The assertion depends on baseURL (line 15) staying in scope, which it does — it is a module-level const. If a future change moves the test into a different describe or file, the template literal has to move with it.",
+      "No forbidden_path is touched. .sdlc/memory/**, docs/spec/**, docs/prd.md, docs/trd.md, docs/ui.md and .github/** are all untouched, and this file is in none of them.",
+      "No new host is contacted: the awaited fetch is served by the in-process mock, which reads the local filesystem. Nothing is added to env.api_allowlist because nothing leaves the machine."
+    ],
+    "out_of_scope": [
+      "Rewriting patchFetchForSqlJS in packages/loot-core/src/mocks/util.ts. It is correct as written — the mock serves any URL under baseURL and rejects everything else, which is exactly the discrimination the new assertion relies on. It would ship on its own and it is not needed for this fix.",
+      "Adding an equivalent regression test to packages/loot-core/src/platform/server/fs/index.test.ts. That file also calls patchFetchForSqlJS, but it has no restoreAllMocks in its teardown and so has no equivalent exposure; adding a parallel assertion would be a separate piece of work.",
+      "Generalising the whole file's comment style, or shortening the load-bearing 'Last on purpose' comment above the test. It is accurate as it stands and I re-measured its claim after the change; rewriting it is its own piece of work.",
+      "Any change to packages/loot-core/src/platform/server/sqlite/index.ts. The setWasmBinary/wasmBinaryOverride path and the REGEXP dedupe are unrelated to this ticket and were reviewed elsewhere."
+    ],
+    "kind": "chore",
+    "confidence": 95,
+    "confidence_rationale": "Both findings were reproduced against current main (dff184c) by editing the file and running the web vitest suite, and the exact fix was applied, run, and reverted: sabotage caught, clean tree green, beforeEach-deletion still fails, typecheck and lint pass. Nothing about this plan is inferred from the issue text. The only judgement left is the comment's wording, and the issue supplies the replacement wording verbatim.",
+    "reproduced": true,
+    "evidence": [
+      "Baseline on dff184c: yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts reports 'Test Files 2 passed (2)' / 'Tests 16 passed (16)', with '✓ src/platform/server/sqlite/index.test.ts (10 tests)' and '✓ src/platform/server/fs/index.test.ts (6 tests)'.",
+      "FINDING 1 REPRODUCED: replaced the beforeEach body at index.test.ts:31-33 with `vi.spyOn(global, 'fetch');` — a spy with no mockImplementation, delegating to the real jsdom fetch and unable to serve sql-wasm.wasm from baseURL. The suite still reported 'Test Files 2 passed (2)' / 'Tests 16 passed (16)'. The assertion at the then-line 455, expect(vi.isMockFunction(globalThis.fetch)).toBe(true), is satisfied by any fetch spy. Tree restored afterwards.",
+      "THE FIX CATCHES IT: with that same sabotage still in place and the strengthened assertion applied, the suite reported 'Test Files 1 failed | 1 passed (2)' / 'Tests 1 failed | 15 passed (16)'.",
+      "THE FIX PASSES CLEAN: with the sabotage reverted and only the strengthened assertion applied, the suite reported 'Test Files 2 passed (2)' / 'Tests 16 passed (16)'.",
+      "NO LOSS OF POWER: with the strengthened assertion applied and the beforeEach deleted entirely, a full-file run reported 'AssertionError: expected false to be true' / 'Tests 1 failed | 15 passed (16)' — AC-2's coverage is preserved, matching the reviewer's separate verification of it.",
+      "THE SURROUNDING COMMENT IS STILL ACCURATE: with the strengthened assertion applied and the beforeEach deleted, `vitest --run --config vitest.web.config.ts -t 'keeps the sql.js wasm fetch patched'` reported 'Test Files 1 passed | 1 skipped (2)' / 'Tests 1 passed | 15 skipped (16)' — the exact measurement the 'Last on purpose' comment at lines 447-453 cites, so that comment needs no change.",
+      "The wasm asset the new assertion fetches exists after a normal install: node_modules/@jlongster/sql.js/dist/sql-wasm.wasm, 1105290 bytes. node_modules/@jlongster/sql.js/dist/sql-wasm.wasm is the same file initSqlJS's locateFile resolves (packages/loot-core/src/platform/server/sqlite/index.ts:55).",
+      "yarn lint and yarn typecheck both pass on the changed tree — 'All matched files use the correct format', and all 10 workspaces report typecheck success.",
+      "All scratch edits were reverted; git status --short shows only the untracked plan/ directory, and packages/loot-core/src/platform/server/sqlite/index.test.ts is unmodified on disk."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Assert something else about the mock instead of exercising it — e.g. expect(globalThis.fetch).toBeInstanceOf(Function) or check vi.isMockFunction plus a mock call count.",
+        "rejected_because": "Still a statement about a vitest internal rather than about the patch. A call count is satisfied by a spy that was never called with the wasm URL; only actually fetching the asset distinguishes the real patch from a pass-through spy, which is precisely what the reviewer asked for."
+      },
+      {
+        "approach": "Move the wasm-serving assertion into beforeAll or a beforeEach so it runs for every test.",
+        "rejected_because": "Widens the change and weakens the regression test's specificity. The ticket is about one assertion in one test that guards the re-arm; a global assertion would pass or fail for reasons unrelated to the beforeEach this test exists to cover."
+      },
+      {
+        "approach": "Leave the assertion as-is and only fix the comment tense.",
+        "rejected_because": "That is finding 1 dropped. I confirmed the defect is live on current main: the sabotaged beforeEach leaves the suite green at 16/16 today."
+      },
+      {
+        "approach": "Delete the weak regression test entirely rather than strengthen it.",
+        "rejected_because": "It would restore AC-2's coverage to zero. The test still catches the real regression — deleting the beforeEach fails it — so the right move is to strengthen it, not remove it."
+      },
+      {
+        "approach": "Assert on the fetched bytes (e.g. the wasm magic number) rather than on status 200.",
+        "rejected_because": "Status 200 is what the ticket specifies and is verified to work. Checking the magic number would be marginally stronger but reads the 1.1 MB payload and adds an assertion the ticket did not ask for."
+      }
+    ],
+    "assumptions": [
+      "Current main is dff184c and PR #55 is merged, which the git log confirms (8dffc57). Both findings were re-verified against that tree, not against the PR head the reviewer used.",
+      "The web vitest suite is the right gate: vitest.web.config.ts includes exactly the two files involved, and the file's top-level beforeEach/afterEach hooks only make sense under that config's jsdom environment.",
+      "No decision was recorded for this issue (plan/brief.md is empty) and no plan has previously been rejected for it, so there is nothing binding that contradicts this approach."
+    ],
+    "unknowns": [
+      "Whether a human would prefer the second acceptance check spelled out differently — I chose the sabotaged-beforeEach substitution because it is the exact regression the reviewer demonstrated and the one the old assertion could not catch."
+    ],
+    "residual_risks": [
+      "The test still asserts on a global that vitest owns, so it remains a test-shaped fact rather than a product guarantee. This is inherent: the behaviour under test is 'the test harness installed the sql.js wasm patch before every test', and nothing outside the harness can observe it. The strengthened assertion at least fails when the patch is installed but broken, which the previous one could not.",
+      "The comment fix is not mechanically checkable. I re-read the full comment after the edit and every sentence now describes the shipped file, but a future edit could re-stale it; that is what the review stage is for on a change like this."
+    ],
+    "mode": "committed",
+    "issue": 58,
+    "version": 1,
+    "understanding": "Issue #58 carries two non-blocking review findings out of PR #55 (for #51), both confined to packages/loot-core/src/platform/server/sqlite/index.test.ts. (1) The regression test added by that PR, 'keeps the sql.js wasm fetch patched for each test, not just the first', asserts only `vi.isMockFunction(globalThis.fetch)`, which is satisfied by any fetch spy at all — including one installed but serving nothing. I reproduced this: replacing the new beforeEach's body (index.test.ts:31-33) with a bare `vi.spyOn(global, 'fetch')` that delegates to the real jsdom fetch leaves the whole web suite green at 16/16. (2) The beforeEach's explanatory comment (lines 23-30) describes the pre-fix state in the present indicative — 'from the second test on, global.fetch is the real jsdom fetch again' — which is false of the shipped file, because that same beforeEach now reinstalls the patch before every test. This is the same tense defect the teardown comment in the same PR was rewritten to remove. The code is right in both cases; only the assertion's strength and the comment's tense are wrong. This is test hygiene on an already-merged test, not a product behaviour change: no source file, no interface, no screen.",
+    "root_cause": "The regression test pins a vitest internal (that globalThis.fetch is a mock function) rather than the behaviour it exists to protect (that globalThis.fetch is patchFetchForSqlJS's sql.js wasm patch, able to serve the wasm asset from baseURL). `vi.isMockFunction` cannot distinguish the real patch from a bare pass-through spy, so the test passes for the wrong reason. Separately, the beforeEach comment was carried over from the pre-fix state and its tense now asserts something the code four lines below guarantees against.",
+    "approach": "Two edits to one test file, no other file touched. (1) Strengthen the regression test: keep the existing `vi.isMockFunction(globalThis.fetch)` check (it is cheap and localises the failure), make the test async, and add a functional assertion after it — `const res = await globalThis.fetch(`${baseURL}sql-wasm.wasm`); expect(res.status).toBe(200);`. That URL is exactly what initSqlJS's `locateFile: file => baseURL + file` (packages/loot-core/src/platform/server/sqlite/index.ts:55) requests, so a 200 means the wasm patch is really installed and really serving, and any other spy either rejects or returns a non-200. (2) Put the beforeEach comment's defect description in the past tense so it reads as the reason the beforeEach exists rather than a claim about the file. Leave everything else alone: the test keeps its last-in-file position (load-bearing, per its own comment), the beforeEach keeps its body, and the 'Last on purpose' comment above the test stays as written — I re-measured its claim after the change and it still holds (see evidence)."
+  },
   "touch_paths": [],
   "acceptance": [],
   "planned_route": [
@@ -136,274 +268,12 @@
       "run": "37155921289"
     }
   ],
-  "validated_work_order": {
-    "files": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
-        "action": "edit",
-        "change": "Two edits, both in this file. (a) The `beforeEach` comment at lines 23-30: replace the three lines reading '// has already run and sql.js caches the compiled wasm — but from the second / // test on, global.fetch is the real jsdom fetch again. patchFetchForSqlJS is a / // vi.spyOn(...).mockImplementation(...) with no restore of its own, so calling' with these four lines: '// has already run and sql.js caches the compiled wasm — but before the / // beforeEach below re-armed it, from the second test on, global.fetch was the / // real jsdom fetch again. patchFetchForSqlJS is a / // vi.spyOn(...).mockImplementation(...) with no restore of its own, so calling'. The comment becomes six lines instead of five; the trailing '// it once per test is idempotent and the blanket restore can no longer outrun / // it.' is unchanged and already reads correctly. (b) The last test in the describe block, currently the concise-arrow form 'it('keeps the sql.js wasm fetch patched for each test, not just the first', () =>\\n    expect(vi.isMockFunction(globalThis.fetch)).toBe(true));' — replace with the block-bodied async form: 'it('keeps the sql.js wasm fetch patched for each test, not just the first', async () => {\\n    expect(vi.isMockFunction(globalThis.fetch)).toBe(true);\\n\\n    const res = await globalThis.fetch(`${baseURL}sql-wasm.wasm`);\\n    expect(res.status).toBe(200);\\n  });'. Change nothing else in the file — not the beforeEach body at lines 31-33, not the 'Last on purpose' comment above the test, not any of the other nine tests.",
-        "why": "Finding 1 and finding 2 respectively. I applied both edits verbatim, ran the suite, and reverted; the resulting diff is 9 insertions and 4 deletions in this one file."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
-        "action": "edit",
-        "cases": [
-          "existing suite stays green: 'yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts' reports Test Files 2 passed (2), Tests 16 passed (16), with src/platform/server/sqlite/index.test.ts at 10 tests and src/platform/server/fs/index.test.ts at 6",
-          "the strengthened assertion passes on a clean tree — the awaited fetch of ${baseURL}sql-wasm.wasm resolves with status 200",
-          "the strengthened assertion FAILS when the beforeEach body at lines 31-33 is replaced by a bare `vi.spyOn(global, 'fetch')` with no mockImplementation — this is the regression the ticket exists to close, and it is the case the old assertion missed",
-          "the strengthened assertion still FAILS when the beforeEach is deleted entirely, in a full-file run ('Tests 1 failed | 15 passed (16)'), so the test keeps its power and is not weakened by (a)",
-          "the 'Last on purpose' comment above the test remains accurate: with the beforeEach deleted, a single-test run ('vitest --run --config vitest.web.config.ts -t \\'keeps the sql.js wasm fetch patched\\'') still reports 1 passed | 15 skipped, so the test still has power only in a full-file run. If this measurement changes, that comment needs updating in the same change — do not let it go stale, which is the exact defect finding 2 is about"
-        ]
-      }
-    ],
-    "acceptance": [
-      {
-        "id": "AC-1",
-        "check": "Running the web vitest suite on the changed file reports Tests 16 passed (16) and Test Files 2 passed (2) — the strengthened assertion passes against the real patch rather than failing on it",
-        "how_to_verify": "yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts",
-        "verify": "test"
-      },
-      {
-        "id": "AC-2",
-        "check": "The regression test fails when the beforeEach it guards is sabotaged: replacing the beforeEach body with a bare `vi.spyOn(global, 'fetch')` that serves nothing makes 'keeps the sql.js wasm fetch patched for each test, not just the first' fail, where the pre-change assertion passed. The assertion must distinguish the sql.js wasm patch from a fetch spy that serves nothing.",
-        "how_to_verify": "The tests[] case 'the strengthened assertion FAILS when the beforeEach body at lines 31-33 is replaced by a bare vi.spyOn(global, 'fetch')' — reproduce it by making that one-line substitution, re-running the suite, and restoring the file. This is a negative check by design: the suite is expected to go red while the substitution is in place.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-3",
-        "check": "The test keeps its existing power: deleting the beforeEach entirely still fails the test in a full-file run ('Tests 1 failed | 15 passed (16)'), and the test remains last in the describe block, since its position is load-bearing",
-        "how_to_verify": "The tests[] cases 'the strengthened assertion still FAILS when the beforeEach is deleted entirely' and the -t isolation case; both are part of the verification this change must pass through before it is merged.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-4",
-        "check": "The beforeEach comment no longer asserts a falsehood about the shipped file: it describes the re-arm as a past/conditional fact rather than claiming that from the second test on global.fetch is the real jsdom fetch again — which the beforeEach four lines below makes false. Reading the comment top to bottom, no sentence describes the pre-fix state as the current one.",
-        "how_to_verify": "Read packages/loot-core/src/platform/server/sqlite/index.test.ts lines 23-30. This is a comment; no runtime check can observe it, which is why it is verified by test-run discipline (AC-1 through AC-3 must all pass on the same tree) plus review.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-5",
-        "check": "'yarn lint' and 'yarn typecheck' pass on the changed tree — this file is type-strict-ignored at the top, but the new `await globalThis.fetch(...)` and its `res.status` are ordinary TypeScript that the project's checks must accept",
-        "how_to_verify": "yarn lint && yarn typecheck, both from the repository root",
-        "verify": "test"
-      }
-    ],
-    "qa_script": [
-      "This ticket changes no product behaviour, so there is nothing for a browser to observe. The honest QA path is the test suite, not a URL.",
-      "From the repository root: yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts — expect Test Files 2 passed (2), Tests 16 passed (16).",
-      "Confirm the diff is confined to packages/loot-core/src/platform/server/sqlite/index.test.ts (git diff --stat should show one file, roughly 9 insertions and 4 deletions) and that no source file under packages/loot-core/src/platform/server/sqlite/index.ts or packages/loot-core/src/mocks/util.ts is touched.",
-      "Then confirm the assertion is load-bearing rather than decorative: replace the beforeEach body (lines 31-33) with `vi.spyOn(global, 'fetch');` and re-run the suite. It must go red — 'Tests 1 failed | 15 passed (16)'. That is the whole point of the ticket: before the change this substitution left the suite green. Restore the file afterwards.",
-      "Second negative check: delete the beforeEach entirely and run the full file. It must still report 1 failed | 15 passed, so the change did not trade one weak assertion for a weaker one. Restore afterwards.",
-      "Read the beforeEach comment at lines 23-30 and confirm every sentence describes the shipped file, not the pre-fix one.",
-      "yarn lint && yarn typecheck from the repository root — both must pass.",
-      "Confirm git status shows no leftover scratch edits: packages/loot-core/src/platform/server/sqlite/index.test.ts should be the only modified file, and node_modules/ plus packages/loot-core/test-results/ must not be committed."
-    ],
-    "risks": [
-      "Low overall. The change is confined to one test file and touches no source file, no interface, no screen, no data and no persisted state; nothing here deletes anything.",
-      "The added `await globalThis.fetch(...)` reads sql-wasm.wasm (~1.1 MB) off disk once per run. That is already what init() does in the file's beforeAll, so it adds no new dependency on the wasm asset being present — but the test does now fail in a checkout where @jlongster/sql.js is not installed, where previously it would not have. I confirmed the file exists at node_modules/@jlongster/sql.js/dist/sql-wasm.wasm after a normal `yarn install`.",
-      "The assertion depends on baseURL (line 15) staying in scope, which it does — it is a module-level const. If a future change moves the test into a different describe or file, the template literal has to move with it.",
-      "No forbidden_path is touched. .sdlc/memory/**, docs/spec/**, docs/prd.md, docs/trd.md, docs/ui.md and .github/** are all untouched, and this file is in none of them.",
-      "No new host is contacted: the awaited fetch is served by the in-process mock, which reads the local filesystem. Nothing is added to env.api_allowlist because nothing leaves the machine."
-    ],
-    "out_of_scope": [
-      "Rewriting patchFetchForSqlJS in packages/loot-core/src/mocks/util.ts. It is correct as written — the mock serves any URL under baseURL and rejects everything else, which is exactly the discrimination the new assertion relies on. It would ship on its own and it is not needed for this fix.",
-      "Adding an equivalent regression test to packages/loot-core/src/platform/server/fs/index.test.ts. That file also calls patchFetchForSqlJS, but it has no restoreAllMocks in its teardown and so has no equivalent exposure; adding a parallel assertion would be a separate piece of work.",
-      "Generalising the whole file's comment style, or shortening the load-bearing 'Last on purpose' comment above the test. It is accurate as it stands and I re-measured its claim after the change; rewriting it is its own piece of work.",
-      "Any change to packages/loot-core/src/platform/server/sqlite/index.ts. The setWasmBinary/wasmBinaryOverride path and the REGEXP dedupe are unrelated to this ticket and were reviewed elsewhere."
-    ],
-    "kind": "chore",
-    "confidence": 95,
-    "confidence_rationale": "Both findings were reproduced against current main (dff184c) by editing the file and running the web vitest suite, and the exact fix was applied, run, and reverted: sabotage caught, clean tree green, beforeEach-deletion still fails, typecheck and lint pass. Nothing about this plan is inferred from the issue text. The only judgement left is the comment's wording, and the issue supplies the replacement wording verbatim.",
-    "reproduced": true,
-    "evidence": [
-      "Baseline on dff184c: yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts reports 'Test Files 2 passed (2)' / 'Tests 16 passed (16)', with '✓ src/platform/server/sqlite/index.test.ts (10 tests)' and '✓ src/platform/server/fs/index.test.ts (6 tests)'.",
-      "FINDING 1 REPRODUCED: replaced the beforeEach body at index.test.ts:31-33 with `vi.spyOn(global, 'fetch');` — a spy with no mockImplementation, delegating to the real jsdom fetch and unable to serve sql-wasm.wasm from baseURL. The suite still reported 'Test Files 2 passed (2)' / 'Tests 16 passed (16)'. The assertion at the then-line 455, expect(vi.isMockFunction(globalThis.fetch)).toBe(true), is satisfied by any fetch spy. Tree restored afterwards.",
-      "THE FIX CATCHES IT: with that same sabotage still in place and the strengthened assertion applied, the suite reported 'Test Files 1 failed | 1 passed (2)' / 'Tests 1 failed | 15 passed (16)'.",
-      "THE FIX PASSES CLEAN: with the sabotage reverted and only the strengthened assertion applied, the suite reported 'Test Files 2 passed (2)' / 'Tests 16 passed (16)'.",
-      "NO LOSS OF POWER: with the strengthened assertion applied and the beforeEach deleted entirely, a full-file run reported 'AssertionError: expected false to be true' / 'Tests 1 failed | 15 passed (16)' — AC-2's coverage is preserved, matching the reviewer's separate verification of it.",
-      "THE SURROUNDING COMMENT IS STILL ACCURATE: with the strengthened assertion applied and the beforeEach deleted, `vitest --run --config vitest.web.config.ts -t 'keeps the sql.js wasm fetch patched'` reported 'Test Files 1 passed | 1 skipped (2)' / 'Tests 1 passed | 15 skipped (16)' — the exact measurement the 'Last on purpose' comment at lines 447-453 cites, so that comment needs no change.",
-      "The wasm asset the new assertion fetches exists after a normal install: node_modules/@jlongster/sql.js/dist/sql-wasm.wasm, 1105290 bytes. node_modules/@jlongster/sql.js/dist/sql-wasm.wasm is the same file initSqlJS's locateFile resolves (packages/loot-core/src/platform/server/sqlite/index.ts:55).",
-      "yarn lint and yarn typecheck both pass on the changed tree — 'All matched files use the correct format', and all 10 workspaces report typecheck success.",
-      "All scratch edits were reverted; git status --short shows only the untracked plan/ directory, and packages/loot-core/src/platform/server/sqlite/index.test.ts is unmodified on disk."
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Assert something else about the mock instead of exercising it — e.g. expect(globalThis.fetch).toBeInstanceOf(Function) or check vi.isMockFunction plus a mock call count.",
-        "rejected_because": "Still a statement about a vitest internal rather than about the patch. A call count is satisfied by a spy that was never called with the wasm URL; only actually fetching the asset distinguishes the real patch from a pass-through spy, which is precisely what the reviewer asked for."
-      },
-      {
-        "approach": "Move the wasm-serving assertion into beforeAll or a beforeEach so it runs for every test.",
-        "rejected_because": "Widens the change and weakens the regression test's specificity. The ticket is about one assertion in one test that guards the re-arm; a global assertion would pass or fail for reasons unrelated to the beforeEach this test exists to cover."
-      },
-      {
-        "approach": "Leave the assertion as-is and only fix the comment tense.",
-        "rejected_because": "That is finding 1 dropped. I confirmed the defect is live on current main: the sabotaged beforeEach leaves the suite green at 16/16 today."
-      },
-      {
-        "approach": "Delete the weak regression test entirely rather than strengthen it.",
-        "rejected_because": "It would restore AC-2's coverage to zero. The test still catches the real regression — deleting the beforeEach fails it — so the right move is to strengthen it, not remove it."
-      },
-      {
-        "approach": "Assert on the fetched bytes (e.g. the wasm magic number) rather than on status 200.",
-        "rejected_because": "Status 200 is what the ticket specifies and is verified to work. Checking the magic number would be marginally stronger but reads the 1.1 MB payload and adds an assertion the ticket did not ask for."
-      }
-    ],
-    "assumptions": [
-      "Current main is dff184c and PR #55 is merged, which the git log confirms (8dffc57). Both findings were re-verified against that tree, not against the PR head the reviewer used.",
-      "The web vitest suite is the right gate: vitest.web.config.ts includes exactly the two files involved, and the file's top-level beforeEach/afterEach hooks only make sense under that config's jsdom environment.",
-      "No decision was recorded for this issue (plan/brief.md is empty) and no plan has previously been rejected for it, so there is nothing binding that contradicts this approach."
-    ],
-    "unknowns": [
-      "Whether a human would prefer the second acceptance check spelled out differently — I chose the sabotaged-beforeEach substitution because it is the exact regression the reviewer demonstrated and the one the old assertion could not catch."
-    ],
-    "residual_risks": [
-      "The test still asserts on a global that vitest owns, so it remains a test-shaped fact rather than a product guarantee. This is inherent: the behaviour under test is 'the test harness installed the sql.js wasm patch before every test', and nothing outside the harness can observe it. The strengthened assertion at least fails when the patch is installed but broken, which the previous one could not.",
-      "The comment fix is not mechanically checkable. I re-read the full comment after the edit and every sentence now describes the shipped file, but a future edit could re-stale it; that is what the review stage is for on a change like this."
-    ],
-    "mode": "committed",
-    "issue": 58,
-    "version": 1,
-    "understanding": "Issue #58 carries two non-blocking review findings out of PR #55 (for #51), both confined to packages/loot-core/src/platform/server/sqlite/index.test.ts. (1) The regression test added by that PR, 'keeps the sql.js wasm fetch patched for each test, not just the first', asserts only `vi.isMockFunction(globalThis.fetch)`, which is satisfied by any fetch spy at all — including one installed but serving nothing. I reproduced this: replacing the new beforeEach's body (index.test.ts:31-33) with a bare `vi.spyOn(global, 'fetch')` that delegates to the real jsdom fetch leaves the whole web suite green at 16/16. (2) The beforeEach's explanatory comment (lines 23-30) describes the pre-fix state in the present indicative — 'from the second test on, global.fetch is the real jsdom fetch again' — which is false of the shipped file, because that same beforeEach now reinstalls the patch before every test. This is the same tense defect the teardown comment in the same PR was rewritten to remove. The code is right in both cases; only the assertion's strength and the comment's tense are wrong. This is test hygiene on an already-merged test, not a product behaviour change: no source file, no interface, no screen.",
-    "root_cause": "The regression test pins a vitest internal (that globalThis.fetch is a mock function) rather than the behaviour it exists to protect (that globalThis.fetch is patchFetchForSqlJS's sql.js wasm patch, able to serve the wasm asset from baseURL). `vi.isMockFunction` cannot distinguish the real patch from a bare pass-through spy, so the test passes for the wrong reason. Separately, the beforeEach comment was carried over from the pre-fix state and its tense now asserts something the code four lines below guarantees against.",
-    "approach": "Two edits to one test file, no other file touched. (1) Strengthen the regression test: keep the existing `vi.isMockFunction(globalThis.fetch)` check (it is cheap and localises the failure), make the test async, and add a functional assertion after it — `const res = await globalThis.fetch(`${baseURL}sql-wasm.wasm`); expect(res.status).toBe(200);`. That URL is exactly what initSqlJS's `locateFile: file => baseURL + file` (packages/loot-core/src/platform/server/sqlite/index.ts:55) requests, so a 200 means the wasm patch is really installed and really serving, and any other spy either rejects or returns a non-200. (2) Put the beforeEach comment's defect description in the past tense so it reads as the reason the beforeEach exists rather than a claim about the file. Leave everything else alone: the test keeps its last-in-file position (load-bearing, per its own comment), the beforeEach keeps its body, and the 'Last on purpose' comment above the test stays as written — I re-measured its claim after the change and it still holds (see evidence)."
-  },
   "validated_from": "plan",
   "validated_at": "2026-10-04T00:59:59.565Z",
   "validated_ac_changes": [],
-  "approved_work_order": {
-    "files": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
-        "action": "edit",
-        "change": "Two edits, both in this file. (a) The `beforeEach` comment at lines 23-30: replace the three lines reading '// has already run and sql.js caches the compiled wasm — but from the second / // test on, global.fetch is the real jsdom fetch again. patchFetchForSqlJS is a / // vi.spyOn(...).mockImplementation(...) with no restore of its own, so calling' with these four lines: '// has already run and sql.js caches the compiled wasm — but before the / // beforeEach below re-armed it, from the second test on, global.fetch was the / // real jsdom fetch again. patchFetchForSqlJS is a / // vi.spyOn(...).mockImplementation(...) with no restore of its own, so calling'. The comment becomes six lines instead of five; the trailing '// it once per test is idempotent and the blanket restore can no longer outrun / // it.' is unchanged and already reads correctly. (b) The last test in the describe block, currently the concise-arrow form 'it('keeps the sql.js wasm fetch patched for each test, not just the first', () =>\\n    expect(vi.isMockFunction(globalThis.fetch)).toBe(true));' — replace with the block-bodied async form: 'it('keeps the sql.js wasm fetch patched for each test, not just the first', async () => {\\n    expect(vi.isMockFunction(globalThis.fetch)).toBe(true);\\n\\n    const res = await globalThis.fetch(`${baseURL}sql-wasm.wasm`);\\n    expect(res.status).toBe(200);\\n  });'. Change nothing else in the file — not the beforeEach body at lines 31-33, not the 'Last on purpose' comment above the test, not any of the other nine tests.",
-        "why": "Finding 1 and finding 2 respectively. I applied both edits verbatim, ran the suite, and reverted; the resulting diff is 9 insertions and 4 deletions in this one file."
-      }
-    ],
-    "tests": [
-      {
-        "path": "packages/loot-core/src/platform/server/sqlite/index.test.ts",
-        "action": "edit",
-        "cases": [
-          "existing suite stays green: 'yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts' reports Test Files 2 passed (2), Tests 16 passed (16), with src/platform/server/sqlite/index.test.ts at 10 tests and src/platform/server/fs/index.test.ts at 6",
-          "the strengthened assertion passes on a clean tree — the awaited fetch of ${baseURL}sql-wasm.wasm resolves with status 200",
-          "the strengthened assertion FAILS when the beforeEach body at lines 31-33 is replaced by a bare `vi.spyOn(global, 'fetch')` with no mockImplementation — this is the regression the ticket exists to close, and it is the case the old assertion missed",
-          "the strengthened assertion still FAILS when the beforeEach is deleted entirely, in a full-file run ('Tests 1 failed | 15 passed (16)'), so the test keeps its power and is not weakened by (a)",
-          "the 'Last on purpose' comment above the test remains accurate: with the beforeEach deleted, a single-test run ('vitest --run --config vitest.web.config.ts -t \\'keeps the sql.js wasm fetch patched\\'') still reports 1 passed | 15 skipped, so the test still has power only in a full-file run. If this measurement changes, that comment needs updating in the same change — do not let it go stale, which is the exact defect finding 2 is about"
-        ]
-      }
-    ],
-    "acceptance": [
-      {
-        "id": "AC-1",
-        "check": "Running the web vitest suite on the changed file reports Tests 16 passed (16) and Test Files 2 passed (2) — the strengthened assertion passes against the real patch rather than failing on it",
-        "how_to_verify": "yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts",
-        "verify": "test"
-      },
-      {
-        "id": "AC-2",
-        "check": "The regression test fails when the beforeEach it guards is sabotaged: replacing the beforeEach body with a bare `vi.spyOn(global, 'fetch')` that serves nothing makes 'keeps the sql.js wasm fetch patched for each test, not just the first' fail, where the pre-change assertion passed. The assertion must distinguish the sql.js wasm patch from a fetch spy that serves nothing.",
-        "how_to_verify": "The tests[] case 'the strengthened assertion FAILS when the beforeEach body at lines 31-33 is replaced by a bare vi.spyOn(global, 'fetch')' — reproduce it by making that one-line substitution, re-running the suite, and restoring the file. This is a negative check by design: the suite is expected to go red while the substitution is in place.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-3",
-        "check": "The test keeps its existing power: deleting the beforeEach entirely still fails the test in a full-file run ('Tests 1 failed | 15 passed (16)'), and the test remains last in the describe block, since its position is load-bearing",
-        "how_to_verify": "The tests[] cases 'the strengthened assertion still FAILS when the beforeEach is deleted entirely' and the -t isolation case; both are part of the verification this change must pass through before it is merged.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-4",
-        "check": "The beforeEach comment no longer asserts a falsehood about the shipped file: it describes the re-arm as a past/conditional fact rather than claiming that from the second test on global.fetch is the real jsdom fetch again — which the beforeEach four lines below makes false. Reading the comment top to bottom, no sentence describes the pre-fix state as the current one.",
-        "how_to_verify": "Read packages/loot-core/src/platform/server/sqlite/index.test.ts lines 23-30. This is a comment; no runtime check can observe it, which is why it is verified by test-run discipline (AC-1 through AC-3 must all pass on the same tree) plus review.",
-        "verify": "test"
-      },
-      {
-        "id": "AC-5",
-        "check": "'yarn lint' and 'yarn typecheck' pass on the changed tree — this file is type-strict-ignored at the top, but the new `await globalThis.fetch(...)` and its `res.status` are ordinary TypeScript that the project's checks must accept",
-        "how_to_verify": "yarn lint && yarn typecheck, both from the repository root",
-        "verify": "test"
-      }
-    ],
-    "qa_script": [
-      "This ticket changes no product behaviour, so there is nothing for a browser to observe. The honest QA path is the test suite, not a URL.",
-      "From the repository root: yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts — expect Test Files 2 passed (2), Tests 16 passed (16).",
-      "Confirm the diff is confined to packages/loot-core/src/platform/server/sqlite/index.test.ts (git diff --stat should show one file, roughly 9 insertions and 4 deletions) and that no source file under packages/loot-core/src/platform/server/sqlite/index.ts or packages/loot-core/src/mocks/util.ts is touched.",
-      "Then confirm the assertion is load-bearing rather than decorative: replace the beforeEach body (lines 31-33) with `vi.spyOn(global, 'fetch');` and re-run the suite. It must go red — 'Tests 1 failed | 15 passed (16)'. That is the whole point of the ticket: before the change this substitution left the suite green. Restore the file afterwards.",
-      "Second negative check: delete the beforeEach entirely and run the full file. It must still report 1 failed | 15 passed, so the change did not trade one weak assertion for a weaker one. Restore afterwards.",
-      "Read the beforeEach comment at lines 23-30 and confirm every sentence describes the shipped file, not the pre-fix one.",
-      "yarn lint && yarn typecheck from the repository root — both must pass.",
-      "Confirm git status shows no leftover scratch edits: packages/loot-core/src/platform/server/sqlite/index.test.ts should be the only modified file, and node_modules/ plus packages/loot-core/test-results/ must not be committed."
-    ],
-    "risks": [
-      "Low overall. The change is confined to one test file and touches no source file, no interface, no screen, no data and no persisted state; nothing here deletes anything.",
-      "The added `await globalThis.fetch(...)` reads sql-wasm.wasm (~1.1 MB) off disk once per run. That is already what init() does in the file's beforeAll, so it adds no new dependency on the wasm asset being present — but the test does now fail in a checkout where @jlongster/sql.js is not installed, where previously it would not have. I confirmed the file exists at node_modules/@jlongster/sql.js/dist/sql-wasm.wasm after a normal `yarn install`.",
-      "The assertion depends on baseURL (line 15) staying in scope, which it does — it is a module-level const. If a future change moves the test into a different describe or file, the template literal has to move with it.",
-      "No forbidden_path is touched. .sdlc/memory/**, docs/spec/**, docs/prd.md, docs/trd.md, docs/ui.md and .github/** are all untouched, and this file is in none of them.",
-      "No new host is contacted: the awaited fetch is served by the in-process mock, which reads the local filesystem. Nothing is added to env.api_allowlist because nothing leaves the machine."
-    ],
-    "out_of_scope": [
-      "Rewriting patchFetchForSqlJS in packages/loot-core/src/mocks/util.ts. It is correct as written — the mock serves any URL under baseURL and rejects everything else, which is exactly the discrimination the new assertion relies on. It would ship on its own and it is not needed for this fix.",
-      "Adding an equivalent regression test to packages/loot-core/src/platform/server/fs/index.test.ts. That file also calls patchFetchForSqlJS, but it has no restoreAllMocks in its teardown and so has no equivalent exposure; adding a parallel assertion would be a separate piece of work.",
-      "Generalising the whole file's comment style, or shortening the load-bearing 'Last on purpose' comment above the test. It is accurate as it stands and I re-measured its claim after the change; rewriting it is its own piece of work.",
-      "Any change to packages/loot-core/src/platform/server/sqlite/index.ts. The setWasmBinary/wasmBinaryOverride path and the REGEXP dedupe are unrelated to this ticket and were reviewed elsewhere."
-    ],
-    "kind": "chore",
-    "confidence": 95,
-    "confidence_rationale": "Both findings were reproduced against current main (dff184c) by editing the file and running the web vitest suite, and the exact fix was applied, run, and reverted: sabotage caught, clean tree green, beforeEach-deletion still fails, typecheck and lint pass. Nothing about this plan is inferred from the issue text. The only judgement left is the comment's wording, and the issue supplies the replacement wording verbatim.",
-    "reproduced": true,
-    "evidence": [
-      "Baseline on dff184c: yarn workspace @actual-app/core exec vitest --run --config vitest.web.config.ts reports 'Test Files 2 passed (2)' / 'Tests 16 passed (16)', with '✓ src/platform/server/sqlite/index.test.ts (10 tests)' and '✓ src/platform/server/fs/index.test.ts (6 tests)'.",
-      "FINDING 1 REPRODUCED: replaced the beforeEach body at index.test.ts:31-33 with `vi.spyOn(global, 'fetch');` — a spy with no mockImplementation, delegating to the real jsdom fetch and unable to serve sql-wasm.wasm from baseURL. The suite still reported 'Test Files 2 passed (2)' / 'Tests 16 passed (16)'. The assertion at the then-line 455, expect(vi.isMockFunction(globalThis.fetch)).toBe(true), is satisfied by any fetch spy. Tree restored afterwards.",
-      "THE FIX CATCHES IT: with that same sabotage still in place and the strengthened assertion applied, the suite reported 'Test Files 1 failed | 1 passed (2)' / 'Tests 1 failed | 15 passed (16)'.",
-      "THE FIX PASSES CLEAN: with the sabotage reverted and only the strengthened assertion applied, the suite reported 'Test Files 2 passed (2)' / 'Tests 16 passed (16)'.",
-      "NO LOSS OF POWER: with the strengthened assertion applied and the beforeEach deleted entirely, a full-file run reported 'AssertionError: expected false to be true' / 'Tests 1 failed | 15 passed (16)' — AC-2's coverage is preserved, matching the reviewer's separate verification of it.",
-      "THE SURROUNDING COMMENT IS STILL ACCURATE: with the strengthened assertion applied and the beforeEach deleted, `vitest --run --config vitest.web.config.ts -t 'keeps the sql.js wasm fetch patched'` reported 'Test Files 1 passed | 1 skipped (2)' / 'Tests 1 passed | 15 skipped (16)' — the exact measurement the 'Last on purpose' comment at lines 447-453 cites, so that comment needs no change.",
-      "The wasm asset the new assertion fetches exists after a normal install: node_modules/@jlongster/sql.js/dist/sql-wasm.wasm, 1105290 bytes. node_modules/@jlongster/sql.js/dist/sql-wasm.wasm is the same file initSqlJS's locateFile resolves (packages/loot-core/src/platform/server/sqlite/index.ts:55).",
-      "yarn lint and yarn typecheck both pass on the changed tree — 'All matched files use the correct format', and all 10 workspaces report typecheck success.",
-      "All scratch edits were reverted; git status --short shows only the untracked plan/ directory, and packages/loot-core/src/platform/server/sqlite/index.test.ts is unmodified on disk."
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Assert something else about the mock instead of exercising it — e.g. expect(globalThis.fetch).toBeInstanceOf(Function) or check vi.isMockFunction plus a mock call count.",
-        "rejected_because": "Still a statement about a vitest internal rather than about the patch. A call count is satisfied by a spy that was never called with the wasm URL; only actually fetching the asset distinguishes the real patch from a pass-through spy, which is precisely what the reviewer asked for."
-      },
-      {
-        "approach": "Move the wasm-serving assertion into beforeAll or a beforeEach so it runs for every test.",
-        "rejected_because": "Widens the change and weakens the regression test's specificity. The ticket is about one assertion in one test that guards the re-arm; a global assertion would pass or fail for reasons unrelated to the beforeEach this test exists to cover."
-      },
-      {
-        "approach": "Leave the assertion as-is and only fix the comment tense.",
-        "rejected_because": "That is finding 1 dropped. I confirmed the defect is live on current main: the sabotaged beforeEach leaves the suite green at 16/16 today."
-      },
-      {
-        "approach": "Delete the weak regression test entirely rather than strengthen it.",
-        "rejected_because": "It would restore AC-2's coverage to zero. The test still catches the real regression — deleting the beforeEach fails it — so the right move is to strengthen it, not remove it."
-      },
-      {
-        "approach": "Assert on the fetched bytes (e.g. the wasm magic number) rather than on status 200.",
-        "rejected_because": "Status 200 is what the ticket specifies and is verified to work. Checking the magic number would be marginally stronger but reads the 1.1 MB payload and adds an assertion the ticket did not ask for."
-      }
-    ],
-    "assumptions": [
-      "Current main is dff184c and PR #55 is merged, which the git log confirms (8dffc57). Both findings were re-verified against that tree, not against the PR head the reviewer used.",
-      "The web vitest suite is the right gate: vitest.web.config.ts includes exactly the two files involved, and the file's top-level beforeEach/afterEach hooks only make sense under that config's jsdom environment.",
-      "No decision was recorded for this issue (plan/brief.md is empty) and no plan has previously been rejected for it, so there is nothing binding that contradicts this approach."
-    ],
-    "unknowns": [
-      "Whether a human would prefer the second acceptance check spelled out differently — I chose the sabotaged-beforeEach substitution because it is the exact regression the reviewer demonstrated and the one the old assertion could not catch."
-    ],
-    "residual_risks": [
-      "The test still asserts on a global that vitest owns, so it remains a test-shaped fact rather than a product guarantee. This is inherent: the behaviour under test is 'the test harness installed the sql.js wasm patch before every test', and nothing outside the harness can observe it. The strengthened assertion at least fails when the patch is installed but broken, which the previous one could not.",
-      "The comment fix is not mechanically checkable. I re-read the full comment after the edit and every sentence now describes the shipped file, but a future edit could re-stale it; that is what the review stage is for on a change like this."
-    ],
-    "mode": "committed",
-    "issue": 58,
-    "version": 1,
-    "understanding": "Issue #58 carries two non-blocking review findings out of PR #55 (for #51), both confined to packages/loot-core/src/platform/server/sqlite/index.test.ts. (1) The regression test added by that PR, 'keeps the sql.js wasm fetch patched for each test, not just the first', asserts only `vi.isMockFunction(globalThis.fetch)`, which is satisfied by any fetch spy at all — including one installed but serving nothing. I reproduced this: replacing the new beforeEach's body (index.test.ts:31-33) with a bare `vi.spyOn(global, 'fetch')` that delegates to the real jsdom fetch leaves the whole web suite green at 16/16. (2) The beforeEach's explanatory comment (lines 23-30) describes the pre-fix state in the present indicative — 'from the second test on, global.fetch is the real jsdom fetch again' — which is false of the shipped file, because that same beforeEach now reinstalls the patch before every test. This is the same tense defect the teardown comment in the same PR was rewritten to remove. The code is right in both cases; only the assertion's strength and the comment's tense are wrong. This is test hygiene on an already-merged test, not a product behaviour change: no source file, no interface, no screen.",
-    "root_cause": "The regression test pins a vitest internal (that globalThis.fetch is a mock function) rather than the behaviour it exists to protect (that globalThis.fetch is patchFetchForSqlJS's sql.js wasm patch, able to serve the wasm asset from baseURL). `vi.isMockFunction` cannot distinguish the real patch from a bare pass-through spy, so the test passes for the wrong reason. Separately, the beforeEach comment was carried over from the pre-fix state and its tense now asserts something the code four lines below guarantees against.",
-    "approach": "Two edits to one test file, no other file touched. (1) Strengthen the regression test: keep the existing `vi.isMockFunction(globalThis.fetch)` check (it is cheap and localises the failure), make the test async, and add a functional assertion after it — `const res = await globalThis.fetch(`${baseURL}sql-wasm.wasm`); expect(res.status).toBe(200);`. That URL is exactly what initSqlJS's `locateFile: file => baseURL + file` (packages/loot-core/src/platform/server/sqlite/index.ts:55) requests, so a 200 means the wasm patch is really installed and really serving, and any other spy either rejects or returns a non-200. (2) Put the beforeEach comment's defect description in the past tense so it reads as the reason the beforeEach exists rather than a claim about the file. Leave everything else alone: the test keeps its last-in-file position (load-bearing, per its own comment), the beforeEach keeps its body, and the 'Last on purpose' comment above the test stays as written — I re-measured its claim after the change and it still holds (see evidence)."
-  },
-  "approved_too_high": false
+  "approved_too_high": false,
+  "work_order_version": 1,
+  "work_order_posted_at": "2026-10-04T01:14:46.286Z",
+  "work_order_from": "plan",
+  "work_order_comment": "5975303393"
 }
