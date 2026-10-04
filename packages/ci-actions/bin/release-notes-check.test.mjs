@@ -5,6 +5,15 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import matter from 'gray-matter';
+
+import {
+  categoryAutocorrections,
+  categoryOrder,
+  describeAuthor,
+  findNonPersonAuthors,
+} from '../src/release-notes/util.mjs';
+
 const exec = promisify(execFile);
 
 // Driven as a subprocess against a real repository, because the defect is
@@ -197,5 +206,91 @@ describe('release-notes-check', () => {
 
     expect(code).toBe(1);
     expect(stdout).toContain('category "Nope" is not one of');
+  });
+});
+
+// The cases above are driven against throwaway repositories, because a diff is
+// the only way to control which paths the script sees and that is what the
+// script's own defect was about. But no workflow runs that script over the notes
+// this repository actually ships — the release-notes action exists and nothing
+// references it — so the file a release note is made of had no gate at all. This
+// block is that gate: the same rules, over the real directory, on every run of
+// the unit suite.
+//
+// It goes through util.mjs rather than importing validateFile() from the script,
+// because the script executes its git-diff IIFE at module load. Four of the six
+// checks below are the checker's own exports called the way the checker calls
+// them; only "a category is present at all" and "the body is one non-empty line"
+// are re-implemented, because those two live inside validateFile() and have no
+// export of their own.
+//
+// It reads the whole directory rather than one note's exact bytes on purpose:
+// rewording a release note is routine and must not fail a test, while breaking
+// the published-changelog rules must.
+describe('the real upcoming-release-notes/ directory', () => {
+  const NOTES_DIR = fileURLToPath(
+    new URL('../../../upcoming-release-notes', import.meta.url),
+  );
+
+  const readNotes = () =>
+    fs
+      .readdirSync(NOTES_DIR)
+      .filter(name => name.endsWith('.md') && name !== 'README.md')
+      .sort();
+
+  /**
+   * Returns one failure string per rule this note breaks, rather than throwing
+   * on the first, so a run over a whole directory reports every offending file
+   * at once instead of making them play whack-a-mole.
+   */
+  function validate(name) {
+    const { data, content } = matter(
+      fs.readFileSync(path.join(NOTES_DIR, name), 'utf-8'),
+    );
+    const failures = [];
+
+    if (!data.category) {
+      failures.push(`${name} is missing a category`);
+    } else if (
+      !categoryOrder.includes(
+        categoryAutocorrections[data.category] ?? data.category,
+      )
+    ) {
+      failures.push(
+        `${name} category "${data.category}" is not one of ${categoryOrder.join(', ')}`,
+      );
+    }
+
+    if (!data.authors) {
+      failures.push(`${name} is missing authors`);
+    } else if (!Array.isArray(data.authors)) {
+      failures.push(`${name} authors should be a list`);
+    } else if (data.authors.length === 0) {
+      failures.push(`${name} has an empty authors list`);
+    } else {
+      const nonPersonAuthors = findNonPersonAuthors(data.authors);
+      if (nonPersonAuthors.length > 0) {
+        failures.push(
+          `${name} authors are not people: ${nonPersonAuthors.map(describeAuthor).join(', ')}`,
+        );
+      }
+    }
+
+    const trimmed = content.trim();
+    if (!trimmed || trimmed.includes('\n')) {
+      failures.push(`${name} body should contain exactly one line`);
+    }
+
+    return failures;
+  }
+
+  it('contains release notes to check', () => {
+    // A moved or mis-resolved NOTES_DIR would make the rule case below pass
+    // vacuously, so the set it reads is asserted to be non-empty first.
+    expect(readNotes().length).toBeGreaterThan(0);
+  });
+
+  it('every note carries a category the published changelog has a header for', () => {
+    expect(readNotes().flatMap(validate)).toEqual([]);
   });
 });
