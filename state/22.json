@@ -6,12 +6,16 @@
   "lock_expires": null,
   "lock_run": null,
   "attempts": {
-    "plan": 0,
+    "plan": 1,
     "ci": 0,
     "review": 0,
     "qa": 0
   },
-  "attempt_run": null,
+  "attempt_run": {
+    "counter": "plan",
+    "n": 1,
+    "run": "37206549891"
+  },
   "pending": {
     "stage": "root-cause",
     "rework": null,
@@ -230,7 +234,7 @@
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-02T20:22:59.830Z",
-  "updated_at": "2026-10-04T13:41:51.792Z",
+  "updated_at": "2026-10-04T13:42:13.765Z",
   "history": [
     {
       "at": "2026-10-02T21:31:30.326Z",
@@ -481,6 +485,11 @@
       "at": "2026-10-04T13:41:51.792Z",
       "agent": "human",
       "action": "-> planning"
+    },
+    {
+      "at": "2026-10-04T13:42:13.765Z",
+      "agent": "plan",
+      "action": "plan attempt 1"
     }
   ],
   "epic": 14,
