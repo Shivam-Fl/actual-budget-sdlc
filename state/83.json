@@ -140,7 +140,7 @@
           "**AC-5** A test asserts the three synthetic rows render with three distinct keys, so the warning cannot come back unnoticed."
         ],
         "kind": "bug",
-        "issue": null
+        "issue": 88
       },
       {
         "title": "The shipped custom-report fix gets the release note the repository requires",
@@ -168,6 +168,7 @@
     84,
     85,
     86,
-    87
+    87,
+    88
   ]
 }
