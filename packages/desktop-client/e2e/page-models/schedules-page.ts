@@ -1,4 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
+import { expect } from '@playwright/test';
 
 import { ScheduleEditModal } from './schedule-edit-modal';
 
@@ -66,10 +67,10 @@ export class SchedulesPage {
   }
 
   /**
-   * Does the nth-schedule's actions menu offer an item with this name?
+   * Does this schedule's actions menu offer an item with this name?
    */
-  async nthScheduleMenuHasItem(index: number, name: string | RegExp) {
-    const menu = await this._openNthScheduleMenu(index);
+  async nthScheduleMenuHasItem(row: number | Locator, name: string | RegExp) {
+    const menu = await this._openNthScheduleMenu(row);
     const has = await menu.getByRole('button', { name }).count();
 
     await this.page.keyboard.press('Escape');
@@ -78,10 +79,10 @@ export class SchedulesPage {
   }
 
   /**
-   * The names of every item in the nth-schedule's actions menu.
+   * The names of every item in this schedule's actions menu.
    */
-  async nthScheduleMenuItemNames(index: number) {
-    const menu = await this._openNthScheduleMenu(index);
+  async nthScheduleMenuItemNames(row: number | Locator) {
+    const menu = await this._openNthScheduleMenu(row);
     const names = await menu.getByRole('button').allTextContents();
 
     await this.page.keyboard.press('Escape');
@@ -95,15 +96,25 @@ export class SchedulesPage {
   }
 
   /**
-   * Open the nth-schedule's actions menu and return the menu itself, so callers
-   * read items off it rather than off the row.
+   * Open a schedule's actions menu and return the menu itself, so callers read
+   * items off it rather than off the row.
+   *
+   * A number selects by 0-based index; a Locator is taken as given, so a caller
+   * that already located its row by payee does not have to convert that back
+   * into an index. The returned Locator is lazy, and the reads callers make of
+   * it (`count`, `allTextContents`) do not retry, so the wait for the menu to
+   * render belongs here — every consumer inherits it.
    */
-  async _openNthScheduleMenu(index: number) {
-    const actions = this.getNthScheduleRow(index).getByTestId('actions');
+  async _openNthScheduleMenu(row: number | Locator) {
+    const scheduleRow =
+      typeof row === 'number' ? this.getNthScheduleRow(row) : row;
 
-    await actions.getByRole('button').click();
+    await scheduleRow.getByTestId('actions').getByRole('button').click();
 
-    return this.page.getByRole('menu');
+    const menu = this.page.getByRole('menu');
+    await expect(menu).toBeVisible();
+
+    return menu;
   }
 
   async rightClickNthSchedule(index: number) {

@@ -15,7 +15,7 @@ import { getNormalisedString } from '@actual-app/core/shared/normalisation';
 import {
   extractScheduleConds,
   getScheduledAmount,
-  scheduleIsRecurring,
+  scheduleIsSkippable,
 } from '@actual-app/core/shared/schedules';
 import type { ScheduleStatuses } from '@actual-app/core/shared/schedules';
 import type { ScheduleEntity } from '@actual-app/core/types/models';
@@ -171,10 +171,11 @@ function ScheduleRow({
 
   const status = statuses.get(schedule.id);
   const { date: dateCond } = extractScheduleConds(schedule._conditions);
-  // A one-off's date condition is a plain date with no next occurrence, so
-  // getNextDateAfter returns null and setNextDate drops the write: skipping one
-  // is a silent no-op, so the item is hidden rather than offered.
-  const canSkip = scheduleIsRecurring(dateCond);
+  // A schedule with no next occurrence cannot be skipped: getNextDateAfter
+  // returns null and setNextDate drops the write, which is a silent no-op. That
+  // covers both a one-off, whose date condition is a plain date, and an
+  // exhausted recurrence whose occurrences have all been used.
+  const canSkip = scheduleIsSkippable(dateCond, schedule.next_date);
   useContextMenu({
     triggerRef: rowRef,
     items: !minimal

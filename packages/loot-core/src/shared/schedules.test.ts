@@ -16,6 +16,8 @@ import {
   indexPostedScheduleTransactions,
   isCustomUpcomingLength,
   isScheduleOccurrencePosted,
+  scheduleIsRecurring,
+  scheduleIsSkippable,
   UPCOMING_LENGTH_PRESET_LABELS,
   UPCOMING_LENGTH_PRESET_OPTIONS,
   UPCOMING_LENGTH_PRESET_VALUES,
@@ -935,27 +937,28 @@ describe('schedules', () => {
     });
   });
 
-  describe('getNextDateAfter', () => {
-    /* Dec 2020 calendar for reference:
-      | Su | Mo | Tu | We | Th | Fr | Sa |
-      |    |    | 01 | 02 | 03 | 04 | 05 |
-      | 06 | 07 | 08 | 09 | 10 | 11 | 12 |
-      | 13 | 14 | 15 | 16 | 17 | 18 | 19 |
-      | 20 | 21 | 22 | 23 | 24 | 25 | 26 |
-      | 27 | 28 | 29 | 30 | 31 |
-      */
-    function weeklyOnSaturday(extra = {}) {
-      return {
-        op: 'isapprox',
-        value: {
-          start: '2020-12-05',
-          frequency: 'weekly',
-          patterns: [],
-          ...extra,
-        },
-      };
-    }
+  /* Dec 2020 calendar for reference:
+    | Su | Mo | Tu | We | Th | Fr | Sa |
+    |    |    | 01 | 02 | 03 | 04 | 05 |
+    | 06 | 07 | 08 | 09 | 10 | 11 | 12 |
+    | 13 | 14 | 15 | 16 | 17 | 18 | 19 |
+    | 20 | 21 | 22 | 23 | 24 | 25 | 26 |
+    | 27 | 28 | 29 | 30 | 31 |
+    */
+  function weeklyOnSaturday(extra = {}): RuleConditionEntity {
+    return {
+      field: 'date',
+      op: 'isapprox',
+      value: {
+        start: '2020-12-05',
+        frequency: 'weekly',
+        patterns: [],
+        ...extra,
+      },
+    };
+  }
 
+  describe('getNextDateAfter', () => {
     it('returns the next occurrence after the given date', () => {
       expect(getNextDateAfter(weeklyOnSaturday(), '2020-12-05')).toBe(
         '2020-12-12',
@@ -1047,6 +1050,118 @@ describe('schedules', () => {
 
       expect(getNextDateAfter(dateCond, '2020-12-05')).toBe('2020-12-12');
       expect(getNextDateAfter(dateCond, '2020-12-12')).toBeNull();
+    });
+  });
+
+  describe('scheduleIsSkippable', () => {
+    /* Whether "Skip next scheduled date" can be offered is not the same
+      question as "is this recurring?": `setNextDate` moves the schedule to
+      `getNextDateAfter(...)` and writes nothing when that is null, so a
+      recurrence whose occurrences are all used up is skippable-by-recurrence
+      but not skippable at all. These cases pin the two apart. */
+    it('returns false for a null date condition', () => {
+      expect(scheduleIsSkippable(null, '2020-12-05')).toBe(false);
+    });
+
+    it('returns false for a null next date', () => {
+      expect(scheduleIsSkippable(weeklyOnSaturday(), null)).toBe(false);
+    });
+
+    it('returns false for an undefined next date', () => {
+      expect(scheduleIsSkippable(weeklyOnSaturday(), undefined)).toBe(false);
+    });
+
+    it('returns true for a never-ending rule with an occurrence ahead', () => {
+      expect(scheduleIsSkippable(weeklyOnSaturday(), '2020-12-05')).toBe(true);
+    });
+
+    it('returns false for a one-off, whose date condition is a plain date', () => {
+      // A one-off's value is the date string itself, not a `{ start }` object —
+      // `Condition` only reads an object as a recurring date when it has a
+      // `frequency`.
+      const oneOff: RuleConditionEntity = {
+        field: 'date',
+        op: 'is',
+        value: '2020-12-05',
+      };
+
+      expect(scheduleIsSkippable(oneOff, '2020-12-05')).toBe(false);
+    });
+
+    it('returns true while an after_n_occurrences rule still has an occurrence ahead', () => {
+      const dateCond = weeklyOnSaturday({
+        endMode: 'after_n_occurrences',
+        endOccurrences: 2,
+      });
+
+      expect(scheduleIsSkippable(dateCond, '2020-12-05')).toBe(true);
+    });
+
+    it('returns false once the last occurrence of an after_n_occurrences rule is showing', () => {
+      const dateCond = weeklyOnSaturday({
+        endMode: 'after_n_occurrences',
+        endOccurrences: 2,
+      });
+
+      expect(scheduleIsSkippable(dateCond, '2020-12-12')).toBe(false);
+    });
+
+    it('returns false for an on_date rule that ended in the past', () => {
+      const dateCond = weeklyOnSaturday({
+        endMode: 'on_date',
+        endDate: '2020-12-05',
+      });
+
+      expect(scheduleIsSkippable(dateCond, '2020-12-12')).toBe(false);
+    });
+
+    it('returns false for the UI-shaped fixture of a schedule for one occurrence', () => {
+      // The Schedules table seeds a new schedule's start to today, so "for 1
+      // occurrence" spends its only occurrence on today and leaves nothing to
+      // skip to. `endOccurrences` is a number here; the picker collects a
+      // string and parses it.
+      const today = monthUtils.currentDay();
+      const uiFixture = weeklyOnSaturday({
+        start: today,
+        endMode: 'after_n_occurrences',
+        endOccurrences: 1,
+      });
+
+      expect(scheduleIsSkippable(uiFixture, today)).toBe(false);
+    });
+
+    it('returns true for the same UI-shaped fixture when it is for two occurrences', () => {
+      const today = monthUtils.currentDay();
+      const uiFixture = weeklyOnSaturday({
+        start: today,
+        endMode: 'after_n_occurrences',
+        endOccurrences: 2,
+      });
+
+      expect(scheduleIsSkippable(uiFixture, today)).toBe(true);
+    });
+
+    it('leaves scheduleIsRecurring answering the weaker question', () => {
+      const today = monthUtils.currentDay();
+      const exhausted = weeklyOnSaturday({
+        start: today,
+        endMode: 'after_n_occurrences',
+        endOccurrences: 1,
+      });
+
+      // Still a recurrence, even though there is nothing left to skip to: three
+      // callers read this predicate inverted to decide a schedule is *not*
+      // recurring, so it must not answer the skip question too.
+      expect(scheduleIsRecurring(exhausted)).toBe(true);
+      expect(scheduleIsSkippable(exhausted, today)).toBe(false);
+      expect(scheduleIsRecurring(weeklyOnSaturday())).toBe(true);
+      const oneOffCond: RuleConditionEntity = {
+        field: 'date',
+        op: 'is',
+        value: '2020-12-05',
+      };
+      expect(scheduleIsRecurring(oneOffCond)).toBe(false);
+      expect(scheduleIsRecurring(null)).toBe(false);
     });
   });
 
