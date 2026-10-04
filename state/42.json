@@ -324,7 +324,31 @@
         "detail": "The PR title does not carry the mandatory [AI] prefix: \"fix: A posted occurrence is never posted twice, even after its transaction is split\". .github/agents/pr-and-commit-rules.md is unambiguous — \"ALL pull request titles MUST be prefixed with [AI] — you have to apply it yourself\" — and lists the unprefixed form as NOT ALLOWED. One-word fix.\n\n`upcoming-release-notes/fix-split-occurrence-double-post.md:1`\n\nEvidence: gh pr view 69 --json title returns the title above with no prefix. Every other pipeline-authored PR in the repo (71, 68, 67, 65) is also unprefixed, so this is systemic to the pipeline rather than specific to this branch — which is exactly why it is worth one line here rather than a review comment nobody reads.\n\nFix: Retitle to \"[AI] fix: A posted occurrence is never posted twice, even after its transaction is split\"."
       }
     ],
-    "pr": "69"
+    "pr": "69",
+    "qa": [
+      {
+        "id": "BUG-1",
+        "severity": "major",
+        "area": "register / splits",
+        "title": "Unsplitting a posted schedule payment deletes the payment row and its amount, leaving only the empty split children",
+        "expected": "Unsplitting a split that has not been filled in should leave the transaction standing at its original amount, the way splitting and then reverting does.",
+        "actual": "Post a schedule (123.45), split the posted row (the split starts with two empty 0.00 children), then \"Unsplit 1 transactions\". The 123.45 row disappears from the register: only the two 0.00 children remain, plus the schedule's *preview* row showing 123.45 as still Due. The row that disappears is the stamped parent — its Category cell renders the schedule badge rather than \"Categorize\", matching the preview row exactly, and the schedule's status column drops back to Due.",
+        "repro": [
+          "Boot the demo budget, go to /schedules and add a one-off schedule (payee QA Unsplit Then Post, account Bank of America, amount 123.45, date a few days out).",
+          "Post it from the row's actions menu (\"Post transaction\", not \"…today\").",
+          "In the register select the posted row, click its Category cell and choose Split. Do not enter amounts in the two new rows.",
+          "Right-click the split and choose \"Unsplit 1 transactions\".",
+          "The 123.45 payment is gone; the register shows two 0.00 rows and the schedule's own preview row. /schedules now reads Due instead of Paid, so the occurrence can be paid a second time."
+        ],
+        "evidence": [
+          "/home/runner/work/actual-budget-sdlc/actual-budget-sdlc/qa-evidence/test-results/edge-T-9-unsplitting-drops-9af2b-occurrence-is-payable-again-chromium/test-finished-1.png",
+          "/home/runner/work/actual-budget-sdlc/actual-budget-sdlc/qa-evidence/test-results/edge-T-9-unsplitting-drops-9af2b-occurrence-is-payable-again-chromium/trace.zip"
+        ],
+        "suspected_cause": "makeAsNonChildTransactions (packages/loot-core/src/shared/transactions.ts) deletes the parent and promotes whichever children were not converted; a split created from the register starts with two 0.00 children, so the promoted rows carry the children's amounts and the parent's amount is discarded. Pre-existing behaviour, unrelated to the guard widened by this PR — the PR neither causes nor fixes it, and the work order lists the unsplit path as out of scope for issue #42.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "pass",
