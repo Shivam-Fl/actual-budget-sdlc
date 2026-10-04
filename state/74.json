@@ -89,6 +89,158 @@
   "stopped_at": null,
   "dispatched_stage": "plan",
   "validated_from": "plan",
-  "validated_at": "2026-10-04T09:10:43.761Z",
-  "validated_ac_changes": []
+  "validated_at": "2026-10-04T10:12:37.858Z",
+  "validated_ac_changes": [],
+  "validated_work_order": {
+    "acceptance": [
+      {
+        "check": "In the schedules list, a monthly schedule that has already had its only occurrence (ends after 1 occurrence, started today) shows an actions menu with no 'Skip next scheduled date' and no 'Restart'; a monthly schedule that repeats indefinitely still shows 'Skip next scheduled date'.",
+        "how_to_verify": "Open the Schedules page. Open the actions menu on a schedule whose recurring date reads 'for 1 occurrence' -- the one-off date is today, so it is Due. The menu lists Post transaction, Post transaction today, Complete and Delete, and no Skip or Restart. Open the actions menu on a schedule whose recurring date is indefinite; Skip next scheduled date is there. Both come from the single predicate at SchedulesTable.tsx:178, which is what this criterion pins down.",
+        "id": "AC-1",
+        "source": "IAC-1",
+        "verify": "browser"
+      },
+      {
+        "check": "Double-clicking a row in the schedules list opens exactly one edit modal, and a single Cancel returns to the schedules list with no modal left behind.",
+        "how_to_verify": "On the Schedules page, double-click a schedule row. One Schedule details modal appears, not two stacked copies. Press Cancel once. The modal is gone and the list is interactive. Before the change the two clicks each dispatched pushModal, so two modals mounted and Cancel only popped the top one, leaving the second underneath.",
+        "id": "AC-2",
+        "source": "IAC-2",
+        "verify": "browser"
+      },
+      {
+        "check": "Saving a schedule with a blank name and then reopening it for editing emits neither of React's input-control console warnings ('value prop on an input should not be null' and 'A component is changing an uncontrolled input to be controlled').",
+        "how_to_verify": "On the Schedules page, add a schedule and clear the Name field, then save it. Click the saved row to reopen it for editing. With the browser console open, no warning about a null value prop or an uncontrolled input appears. This is the hand procedure attempt 1's AC-3 already described, and it is stated as a browser criterion because QA's Playwright cases are required to keep console capture on and to fail a case that passes while throwing console errors (.sdlc/agents/qa.md:150-152), so QA observes the console itself rather than taking the assertion on trust from a spec. The code under test is the `value={fields.name || ''}` guard at ScheduleEditForm.tsx:134, which is what makes the null name from useScheduleEdit.ts:119 safe.",
+        "id": "AC-3",
+        "source": "IAC-3",
+        "verify": "browser"
+      }
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Make pushModal dedupe by modal name, or add a replaceModal-style guard inside the reducer.",
+        "rejected_because": "It changes shared behaviour for all 231 call sites under packages/desktop-client/src, several of which legitimately stack modals (a rules modal opened from a schedule modal, for instance), and nothing in this ticket asks for it. The one-line call-site change fixes the reported bug with a precedent already in the codebase."
+      },
+      {
+        "approach": "Debounce or guard the row's onClick so a second click within a threshold is ignored.",
+        "rejected_because": "It papers over the symptom with a timing heuristic that has to be tuned, still fires a spurious dispatch, and leaves any other double-dispatch path (keyboard Enter plus click, a fast second row) unfixed. replaceModal is deterministic."
+      },
+      {
+        "approach": "Set verify.e2e in .sdlc/config.yml so the schedules spec becomes a CI-proven acceptance criterion.",
+        "rejected_because": ".sdlc/config.yml is a forbidden path, and the reviewer's first objection said so explicitly. AC-3 is re-stated as a browser procedure instead, and the residual risk that the e2e suite is ungated is recorded as a fact about the repository rather than fixed here."
+      },
+      {
+        "approach": "Type the occurrence count into #end_occurrences in the page model instead of asserting the default.",
+        "rejected_because": "The field is uncontrolled, so filling it and then asserting it reproduces exactly the tautology the reviewer rejected in AC-4 -- the test would be asserting a value it wrote. Asserting the app's own default of 1 actually exercises unparseConfig's validInterval round-trip."
+      },
+      {
+        "approach": "Scope the picker testid by adding one to the ScheduleEditForm wrapper rather than the shared RecurringSchedulePicker trigger.",
+        "rejected_because": "The trigger is what the test needs to assert on -- the rendered recurring description -- and duplicating the attribute on a wrapper would force the test to walk up a level to read the trigger's text anyway. One attribute on the trigger, scoped at the locator, is smaller."
+      }
+    ],
+    "approach": "Five edits, no new product behaviour beyond one line. (1) Give the RecurringSchedulePicker trigger a data-testid=\"recurrence-description\" so the e2e page model can assert on the recurring description by testid instead of by text, which is how the 'for 1 occurrence' singular path in packages/desktop-client/src/util/schedule.ts:59 gets covered. Note this component has two consumers, ScheduleEditForm.tsx:259 and util/GenericInput.tsx:398, so the new locator must be scoped to the schedule-edit-modal root rather than the page. (2) Add ScheduleEditModal.setRecurrenceEndAfterOccurrences() to packages/desktop-client/e2e/page-models/schedule-edit-modal.ts: it clicks the picker trigger, clicks the #repeat_end_dropdown Select, clicks the 'for' option in the open menu, then asserts #end_occurrences already reads '1' rather than typing into it -- the Input at RecurringSchedulePicker.tsx:454 is uncontrolled (defaultValue={config.endOccurrences || 1}) and useScheduleEdit.ts:201 seeds endOccurrences: 1, so the assertion is checking the app's own default. (3) Rename the three nth-prefixed page-model methods in packages/desktop-client/e2e/page-models/schedules-page.ts to take a row Locator instead of a number, scope the menu locator with .last() so a left-over menu from an earlier assertion cannot make expect(menu).toBeVisible() throw on a multi-match, and add editSchedule(row) which dblclicks the row's payee cell and returns a ScheduleEditModal scoped to schedule-edit-modal. (4) In packages/desktop-client/e2e/schedules.test.ts: add an exhausted monthly (count 1, start today) fixture with no schedule name, assert its actions menu carries no Skip entry while a never-ending monthly still does, drive the exhausted schedule's edit path with setRecurrenceEndAfterOccurrences and assert the trigger shows the singular 'occurrence' description, add the double-click case, and delete the REACT_INPUT_WARNING_PROBES self-test together with its split loop and page.evaluate probe block, narrowing the surviving console guard to React's two input warnings. The same no-name fixture serves the nullable-name edit path, because useScheduleEdit.ts:119 sets name to schedule.name ?? null on the edit path and the add path at :266 seeds null anyway. (5) In packages/desktop-client/src/components/schedules/index.tsx:31, dispatch replaceModal instead of pushModal for the row-click edit, matching how Sidebar.tsx:31 and AccountsPage.tsx:565 already open an edit modal from a list. replaceModal flattens modalStack to [modal], so a second click replaces rather than stacks. The row-click path is the only one that needs this: ScheduleLink.tsx:145 passes its own onSelect that closes its own modal, and onAdd (index.tsx:38) legitimately pushes on top of nothing. The exhausted-recurrence fix needs no product change at all -- SchedulesTable.tsx:178 already calls the correct predicate; the finding was that nothing tested it.",
+    "assumptions": [
+      "The demo/test budget used by the e2e suite is created per-test with its own schedules, so adding the exhausted fixture does not perturb schedules in other specs.",
+      "The recurrence seeded for the exhausted fixture (monthly, start today, ends after 1 occurrence) produces exactly one upcoming date, which is what makes scheduleIsRecurring true and getNextDateAfter null for that row.",
+      "The row-actions menu item labels QA reported -- 'Skip next scheduled date', 'Restart' -- are what SchedulesTable renders; the page model matches them with nthScheduleMenuItemNames, so if the copy differs the fix is the fixture assertion, not the product."
+    ],
+    "confidence": 76,
+    "confidence_rationale": "Every file, line number and selector cited below was read in this checkout: the reducer actions in packages/desktop-client/src/modals/modalsSlice.ts, the scheduleIsSkippable/getNextDateAfter logic in packages/loot-core/src/shared/schedules.ts, the picker markup in RecurringSchedulePicker.tsx, and both page models. Confidence is held at 76 rather than higher because no Playwright browser is installed here (~/.cache/ms-playwright does not exist), so not one of the cases in tests[] was executed; the selectors are source-derived, and the reviewer is right that the e2e directory is outside both the vitest include and the empty verify.e2e config key.",
+    "debate_summary": "Attempt 1 was rejected on exactly two points, and neither was about the technical approach. This revision changes nothing the reviewer accepted -- the same five files, the same exhausted-recurrence fixture, the same testid, the same page-model helper, the same one-line pushModal-to-replaceModal swap -- and changes only the two things it objected to. Objection 1 asked that AC-3 be restated as verify:\"browser\", since its own how_to_verify was already a hand procedure, and that the automated guard move out of acceptance into tests[] as an ungated local run. Done: AC-3 is now verify:\"browser\", its how_to_verify is the hand procedure, and the four console-guard cases sit in tests[] with a qa_script and a risk entry recording that the e2e directory runs in no CI job. Objection 2 asked that AC-4 be dropped and its requirement carried as a note on the files[] edit for schedules.test.ts. Done: AC-4 is gone, and the fourth files[] entry states the guard narrowing, the removal of REACT_INPUT_WARNING_PROBES and of both the split loop and the page.evaluate probe block, in full. One v1 factual error is corrected rather than carried forward: RecurringSchedulePicker has two consumers, not one, so the new locator is scoped to the schedule-edit-modal root. Nothing from the issue body, its labels or any non-bot comment was treated as a decision -- the issue's ## Decisions section records nothing, so the ticket itself plus this brief's rejection are the whole input.",
+    "evidence": [
+      "packages/loot-core/src/shared/schedules.ts:516 -- scheduleIsSkippable returns scheduleIsRecurring(dateCond) && getNextDateAfter(dateCond, nextDate) != null, so an exhausted recurrence is recurring but not skippable; :393-411 getNextDateAfter with MAX_ADVANCE_ATTEMPTS = 7 at :390, and :285-288 case 'after_n_occurrences' sets base.count = config.endOccurrences.",
+      "packages/desktop-client/src/components/schedules/SchedulesTable.tsx:178 -- const canSkip = scheduleIsSkippable(dateCond, schedule.next_date) is the sole gate on the Skip item; the product already behaves correctly, so AC-1 needs only a test.",
+      "packages/desktop-client/src/modals/modalsSlice.ts:755-772 -- pushModal appends to modalStack unconditionally except for the keyboard-shortcuts case; replaceModal sets modalStack = [modal].",
+      "packages/desktop-client/src/components/schedules/index.tsx:28-35 and :120 -- onEdit dispatches pushModal and is wired to the table's onSelect; :38, :42, :46 keep pushModal for onAdd and the two discovery modals.",
+      "packages/desktop-client/src/components/Modals.tsx:268-269 -- case 'schedule-edit' renders <ScheduleEditModal key={`${name}-${idx}`} />, so two stacked entries get distinct keys and both mount; useModalState.isActive compares only lastModal.name, and onClose dispatches popModal, which is why one Cancel leaves the second modal open.",
+      "grep -c 'pushModal' over packages/desktop-client/src returns matches on 231 lines, which is why the reducer is not the place to fix a one-page double-click.",
+      "packages/desktop-client/src/hooks/useScheduleEdit.ts:119 -- name: schedule.name ?? null on the set-schedule (edit) path, :266 -- name: null on the add path, and :190-203 -- the set-repeats seed {endMode: 'never', endOccurrences: 1, ...}; together these make the null-name edit path and the uncontrolled defaultValue both reachable.",
+      "packages/desktop-client/src/components/schedules/ScheduleEditForm.tsx:134 -- value={fields.name || ''} is the guard AC-3 protects.",
+      "packages/desktop-client/src/components/select/RecurringSchedulePicker.tsx:442 id=\"repeat_end_dropdown\", :454 id=\"end_occurrences\" with defaultValue={config.endOccurrences || 1} and no value prop (uncontrolled), :461 the endOccurrences === '1' singular/plural branch, :576-582 the Apply button calling onSave(unparseConfig(config)), :627-633 the trigger Button. The component has two consumers -- ScheduleEditForm.tsx:259 and util/GenericInput.tsx:398 -- so the new testid locator must be scoped to the schedule-edit-modal root; attempt 1 claimed a single consumer and was wrong.",
+      "packages/desktop-client/src/util/schedule.ts:49-60 -- getRecurringDescription with the if (config.endOccurrences === 1) singular branch, reachable only after Apply round-trips the uncontrolled field through unparseConfig.",
+      "packages/desktop-client/e2e/schedules.test.ts:33 REACT_INPUT_WARNING_PROBES, :459 the split loop over 'reactInputWarning.source.split(\"|\")', and :473-481 the page.evaluate block that pushes those literals into the page -- the self-test reads back strings the test itself wrote.",
+      "packages/desktop-client/e2e/page-models/schedules-page.ts:72/84/94/108 the four nth-prefixed methods, :114-115 const menu = this.page.getByRole('menu'); await expect(menu).toBeVisible(); -- a strict-mode visibility assertion that throws on a multi-match, and :20 schedulesTableRow = this.page.getByTestId('table').getByTestId('row').",
+      "packages/desktop-client/e2e/page-models/schedule-edit-modal.ts:47 -- fill() skips scheduleName when the field is absent, so the nameless fixture needs no page-model change to be created.",
+      "packages/desktop-client/src/components/table.tsx:97 and :277 put data-testid={name} on Field, :303 data-testid=\"row\" on the row, :1174 data-testid=\"table\" on the table; packages/desktop-client/src/components/common/Modal.tsx:82 data-testid={`${name}-modal`} and :35 MODAL_Z_INDEX = 3000.",
+      ".sdlc/config.yml -- verify.e2e: \"\" and verify.required_checks: [], with verify.unit: \"yarn test\"; packages/desktop-client/vite.config.mts:405-428 -- test.include ['src/**/*.{test,spec}.?(c|m)[jt]s?(x)']. Both confirm that packages/desktop-client/e2e is run by nobody in CI.",
+      ".sdlc/agents/qa.md:150-152 -- QA keeps console and network capture on for every case and fails a case that passes while throwing console errors; :144 -- QA writes its own Playwright specs under qa-run/tests/. This is what makes AC-3 observable in a browser by QA itself, and is why it is stated as verify:\"browser\" rather than as a CI-proven assertion on a spec that no CI job runs.",
+      "Attempt 1's plan is quoted in plan/brief.md under '## Plan review: rejected' together with the two objections; this revision answers both -- AC-3 is re-stated as verify:\"browser\" and AC-4 is dropped, its requirement carried as prose on the files[] entry for packages/desktop-client/e2e/schedules.test.ts."
+    ],
+    "files": [
+      {
+        "action": "edit",
+        "change": "Add data-testid=\"recurrence-description\" to the trigger Button at :627-633. One attribute, no behaviour change. This is what lets the e2e page model read the picker's rendered description (the 'for 1 occurrence' singular produced by getRecurringDescription in packages/desktop-client/src/util/schedule.ts:49-60) without matching on user-facing copy. The component has two consumers -- ScheduleEditForm.tsx:259 and util/GenericInput.tsx:398 -- so any locator for it must be scoped to a root; the schedules page model scopes to the schedule-edit-modal.",
+        "path": "packages/desktop-client/src/components/select/RecurringSchedulePicker.tsx",
+        "why": "The singular/plural branch at schedule.ts:59 is unreachable from any existing test because the trigger is only identifiable by its label text. A testid is the smallest change that makes it observable, and it survives copy changes."
+      },
+      {
+        "action": "edit",
+        "change": "Add async setRecurrenceEndAfterOccurrences(): Promise<void>. It clicks this.locator.getByTestId('recurrence-description'), then the #repeat_end_dropdown Select (RecurringSchedulePicker.tsx:442), then the option button whose accessible name is exactly 'for' inside the open menu. It then asserts #end_occurrences (RecurringSchedulePicker.tsx:454) reads '1' and returns -- it does not type into the field. The field is uncontrolled (defaultValue={config.endOccurrences || 1}) and useScheduleEdit.ts:201 seeds endOccurrences: 1 on the set-repeats path, so reading '1' is asserting the app's own default rather than inputting it. Scope the option lookup to the open menu and use an exact accessible-name match: 'for' is a substring of nothing else in the popover, but Playwright's getByRole name matching is substring-by-default, and 'Apply'/'indefinitely'/'until' are the only other options present.",
+        "path": "packages/desktop-client/e2e/page-models/schedule-edit-modal.ts",
+        "why": "The existing typeAndSelectOption helper cannot express this: the end-occurrences Select has no Field wrapper, so there is no data-testid to target, and the count Input is uncontrolled, so fill() would be asserting a value the test itself just wrote -- the same tautology the reviewer rejected in AC-4."
+      },
+      {
+        "action": "edit",
+        "change": "Rename nthScheduleMenuHasItem(row, name), nthScheduleMenuItemNames(row) and the private _openNthScheduleMenu(row) to scheduleMenuHasItem(row, name), scheduleMenuItemNames(row) and openScheduleMenu(row), changing their parameter from `number | Locator` to `Locator` and dropping the indexToRow arithmetic. Update the three call sites inside this file (:73, :85, :94) accordingly. In openScheduleMenu, change the menu locator at :114 to this.page.getByRole('menu').last(). Add async editSchedule(row: Locator): Promise<ScheduleEditModal>, which dblclicks row.getByTestId('payee') and returns new ScheduleEditModal(this.page.getByTestId('schedule-edit-modal')).",
+        "path": "packages/desktop-client/e2e/page-models/schedules-page.ts",
+        "why": "The nth-prefixed names take a row index that is already available as a Locator, and the ticket names them as misleading. expect(menu).toBeVisible() at :115 is a strict-mode assertion that throws on a multi-match, so a menu left over from a previous assertion turns a real failure into a confusing locator error; .last() picks the menu this helper just opened. editSchedule needs its own method because the double-click assertion is about how many modals mount, which the callers must count themselves."
+      },
+      {
+        "action": "edit",
+        "change": "Four changes. (a) Add an exhausted-recurrence fixture to the existing test schedule: a monthly schedule starting today and ending after 1 occurrence, which yields exactly one upcoming date and therefore an exhausted recurrence, with no name field set so it also exercises the nullable-name edit path. (b) Extend the row-actions test to assert the exhausted row's menu offers no 'Skip next scheduled date' and no 'Restart' while a never-ending monthly row still offers Skip, using the new scheduleMenuHasItem/scheduleMenuItemNames names. (c) Extend the recurring-date test: dblclick the exhausted row to open it, click Repeats, call setRecurrenceEndAfterOccurrences(), Apply, and assert the trigger now reads the singular 'occurrence' description, then cancel. Add a new test that dblclicks a row and asserts exactly one schedule-edit-modal is present and that a single Cancel returns to the list. (d) Delete the console self-test in full: the REACT_INPUT_WARNING_PROBES array at :33, the split/assert loop at :459 that re-derives those literals, and the page.evaluate block at :473-481 that injects them into the page. Narrow the surviving guard -- reactInputWarning, CONSOLE_SETTLE_MS, watchReactInputWarnings, the unconditional console drain and the final expect(messages).toEqual([]) -- to watch only React's two input warnings ('value prop on an input should not be null' and 'A component is changing an uncontrolled input to be controlled'), with a comment saying the old list also matched the test's own probe strings and therefore could not fail on app behaviour. Keep that guard attached to every test that opens the schedule edit modal, including the new ones.",
+        "path": "packages/desktop-client/e2e/schedules.test.ts",
+        "why": "The probes are literals the test writes into the page and reads back, so that case asserts nothing about the app and gives false confidence that console capture works. The surviving drain is the guard with real value: it is what proves ScheduleEditForm.tsx:134's `value={fields.name || ''}` keeps a nameless schedule from tripping React's null-value warning, and narrowing it to exactly the two warnings the app can plausibly produce removes the self-inflicted matches."
+      },
+      {
+        "action": "edit",
+        "change": "At :31, inside the onEdit callback, dispatch replaceModal({ modal: { name: 'schedule-edit', options: { id } } }) instead of pushModal(...), and change the import at :16 to pull replaceModal. onAdd at :38 and the schedules-discover / schedules-upcoming-length dispatches at :42 and :46 keep pushModal, since those push onto a list page and are not double-clickable.",
+        "path": "packages/desktop-client/src/components/schedules/index.tsx",
+        "why": "pushModal appends unconditionally except for the keyboard-shortcuts special case, so two row clicks stack two identical 'schedule-edit' entries; Modals.tsx:268-269 keys them `${name}-${idx}` so both mount, and useModalState's onClose dispatches popModal so one Cancel removes only the top. replaceModal flattens modalStack to [modal] and fixes it at the call site. This matches the existing precedent for opening an edit modal from a list (Sidebar.tsx:31, AccountsPage.tsx:565) and leaves the reducer alone -- pushModal is dispatched on 231 lines under packages/desktop-client/src and its append semantics are correct for genuinely nested flows."
+      }
+    ],
+    "issue": 74,
+    "kind": "chore",
+    "mode": "committed",
+    "out_of_scope": [
+      "Changing pushModal/replaceModal themselves. The reducer's append semantics are right for nested flows and pushModal has 231 call sites under packages/desktop-client/src; the double-click is a Schedules call-site problem.",
+      "Changing .sdlc/config.yml or any other forbidden path. verify.e2e being empty is the reason AC-3 is a browser criterion; that is a fact to work within, not a setting to edit.",
+      "The Exhausted monthly Skip/Restart behaviour itself. scheduleIsSkippable already implements it correctly at schedules.ts:516 and SchedulesTable.tsx:178 already calls it -- the gap is that nothing tested it.",
+      "ScheduleLink's onSelect handler at ScheduleLink.tsx:145, which closes its own modal instead of routing to onEdit. It is a different call site with different semantics and is left alone.",
+      "VRT snapshots. Adding a fixture to the demo schedule changes the Schedules table, so any committed Schedules VRT baseline may need regenerating; that is a mechanical follow-up, not a design decision, and no baseline files are touched by this change."
+    ],
+    "qa_script": [
+      "yarn start",
+      "yarn workspace @actual-app/web run playwright test e2e/schedules.test.ts --browser=chromium",
+      "For AC-3, drive the blank-name save and reopen in a browser with the console visible; the console is the evidence, not the spec's assertion."
+    ],
+    "reproduced": false,
+    "residual_risks": [
+      "The e2e directory is outside both vitest's include and any configured verify.e2e, so the four cases in tests[] run only when a human runs them locally. Acceptance is carried by the three browser criteria instead.",
+      "No case in tests[] has been executed -- no Playwright browser is installed in this checkout -- so the selectors are source-derived. The assertions deliberately avoid user-facing copy wherever a testid or accessible name is available, which is the main mitigation, but first-run selector adjustments are plausible.",
+      "replaceModal on the row-click path means a schedule row click now clears any previously open modal. That is the desired behaviour for the double-click and matches existing precedent, but it is a change to a path no prior test covered."
+    ],
+    "risks": [
+      "The e2e suite is not wired into CI: .sdlc/config.yml has verify.e2e \"\" and verify.required_checks [], and vite.config.mts:405-428 restricts vitest to src/**, so packages/desktop-client/e2e is excluded from yarn test. The four cases in tests[] are therefore an ungated local run, which is why every acceptance criterion above is stated as a browser procedure QA performs itself rather than as a CI-proven assertion. This is a property of the repository's verification config, not of this change, and it is not something a work order can set.",
+      "The e2e cases have not been executed. No Playwright browser is installed in this checkout (~/.cache/ms-playwright is absent), so every selector cited is read out of the source rather than confirmed against a live DOM. The testids used (table, row, payee, schedule-edit-modal) all exist -- table.tsx:97/277/303/1174 and Modal.tsx:82 -- and no assertion in the plan depends on user-facing copy, but the implementer should expect to adjust a selector on first run.",
+      "Changing onEdit from pushModal to replaceModal drops any modal that was already open when a schedule row is clicked. That is the intent, and it matches Sidebar.tsx:31 and AccountsPage.tsx:565, but it is a behaviour change on a path the suite has not previously exercised."
+    ],
+    "root_cause": "Two independent causes. (1) Coverage gap: no e2e fixture creates a schedule whose recurrence is exhausted, so the scheduleIsRecurring-vs-scheduleIsSkippable divergence at schedules.ts:516 is never observed, and no test drives the row-click edit path for a schedule whose name is null, so the ScheduleEditForm.tsx:134 `value={fields.name || ''}` guard that useScheduleEdit.ts:119 makes necessary is never exercised. (2) Product defect: onEdit at packages/desktop-client/src/components/schedules/index.tsx:31 uses pushModal, whose only special case is the keyboard-shortcuts modal, so two rapid row clicks -- or any double-click -- append two identical 'schedule-edit' entries to modalStack; Modals.tsx:268-269 gives them distinct keys, so both render, and useModalState.onClose dispatches popModal, so a single Cancel removes only the top one. The reducer's append is deliberate for genuinely nested flows and is dispatched on 231 lines under packages/desktop-client/src, so the defect belongs at the Schedules call site, not in the reducer.",
+    "tests": [
+      {
+        "action": "edit",
+        "cases": [
+          "row actions hide Skip and Restart on the exhausted monthly fixture while a never-ending monthly row still offers Skip",
+          "opening the exhausted schedule and choosing 'for' N occurrences leaves end_occurrences at 1 and the trigger shows the singular 'occurrence' description",
+          "double-clicking a schedule row leaves exactly one schedule-edit-modal, and a single Cancel returns to the list",
+          "no React input-control console warning is emitted while opening a schedule with no name for editing (surviving drain, narrowed to the two input warnings)"
+        ],
+        "path": "packages/desktop-client/e2e/schedules.test.ts"
+      }
+    ],
+    "understanding": "QA reviewed the schedules e2e suite on attempt 1 and filed three findings, all of which survive unchanged: (1) the exhausted-recurrence skip case does not exist, and SchedulesTable.tsx:178 already gates the Skip menu item on scheduleIsSkippable(dateCond, schedule.next_date), so the fix is test coverage, not product code; (2) a schedule row is a single <tr data-testid=\"row\"> whose onClick calls onSelect(schedule.id), and Schedules/index.tsx:28-35 dispatches pushModal for that call, so a double-click dispatches twice, appends two identical 'schedule-edit' entries to modalStack, and because Modals.tsx keys entries by `${name}-${idx}` both mount while useModalState.isActive only compares lastModal.name -- the user gets two stacked modals and one Cancel only pops the top one; (3) the console-warning self-test is a tautology -- REACT_INPUT_WARNING_PROBES (schedules.test.ts:33) are literals the test itself injects into the page at :473-481 and then reads back at :459, so it asserts that a string it wrote is the string it wrote and proves nothing about the app; the real guard is the watchReactInputWarnings drain in the tests that open the schedule edit modal. Attempt 1 answered none of the coverage this ticket asks for and was rejected on two counts, both about verifiability rather than approach: AC-3 was marked verify:\"test\" while naming only an e2e case that no CI job runs (verify.e2e is \"\" and verify.required_checks is [], and vite.config.mts:405-428 limits vitest to src/**, so packages/desktop-client/e2e never runs in CI), and AC-4 was marked verify:\"test\" while naming no test case at all. This revision drops AC-4 entirely, moves the guard-narrowing requirement onto the files[] entry for schedules.test.ts as prose, and re-states AC-3 as verify:\"browser\". The technical approach is otherwise unchanged from the attempt the reviewer did not object to.",
+    "unknowns": [
+      "Whether the double-click reproduces identically outside a Playwright dblclick. QA reported it as always reproducible by hand; the modal overlay mounts on the first click at z-index 3000 (Modal.tsx:35), so the second click's exact hit path is the one thing this plan could not exercise without a browser.",
+      "Whether the e2e suite currently passes on main in this repository state. No Playwright browser is installed here, so the baseline is unverified; the implementer should run the schedules spec before and after rather than assume a green starting point."
+    ],
+    "version": 2
+  }
 }
