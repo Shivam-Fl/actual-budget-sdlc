@@ -495,6 +495,21 @@
       ],
       "run_url": "https://github.com/Shivam-Fl/actual-budget-sdlc/actions/runs/37177947862",
       "prior_signatures": []
+    },
+    "triage": {
+      "verdict": "repair",
+      "diagnosis": "The change is complete and correct; what fails is a TypeScript annotation on one test helper, in a test file, and it is the only thing red. @actual-app/core typecheck reports 15 errors, all in packages/loot-core/src/server/schedules/app.test.ts, in code the commit added — not in the production code the issue asked for, and not in the plan. (1) The helper getRecordedSkips at app.test.ts:1706-1712 is declared `Promise<string[] | null>` but returns `nd.skipped_occurrences`, the raw column typed `string | null` on DbScheduleNextDate (db/types/index.ts:179). A nullable TEXT column holding a JSON array reads as a string, not an array — string[] is only what the AQL view exposes after f('json') converts it. That one wrong annotation is TS2322 at :1711 plus 11 more TS2345 errors, because every `JSON.parse((await getRecordedSkips(id))!)` call site inherits the lie and is told it passes an array where JSON.parse wants a string. (2) skipThenSetNextDate at :1861-1863 types its parameter as `Parameters<typeof setNextDate>[0]`, which requires `id`; the helper exists precisely to supply the id, so all three call shapes at :1880, :1888 and :1898 pass `{ advance: true }`, `{ reset: true }` and `{}` without it and get TS2741. The fix is two annotations and no behaviour change: getRecordedSkips returns `Promise<string | null>`, and the parameter becomes `Omit<Parameters<typeof setNextDate>[0], 'id'>`. Nothing environmental is involved — typecheck is deterministic, prior_signatures is empty, and the unit-test phase in the same run was green across every package (Test Files 51 passed). The work survived intact: branch sdlc/issue-43 is pushed and PR #71 is open at this head with the migration, the server handlers, the forecast filter, all five client handlers and the release note in place.",
+      "evidence": "failed-run.log:482 \"@actual-app/core typecheck failed, took 1.21s\"; all 15 errors are in src/server/schedules/app.test.ts (lines 1711, 1777, 1786, 1799, 1808, 1819, 1835, 1846, 1880, 1884, 1888, 1891, 1898, 1901, 1915) and failed-run.log:2394 \"summary=**typescript** — 15 errors\". Reproduced at the failing commit: worktree of 81de806 + `packages/loot-core && ../../node_modules/.bin/tsgo -b` printed the identical 15 errors; after changing getRecordedSkips's declared return from `Promise<string[] | null>` to `Promise<string | null>` (app.test.ts:1706) and skipThenSetNextDate's parameter to `Omit<Parameters<typeof setNextDate>[0], 'id'>` (app.test.ts:1862), `tsgo -b --force` exited 0 and `ENV=node npx vitest --run src/server/schedules/app.test.ts` passed 61/61. Root of the string/string[] mismatch: db/types/index.ts:179 declares `skipped_occurrences: string | null` on DbScheduleNextDate (raw column, read by setNextDate's unconverted SQL) while :363 declares `string[] | null` on DbViewSchedule (post-convertOutputType). failed-run.log:805 shows the same file green at runtime (\"61 tests\"), confirming the defect is types-only."
     }
-  }
+  },
+  "triage_history": [
+    {
+      "at": "2026-10-04T04:55:30.940Z",
+      "stage": "ci",
+      "verdict": "repair",
+      "confidence": 97,
+      "diagnosis": "The change is complete and correct; what fails is a TypeScript annotation on one test helper, in a test file, and it is the only thing red. @actual-app/core typecheck reports 15 errors, all in packages/loot-core/src/server/schedules/app.test.ts, in code the commit added — not in the production code the issue asked for, and not in the plan. (1) The helper getRecordedSkips at app.test.ts:1706-1712 is declared `Promise<string[] | null>` but returns `nd.skipped_occurrences`, the raw column typed `st",
+      "run": "37177957220"
+    }
+  ]
 }
