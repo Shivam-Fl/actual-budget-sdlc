@@ -23,8 +23,9 @@ beforeAll(async () => {
 // The afterEach below calls vi.restoreAllMocks(), which is file-scoped rather
 // than spy-scoped, so it takes down the global.fetch spy this file's beforeAll
 // installed along with the console spies. Nothing breaks today, because init()
-// has already run and sql.js caches the compiled wasm — but from the second
-// test on, global.fetch is the real jsdom fetch again. patchFetchForSqlJS is a
+// has already run and sql.js caches the compiled wasm — but before the
+// beforeEach below re-armed it, from the second test on, global.fetch was the
+// real jsdom fetch again. patchFetchForSqlJS is a
 // vi.spyOn(...).mockImplementation(...) with no restore of its own, so calling
 // it once per test is idempotent and the blanket restore can no longer outrun
 // it.
@@ -451,6 +452,10 @@ describe('Web sqlite', () => {
   // `vitest --run --config vitest.web.config.ts -t 'keeps the sql.js wasm fetch
   // patched'` still reports 1 passed | 15 skipped). This test therefore has
   // power only in a full-file run.
-  it('keeps the sql.js wasm fetch patched for each test, not just the first', () =>
-    expect(vi.isMockFunction(globalThis.fetch)).toBe(true));
+  it('keeps the sql.js wasm fetch patched for each test, not just the first', async () => {
+    expect(vi.isMockFunction(globalThis.fetch)).toBe(true);
+
+    const res = await globalThis.fetch(`${baseURL}sql-wasm.wasm`);
+    expect(res.status).toBe(200);
+  });
 });
