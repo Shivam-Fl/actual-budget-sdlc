@@ -88,6 +88,321 @@
   "stopped_at": null,
   "dispatched_stage": "plan",
   "validated_from": "plan",
-  "validated_at": "2026-10-04T01:05:58.450Z",
-  "validated_ac_changes": []
+  "validated_at": "2026-10-04T02:39:39.274Z",
+  "validated_ac_changes": [],
+  "validated_work_order": {
+    "issue": 43,
+    "version": 2,
+    "mode": "proposal",
+    "kind": "bug",
+    "reproduced": true,
+    "confidence": 82,
+    "confidence_rationale": "I re-verified the load-bearing claims against the code rather than taking them on trust, and I independently reproduced the defect: I wrote the two repro cases myself as a scratch file against unmodified production code and ran them (cd packages/loot-core && ENV=node npx vitest --run ...). Both failed with exactly the values the proposal reported — skipping occurrence[2] moved next_date from 2017-01-02 to 2017-01-09, and posting today with date=occurrence[2] stamped schedule_occurrence 2017-01-02 instead of 2017-01-16. I also ran the baseline the change starts from: src/server/schedules/app.test.ts, 48 tests green. Every structural claim I checked held — the two dropped `date`s in Account.tsx's switch, `occurrence = today ? schedule.next_date : ...` at app.ts:570 with its `if (!today)` guard, skipNextDate as a bare `setNextDate({id, advance: true})`, `reset` being only a column-selection branch with the sole arithmetic switch at app.ts:239-241, the bare `setNextDate({id})` at :796 taking that same path, all four mobile onSkip handlers hand-parsing while their onPost siblings already send `date`, the single unpaidDates filter, and the two today-semantics tests at :1387 and :1512. I confirmed the v1 forecast objection is a real hole: normalizeSchedule does rebuild the record field by field, getFutureOccurrenceDates seeds from next_date and pushes every occurrence, and buildFutureScheduleOccurrences filters only on isScheduleOccurrencePosted. I also swept further than the proposal did and resolved one of its four unknowns favorably — schedules_next_date has exactly two writers (setNextDate's db.update at :254 and one insertWithUUID at :344), so no caller reconstructs the row wholesale and the new column cannot be silently dropped. What holds this at 82: the fix is entirely unwritten, so the bounded loop in setNextDate and the new f('json') plus view-override plumbing are design-until-executed, and the loop nests inside getNextDateAfter's own MAX_ADVANCE_ATTEMPTS loop, so the worst case is multiplicative rather than 7 steps. Two things remain untraced: how packages/crdt merges concurrent writes to a new column on schedules_next_date, and whether any VRT snapshot covers register Upcoming rows. Neither fails silently in the dangerous direction.",
+    "understanding": "Two menu actions on an Upcoming preview row name one occurrence and act on another, and I have now watched both happen rather than infer it. onScheduleAction (Account.tsx:1558-1594) parses every preview id into {scheduleId, date} via parsePreviewId and then drops date on exactly the post-transaction-today and skip branches. Server-side, postTransactionForSchedule (app.ts:570) computes `const occurrence = today ? schedule.next_date : (date ?? schedule.next_date)` with an `if (!today)` duplicate guard, so today discharges the schedule's head whatever the caller named, and skipNextDate (app.ts:466-467) is `setNextDate({ id, advance: true })`, which advances the head one step past whatever row was clicked. My own run against unmodified code: skipping occurrence[2] moved next_date from 2017-01-02 to 2017-01-09, taking two occurrences the user was still owed with it; posting today with date=occurrence[2] stamped schedule_occurrence 2017-01-02 rather than 2017-01-16. The two branches are one defect in one switch but not the same amount of work. Posting already has a per-occurrence record — the schedule_occurrence stamp, which computeSchedulePreviewTransactions already filters on — so threading date is sufficient. Skipping writes no transaction, so nothing anywhere records that the chosen occurrence will not happen: next_date is a single anchor and every occurrence before it has already fallen off. Threading the date is necessary but not sufficient for skip; the handler needs somewhere to write the occurrence down, and every reader of occurrence dates has to learn to honour it — including the forecast, which is the read site v1 missed and would otherwise have traded a wrong register for a wrong balance projection.",
+    "root_cause": "onScheduleAction discards the occurrence it just parsed on the post-transaction-today and skip branches, and both server handlers predate the occurrence being part of the request: postTransactionForSchedule hard-codes schedule.next_date as the discharged occurrence whenever `today` is set, and skipNextDate has no occurrence parameter at all. The transport already carries it — the post-transaction branch and all four mobile onPost handlers already send date. The handlers do not read it.",
+    "approach": "Thread the parsed occurrence date through both handlers, and give the skip half a record the rest of the app can read.\n\nPosting: post-transaction-today sends {id, date, today: true}; `const occurrence = date ?? schedule.next_date` for both paths, with `today` still deciding the transaction's own date and no longer the discharged occurrence. Callers that name no occurrence (the Schedules page sends {id, today: true}; advanceSchedulesService sends {id}) resolve date to undefined and are unchanged. The duplicate guard widens to `if (!today || date != null)`.\n\nSkipping: a nullable `skipped_occurrences` TEXT column on schedules_next_date (additive migration, id a current timestamp sorting after 1790969762045), exposed as `f('json')` on the schedules schema and `_nd.skipped_occurrences` in the v_schedules view — both required, because views.ts:26-29 spreads the table's public fields then the view's overrides, so a schema entry alone would emit `_.skipped_occurrences` against a column the schedules table does not have. skipNextDate({id, date}) keeps today's advance when date is absent or equals next_date (keeping IAC-3 true) and otherwise records the occurrence, deduped, sorted, entries at or before next_date dropped.\n\nThe skip-stepping loop wraps the newNextDate computation in setNextDate unconditionally — not into an advance or reset branch. `reset` is not an arithmetic branch; it only chooses which columns the db.update writes. The sole arithmetic switch is `advance ? getNextDateAfter(...) : getNextDate(...)` at app.ts:239-241, and the bare setNextDate({id}) at :796 takes that same path, so a loop written only into the advance branch would silently miss the path that could auto-post a skipped occurrence. Bound it with the existing MAX_ADVANCE_ATTEMPTS, never replacing the getNextDateAfter call. Consume and prune skipped entries in the same db.update.\n\nThe v1 omission, now corrected: computeSchedulePreviewTransactions filters the skip in its existing unpaidDates filter; forecast-schedules.ts gets the field on ScheduleDataBase/RawScheduleData and in the normalizeSchedule return, with buildFutureScheduleOccurrences filtering it beside the existing isScheduleOccurrencePosted call.",
+    "files": [
+      {
+        "path": "packages/loot-core/migrations/<current-timestamp>_add_skipped_occurrences_to_schedules.sql",
+        "action": "create",
+        "change": "New additive migration, copied from the shape of 1790969762045_add_schedule_occurrence_to_transactions.sql: BEGIN TRANSACTION; ALTER TABLE schedules_next_date ADD COLUMN skipped_occurrences TEXT DEFAULT NULL; COMMIT; — a JSON array of YYYY-MM-DD occurrence dates. The id must be a CURRENT timestamp taken when the file is written, sorting after 1790969762045. Do NOT copy a literal id from the work order: any fixed number is a guess at authoring time and a future-dated id sorts after migrations that land before it. Re-check `ls packages/loot-core/migrations | sort | tail` at write time.",
+        "why": "A skip writes no transaction, so schedule_occurrence cannot carry it. schedules_next_date already owns the schedule's mutable date state and already syncs (sync/index.ts:777 folds it into the `schedules` dataset), so a column here rides existing plumbing instead of adding a synced table. Verified against the README's allowed changes and findAdditiveViolations: a new column on an existing table violates only when NOT NULL without a DEFAULT, so TEXT DEFAULT NULL passes the post-cutoff additive rule enforced by additive-migrations.test.ts."
+      },
+      {
+        "path": "packages/loot-core/src/server/db/types/index.ts",
+        "action": "edit",
+        "change": "Add `skipped_occurrences: string | null` to DbScheduleNextDate and `skipped_occurrences: string[] | null` to DbViewSchedule.",
+        "why": "The row type is what the raw SELECT in setNextDate/skipNextDate reads back, and that raw SQL has not been through convertOutputType — hence TEXT there and a parsed array on the view type."
+      },
+      {
+        "path": "packages/loot-core/src/server/aql/schema/index.ts",
+        "action": "edit",
+        "change": "Add `skipped_occurrences: f('json')` to the `schedules` table schema (beside next_date: f('date')) and `skipped_occurrences: '_nd.skipped_occurrences'` to the v_schedules view's field overrides (beside the next_date CASE expression).",
+        "why": "Both halves are required and neither is optional. views.ts:26-29 builds internalFields as `{ ...publicFields, ...fieldMappings }` with the base table aliased `_` and schedules_next_date aliased `_nd`, so a schema entry without a view override emits `_.skipped_occurrences` against a column the schedules table does not have. next_date is the working precedent for exactly this pairing. schema-helpers.ts:58-82 confirms convertOutputType returns null for NULL and JSON.parses otherwise, so every read site uses `?? []`."
+      },
+      {
+        "path": "packages/loot-core/src/types/models/schedule.ts",
+        "action": "edit",
+        "change": "Add `skipped_occurrences?: string[] | null` to ScheduleEntity.",
+        "why": "Both the preview filter and the forecast read it off the schedule handed to them. Every schedules query is select('*') — app.ts:559/:620/:686, forecast-schedules.ts:78, useSchedules.ts:216 — so no query or hook changes are needed."
+      },
+      {
+        "path": "packages/loot-core/src/server/schedules/app.ts",
+        "action": "edit",
+        "change": "Three edits. (1) postTransactionForSchedule — `const occurrence = date ?? schedule.next_date` with no today branch; the transaction's own date stays `today ? currentDay() : (date ?? schedule.next_date)`; the duplicate guard becomes `if (!today || date != null)`; rewrite the comments at :565-569 and :583-584, which currently assert the opposite of what this change makes true. (2) skipNextDate ({id, date}) — no date, or date === next_date, keeps setNextDate({id, advance: true}); otherwise append the date to skipped_occurrences (dedupe, sort ascending, drop entries at or before next_date) without touching either next-date field. (3) setNextDate — read skipped_occurrences alongside next_date, wrap the newNextDate computation at :239-241 in a bounded loop that repeats getNextDateAfter while the candidate is a recorded skip, bounded by MAX_ADVANCE_ATTEMPTS and never replacing the getNextDateAfter call, and write the pruned surviving skips in the same db.update at :253. The loop is unconditional, covering the advance path, the reset path, and the bare setNextDate({ id }) call at :796.",
+        "why": "This is the server half of both branches, and the loop placement keeps the rest of the file correct: with next_date never landing on a skipped occurrence, getStatus, getHasTransactionsQuery and advanceSchedulesService cannot read a skipped occurrence as due and auto-post it. The bare call at :796 takes the same getNextDate path reset does, so a loop written only into an advance branch would miss it."
+      },
+      {
+        "path": "packages/loot-core/src/shared/schedules.ts",
+        "action": "edit",
+        "change": "In computeSchedulePreviewTransactions, drop dates present in `schedule.skipped_occurrences ?? []` inside the existing unpaidDates filter (:594-604), alongside the isScheduleOccurrencePosted check.",
+        "why": "It is the only place that decides which occurrences the register lists, and that filter is already the 'consumed, do not list' filter. The status === 'paid' shift and the stamp matching are untouched: status describes next_date only, and a skip never moves next_date, so the shift cannot consume a skipped head."
+      },
+      {
+        "path": "packages/loot-core/src/server/forecast/forecast-schedules.ts",
+        "action": "edit",
+        "change": "Add `skipped_occurrences: string[]` to ScheduleDataBase and RawScheduleData; include `skipped_occurrences: schedule.skipped_occurrences ?? []` in the object normalizeSchedule returns (:97-108); and in buildFutureScheduleOccurrences (:205-215) `continue` on a date present in schedule.skipped_occurrences, next to the existing isScheduleOccurrencePosted guard. Add a short comment here saying WHY — a reviewer seeing only this diff cannot connect it to issue #43, and a filter reading a field that silently resolves to an empty array forecasts every skipped occurrence with no visible failure.",
+        "why": "The read site v1 missed. getFutureOccurrenceDates (:152) seeds dates = [schedule.next_date] and pushes every occurrence; buildFutureScheduleOccurrences filters only on isScheduleOccurrencePosted; and normalizeSchedule rebuilds the record field by field, so a new column is dropped even though getSchedules() reads select('*') and the raw row carries it. Reachable from forecast/app.ts:149. Without this the row leaves the register and stays in the balance projection."
+      },
+      {
+        "path": "packages/desktop-client/src/components/accounts/Account.tsx",
+        "action": "edit",
+        "change": "onScheduleAction — the post-transaction-today branch iterates `{ scheduleId, date }` and sends `{ id: scheduleId, date, today: true }`; the skip branch iterates `{ scheduleId, date }` and sends `{ id: scheduleId, date }`.",
+        "why": "The parsed occurrence is already in scope — the post-transaction branch proves the payload shape. The complete branch names no occurrence and must not start doing so."
+      },
+      {
+        "path": "packages/desktop-client/src/components/mobile/accounts/AccountTransactions.tsx",
+        "action": "edit",
+        "change": "onSkip — parse with parsePreviewId (already imported for onPost) and send `{ id: scheduleId, date }` instead of the hand-rolled `transactionId.split('/')` / `parts[1]`. Leave the onComplete handler directly below alone: it names no occurrence.",
+        "why": "Same handler, same defect. onPost already sends date with today, so leaving onSkip hand-parsing would keep the mobile register skipping the wrong occurrence after the server fix lands."
+      },
+      {
+        "path": "packages/desktop-client/src/components/mobile/accounts/OnBudgetAccountTransactions.tsx",
+        "action": "edit",
+        "change": "Same onSkip change; parsePreviewId already imported. Leave the onComplete handler alone.",
+        "why": "Four copies of the same mobile menu handler; all four must agree or mobile keeps the bug while the release note claims otherwise."
+      },
+      {
+        "path": "packages/desktop-client/src/components/mobile/accounts/OffBudgetAccountTransactions.tsx",
+        "action": "edit",
+        "change": "Same onSkip change; parsePreviewId already imported. Leave the onComplete handler alone.",
+        "why": "Same as above."
+      },
+      {
+        "path": "packages/desktop-client/src/components/mobile/accounts/AllAccountTransactions.tsx",
+        "action": "edit",
+        "change": "Same onSkip change; parsePreviewId already imported. Leave the onComplete handler alone.",
+        "why": "Same as above."
+      },
+      {
+        "path": "upcoming-release-notes/schedule-actions-affect-the-occurrence-you-clicked.md",
+        "action": "create",
+        "change": "category: Bugfixes, authors: [Shivam-Fl]: Post transaction today and Skip next scheduled date on an Upcoming row now apply to that occurrence — the row leaves the register, the transaction is dated today, earlier occurrences still owed stay listed and payable, and the forecast no longer counts a skipped occurrence.",
+        "why": "Both actions are user-visible and money-affecting, and the forecast correction is user-visible too. Checked against the three pre-existing scheduled-posting notes the issue makes a precondition: two describe the plain post-transaction branch and are extended, not contradicted; keep-posted-schedules-paid-today is about advanceSchedulesService's auto-post, which sends no date and keeps its behaviour."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/server/schedules/app.test.ts",
+        "action": "edit",
+        "cases": [
+          "skipping a later occurrence leaves next_date on the unpaid head and removes only that occurrence from the preview — reproduced failing against unmodified code (next_date became 2017-01-09 instead of staying 2017-01-02); the IAC-1 repro through the registered handler",
+          "posting today with a date stamps the named occurrence and leaves the earlier unpaid occurrence previewed — reproduced failing against unmodified code (schedule_occurrence was 2017-01-02 instead of 2017-01-16); the IAC-2 repro",
+          "skipping the occurrence that IS next_date still advances next_date one step (the existing :504 case kept unchanged as the IAC-3 guard)",
+          "skipping the same occurrence twice records it once",
+          "skipping a stale occurrence older than next_date records nothing",
+          "setNextDate with advance steps over a recorded skip rather than landing on it",
+          "setNextDate with reset also steps over a recorded skip",
+          "setNextDate called with neither advance nor reset — the form advanceSchedulesService's paid branch uses at :796 — also steps over a recorded skip",
+          "a recorded skip is dropped once next_date has moved past it",
+          "posting today with a date twice writes one transaction (replacing the existing :1512 case, whose stated rationale is the contract this issue overturns)",
+          "posting today with NO date still dates today, still discharges next_date, and still writes a second transaction when invoked twice (the Schedules page and advanceSchedulesService paths)",
+          "posting with neither date nor today is unchanged (the existing case at :1349 kept)"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/shared/schedules.test.ts",
+        "action": "edit",
+        "cases": [
+          "computeSchedulePreviewTransactions omits a date in skipped_occurrences and keeps every other occurrence in the window",
+          "a schedule with skipped_occurrences undefined or null previews exactly as before",
+          "skipping the third of five weekly occurrences keeps the other four",
+          "a skipped occurrence does not disturb the status === 'paid' shift"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/server/forecast/app.test.ts",
+        "action": "edit",
+        "cases": [
+          "a skipped occurrence is absent from the forecast, not only from the register preview — the coverage v1 had none of, and the failure mode it guards is silent",
+          "a schedule with no skips forecasts exactly as before, so the new filter cannot silently empty a forecast"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "On a weekly schedule with 1 month of upcoming length, choosing Skip next scheduled date from a later Upcoming row removes that row from the register and leaves the earlier occurrences listed and still payable",
+        "how_to_verify": "app.test.ts: the registered handler is called with a later occurrence; next_date is unchanged, the preview loses exactly that date, and the two earlier occurrences are still present. I ran this against unmodified code and it fails with next_date 2017-01-09 instead of 2017-01-02, so it is a real regression test, not a tautology. Browser equivalent in QA steps 6-7.",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "The same skip is recorded per occurrence rather than by moving the schedule's anchor, and the record is durable",
+        "how_to_verify": "app.test.ts: next_date unchanged after skipping a later occurrence, the preview loses exactly that date, the skip survives a subsequent setNextDate that advances next_date, and the occurrence stays out across a re-read. Browser: QA step 11 reloads the page and confirms it stays gone.",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "On the same schedule, choosing Post transaction today from a later Upcoming row creates exactly one transaction dated today, consumes that occurrence, and leaves the earlier occurrence listed as still payable",
+        "how_to_verify": "app.test.ts: posting today with a date stamps that date, the transaction's own date is today, next_date is unmoved, and the preview loses the posted occurrence but keeps the earlier one. I ran this against unmodified code and it fails with the stamp on 2017-01-02. Browser equivalent in QA step 8.",
+        "source": "IAC-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "The transaction written by Post transaction today is stamped with the occurrence that was clicked, not with the schedule's next_date, and the same occurrence posted twice writes one transaction",
+        "how_to_verify": "app.test.ts: schedule_occurrence equals the date passed with today: true, date equals currentDay(), next_date unmoved, and a second identical call writes nothing new.",
+        "source": "IAC-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "Both actions still behave exactly as today when the selected row IS next_date — skip advances one step, post-today writes a transaction dated today and discharges next_date",
+        "how_to_verify": "app.test.ts keeps the existing skipNextDate cases (:504, :542, :582, :622) green and adds today-without-date. All four exist today and are green today.",
+        "source": "IAC-3",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "The existing tests for the post-transaction branch, for schedule preview computation, for migrations and for the forecast still pass",
+        "how_to_verify": "yarn workspace @actual-app/core run test. Baseline I ran green before any edit: src/server/schedules/app.test.ts (48 tests). Also run src/shared/schedules.test.ts, migrations.test.ts, additive-migrations.test.ts and forecast/app.test.ts. Two today-semantics cases rewritten deliberately (:1387 and :1512); every other case untouched.",
+        "source": "IAC-4",
+        "verify": "test"
+      },
+      {
+        "id": "AC-7",
+        "check": "Callers that name no occurrence are unaffected: the Schedules page's Post transaction today and Skip next scheduled date, and advanceSchedulesService's auto-post, still act on next_date",
+        "how_to_verify": "app.test.ts: posting with no date and the pre-existing skipNextDate tests that send a bare id, unchanged and green. Source check: schedules/index.tsx sends {id, today:true} and {id}. I swept skip-next-date across desktop-client, loot-core, api and sync-server: those six are the only call sites.",
+        "source": "IAC-3",
+        "verify": "test"
+      },
+      {
+        "id": "AC-8",
+        "check": "The same two actions on the mobile register's scheduled-transaction menu act on the occurrence that was tapped, in all four account filters",
+        "how_to_verify": "At a mobile viewport open a preview row's menu and skip a later occurrence in the on-budget, off-budget and all-accounts filters; confirm the same one-occurrence change each time. QA step 14.",
+        "source": "IAC-1",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-9",
+        "check": "A skipped occurrence is never auto-posted by advanceSchedulesService, whatever next-date arithmetic runs afterwards",
+        "how_to_verify": "app.test.ts: record a skip, exercise setNextDate through each of its three call shapes (advance, reset, and the bare form advanceSchedulesService's paid branch uses) and assert next_date is never the skipped date. This is the invariant the loop exists to establish.",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-10",
+        "check": "An occurrence skipped in the register is also gone from the schedule's forecast, and a schedule with no skips forecasts exactly as before",
+        "how_to_verify": "forecast/app.test.ts: with a recorded skip the forecast's scheduled transactions omit that date; with none recorded the same schedule forecasts the same dates as before. QA step 8 checks the projected balance before and after the skip.",
+        "source": "IAC-1",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "Start the app with no server and create a fresh budget (yarn start).",
+      "Add an on-budget account named Checking.",
+      "On Schedules set 'Change upcoming length' to 1 month.",
+      "Add a schedule named Paycheck: payee Employer, account Checking, amount 100 (Use 'Make positive'), frequency Weeks, with 'Automatically add transaction' ticked.",
+      "Open the Checking register. Confirm the first occurrence is Due and the following four are Upcoming.",
+      "Note the forecast bar's projected balance for Checking before doing anything — the baseline for step 7.",
+      "Select a later Upcoming row (the third) and choose 'Skip next scheduled date'. Confirm that row leaves the register and the two earlier occurrences remain, the first still Due (AC-1).",
+      "Re-check the forecast bar's projected balance: the skipped occurrence must no longer be counted (AC-10). A forecast that did not move here is the v1 defect, reintroduced.",
+      "Select the second Upcoming row and choose 'Post transaction today'. Confirm exactly one transaction dated today appears, that row leaves the register, and the first occurrence is still listed as Due (AC-3).",
+      "Select the first Due row and choose 'Post transaction'. Confirm a second transaction dated on that occurrence and no double-paid occurrence (AC-5).",
+      "Reload the page and confirm both consumed occurrences stay consumed and the remaining rows are still listed — the skip survived a restart, so it is persisted and not just filtered in memory (AC-2). Do not skip this step; it is the one part no purely visual check can prove.",
+      "Open the Schedules page and confirm Paycheck reads Paid with next_date on the next unskipped occurrence, and that its own Post transaction today / Skip next scheduled date still act on next_date (AC-5, AC-7).",
+      "Restart the schedule (the Schedules page 'Restart' action) and confirm next_date does not land back on a skipped occurrence (AC-9).",
+      "At a mobile viewport, open a preview row's menu and repeat the skip on a later row in the on-budget, off-budget and all-accounts filters; confirm the same one-occurrence change each time (AC-8)."
+    ],
+    "risks": [
+      "setNextDate is the load-bearing next-date arithmetic for the whole schedules service, and the new bounded loop sits on the path skipNextDate, advanceRecurringScheduleFromNextDate, updateSchedule's resetNextDate branch and advanceSchedulesService's paid branch all take. Two details nobody has watched run: weekend-solve modes make the step non-obvious, and the loop nests inside getNextDateAfter's own MAX_ADVANCE_ATTEMPTS loop, so the worst case is multiplicative rather than 7 steps. Keep the loop after the existing computation, bounded, never replacing the getNextDateAfter call.",
+      "Adding a column to a synced table is the change most likely to surprise additive-migrations.test.ts or a sync fixture that snapshots schedules_next_date. I resolved the proposal's open question by sweeping every reference: schedules_next_date is written in exactly two places and read by the AQL view, so no caller reconstructs the row wholesale — but the additive suite is still the authority and must be re-run after the migration lands.",
+      "The forecast edit is the piece v1 omitted and this round adds. A reviewer should check both that normalizeSchedule really carries it and that buildFutureScheduleOccurrences really filters it. A filter reading an always-empty array silently forecasts every skipped occurrence with no visible failure, which is why AC-10 and the QA forecast step exist.",
+      "Two today-semantics tests at :1387 and :1512 encode a decision this issue overturns and must be rewritten, not deleted — a reviewer seeing only the diff should be able to see that IAC-2 is why the comment and the tests flipped. The comments at app.ts:565-569 and :583-584 must flip with them.",
+      "The client skip payload change reaches four mobile files by copy-paste; a missed one leaves mobile skipping the wrong occurrence while the release note claims otherwise. In each of the four files there is a SECOND hand-rolled split('/') in the onComplete handler directly below the onSkip one — do not convert that one, it names no occurrence."
+    ],
+    "out_of_scope": [
+      "The other findings on the epic (#41): the duplicate-occurrence guard's missing .options({ splits: 'all' }), the torn publish in useSchedules.ts, and the duplicate release note from PR #15. Each is its own ticket. Balance.tsx's preview-id parse is on this list too and I checked it belongs there: at :105 it destructures only scheduleId to compute a projected balance and never sends a schedule action, so it is a separate inaccuracy rather than this defect.",
+      "Relabelling 'Skip next scheduled date' now that it can act on a row that is not the next date — user-facing copy belongs with whoever decides the wording, and the behaviour fix should not wait on it.",
+      "A way to undo a skip. Nothing in this issue asks for one and it is a real product question (does undo restore next_date, or drop the occurrence from the list?).",
+      "The public API (packages/api) — I swept it and it exposes no skip-next-date surface, so it gains no skip-occurrence API here.",
+      "A dedicated synced table for skips — it would need its own primary key, sync registration and query, where a nullable column on the row that already owns the schedule's date state rides existing plumbing."
+    ],
+    "evidence": [
+      "REPRODUCED BY ME, independently of the proposal. I wrote the two repro cases myself as a scratch file against unmodified production code (no source edits) and ran `cd packages/loot-core && ENV=node npx vitest --run ...`. Result: Test Files 1 failed (1) | Tests 2 failed (2). Case 1, skipping occurrence[2]: `AssertionError: expected '2017-01-09' to be '2017-01-02' // Object.is equality`. Case 2, posting today with date=occurrence[2]: `AssertionError: expected [ '2017-01-02' ] to deeply equal [ '2017-01-16' ]`. These match the proposal's reported values exactly, so the diagnosis is a fact rather than an inference. The scratch file was deleted; git status --porcelain shows only `?? plan/` and `?? work-order.json`. Note for the implementer: `yarn workspace @actual-app/core run test <file>` does NOT work — the workspace script is `npm-run-all -cp 'test:*'` and returns `ERROR: Task not found`; the working invocation is `cd packages/loot-core && ENV=node npx vitest --run <file>`.",
+      "BASELINE GREEN, run by me: `cd packages/loot-core && ENV=node npx vitest --run src/server/schedules/app.test.ts` → Test Files 1 passed (1) | Tests 48 passed (48), 5.04s.",
+      "Account.tsx:1566-1585 — read the switch. The `post-transaction` branch destructures `{ scheduleId, date }` and sends both; `post-transaction-today` destructures only `{ scheduleId }` and sends `{ id, today: true }`; `skip` destructures only `{ scheduleId }` and sends `{ id }`. The date is parsed by parsePreviewId at :1562 and discarded on exactly those two branches.",
+      "app.ts:565-570 and :583-597 — the comment states '`today` is the exception: it pays `next_date` early and leaves that occurrence pending, so it discharges `next_date` whatever `date` says', immediately above `const occurrence = today ? schedule.next_date : (date ?? schedule.next_date)`, with the guard `if (!today)` below it.",
+      "app.ts:466-467 — `export async function skipNextDate({ id }) { return setNextDate({ id, advance: true }); }`. No occurrence parameter exists.",
+      "app.ts:239-266 and its callers :439, :446, :467, :661, :796 — `advance ? getNextDateAfter(dateCond, nextDate) : getNextDate(dateCond, new Date())` is the only arithmetic switch; `reset` merely chooses which columns the db.update writes. The bare setNextDate({id}) at :796 takes the same getNextDate path.",
+      "shared/schedules.ts:391 and :396 — `const MAX_ADVANCE_ATTEMPTS = 7` and getNextDateAfter's own loop bounded by it. The new loop reuses that constant but will nest inside it.",
+      "shared/schedules.ts:594-604 — the preview's only per-occurrence exclusion is isScheduleOccurrencePosted inside the unpaidDates filter, after the status === 'paid' shift at :580. Nothing in the codebase records a skipped occurrence.",
+      "THE FORECAST GAP IS REAL, read not assumed. forecast-schedules.ts:28-55 defines ScheduleDataBase and RawScheduleData with no skipped_occurrences; normalizeSchedule (:97-108) returns an object literal rebuilding the record field by field; getFutureOccurrenceDates (:152) seeds dates = [schedule.next_date] and pushes every occurrence (:174); buildFutureScheduleOccurrences (:205-215) filters only on isScheduleOccurrencePosted. Reachable from forecast/app.ts:149.",
+      "CALLER SWEEP, re-run rather than closed from the schedules app alone. `grep -rn 'skip-next-date|skipNextDate' packages/desktop-client/src packages/loot-core/src packages/api packages/sync-server/src` returns exactly six UI call sites: Account.tsx:1582, four mobile handlers (AccountTransactions:210, OnBudget:106, OffBudget:106, All:132) all needing date, and components/schedules/index.tsx:59 which sends a bare { id } and must keep doing so. No API, sync-server or desktop-electron caller.",
+      "CORRECTION TO v1's EVIDENCE, confirmed. v1 claimed getUpcomingDates (app.ts:474) 'has no callers in the app'. That was false: RecurringSchedulePicker.tsx:412 and useScheduleEdit.ts:325 both call it. Neither needs a change — getUpcomingDates ({config, count}) takes a RecurConfig and a count and never reads a schedule row. The v1 conclusion survives; the reasoning that produced it did not.",
+      "ONE OF THE PROPOSAL'S FOUR UNKNOWNS RESOLVED FAVOURABLY, by sweeping further than it did. `grep -rn 'schedules_next_date' packages/loot-core/src packages/crdt/src packages/api` (excluding tests) returns exactly five references: the AQL view JOIN at schema/index.ts:367, setNextDate's raw SELECT at app.ts:249, its db.update at :254, the one-time insertWithUUID at :344, and sync/index.ts:777. No caller — including schedule.edit — reconstructs the row wholesale, so the new column cannot be silently dropped by an edit path.",
+      "aql/views.ts:26-29 — internalFields is `{ ...publicFields, ...fieldMappings }` with the base table aliased `_` and schedules_next_date aliased `_nd`. Both the f('json') schema entry and the `_nd.skipped_occurrences` view override are required; next_date's existing CASE expression at :345-350 is the working precedent.",
+      "aql/schema-helpers.ts:58-82 — convertOutputType returns null for a null value and JSON.parses otherwise. A new nullable TEXT column reads as null on existing rows, so every read site must use `?? []`. Verified as a reading, not against a migrated database.",
+      "migrations/README.md and schema-diff.ts:189-205 — post-cutoff (after ADDITIVE_ONLY_CUTOFF = 1780606215001) a migration may add a nullable column or a NOT NULL column with a DEFAULT; TEXT DEFAULT NULL passes. Stated as a reading: additive-migrations.test.ts is the enforcing suite, is green against the current tree, and must be re-run once the migration lands.",
+      "app.test.ts:1387-1396 and :1512-1525 — \"'post today' dates today and does not consume the occurrence\" and \"does not guard `today`, which may legitimately be posted twice\" both encode the contract IAC-2 overturns; both must be rewritten rather than deleted.",
+      "The three pre-existing release notes the issue makes a precondition, all re-read: two describe the plain post-transaction branch and are extended rather than contradicted; keep-posted-schedules-paid-today.md is about advanceSchedulesService, which calls postTransactionForSchedule({id}) with no date and no today and keeps its behaviour.",
+      "The user-visible symptom quoted in the issue body is QA's report on the epic, which is data. The reproduction above is mine: I wrote both cases against unmodified production code and watched them fail."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Make the preview's `status === 'paid'` shift account for which occurrence was actually paid (the issue's second offered shape).",
+        "rejected_because": "The shift exists to hide the head occurrence the stamp filter cannot see, because getHasTransactionsQuery only ever asks about next_date. Teaching it about occurrences duplicates a concept the preview already models one filter below it, and it fixes nothing for skip: with no transaction written there is no paid occurrence to shift for, and next_date would still have moved while the chosen row stayed listed."
+      },
+      {
+        "approach": "Record the skip as a transaction row carrying the schedule link and an occurrence stamp (a zero-amount hidden row standing in for 'consumed without a payment').",
+        "rejected_because": "It fabricates a transaction the user never made and lies to everything downstream: getHasTransactionsQuery would answer 'paid', hasTransactionForSchedule and advanceSchedulesService would treat it as a payment, and it would surface in exports. The tombstoned variant is worse — executors.ts appends `tombstone = 0` to every live query, so it would be invisible to the queries that need to read it."
+      },
+      {
+        "approach": "Store the skip as an `exdate` exception on the schedule's date condition in the rule, which every occurrence computation already funnels through recurConfigToRSchedule.",
+        "rejected_because": "The date condition is also the rule that MATCHES transactions: a Condition('is'|'isapprox','date',value) builds its RSchedule from that value, so excepting a date silently stops an imported or rule-created transaction on that date from being linked to its schedule — a far wider behavioural change than this bug. It also round-trips badly: ScheduleEditModal rebuilds the value as {start, frequency, patterns} from form fields, so every schedule edit would silently drop the skips."
+      },
+      {
+        "approach": "Hide 'Skip next scheduled date' on rows that are not next_date, the way #59 hides it on one-off schedules.",
+        "rejected_because": "It makes the wrong behaviour unreachable instead of correct and fails IAC-1 outright: the criterion requires the chosen row to leave the register while the earlier ones stay."
+      },
+      {
+        "approach": "Advance next_date to the occurrence after the one that was clicked, so the skipped date falls off the end of the window.",
+        "rejected_because": "That is the current bug with an extra step, and my reproduction shows exactly what it costs: on a later row next_date went 2017-01-02 → 2017-01-09, taking occurrences the user was owed with it. Advancing further would take more."
+      },
+      {
+        "approach": "Put skipped_occurrences on the `schedules` table rather than on schedules_next_date, leaving the next-date row untouched entirely.",
+        "rejected_because": "schedules_next_date is the row that already owns the schedule's mutable date state, is the only other thing setNextDate writes, and already syncs; schedules is joined to it only through the v_schedules view. Putting the column on schedules would mean a second write path to a table otherwise updated wholesale by insertWithSchema/updateWithSchema, and it would not sit beside the next_date the loop has to consult in the same db.update."
+      },
+      {
+        "approach": "Leave the forecast out of scope as v1 did, and record the behaviour change as a residual risk.",
+        "rejected_because": "The v1 review was right that this is not a risk to record but a defect the change would introduce: before, skipping moved next_date forward so the forecast dropped the date as a side effect; after, next_date deliberately stays put and the skip lives in a column the forecast never reads, so the forecast keeps counting money the user explicitly said they are not paying. Trading a wrong register for a wrong balance projection is not a smaller bug. I confirmed it by reading forecast-schedules.ts; the cost of covering it is one type field, one return field and one `continue`."
+      },
+      {
+        "approach": "Split the issue: land the posting half (small, low risk) and file the skip half separately, since it needs a migration.",
+        "rejected_because": "The issue states both branches are one defect in one switch and both IACs are on the ticket. Shipping only the posting half leaves Skip next scheduled date silently consuming an occurrence the user never named — the higher-severity of the two, since it drops money rather than mis-dating it."
+      },
+      {
+        "approach": "Rewrite this work order myself rather than adjudicate the proposal, on the grounds that an empty critique means there is nothing to arbitrate.",
+        "rejected_because": "The arbiter's job when the critique is empty is to re-verify rather than defer, and there was real work to do: I reproduced both defects myself, confirmed the forecast hole v1 left is a genuine defect, resolved one of the proposal's four unknowns by sweeping every writer of schedules_next_date, caught a forward-dated migration id that would have been copied literally into a filename, and struck a route_request that named a stage already on the route."
+      }
+    ],
+    "assumptions": [
+      "The date parsed out of a preview id is always a real occurrence of that schedule's recurrence, since computeSchedulePreviewTransactions generates those ids from occurrences it built. skipNextDate therefore does not validate date against the recurrence; a stale or malformed value records a date nothing matches and is pruned on the next advance.",
+      "A skipped occurrence cannot be reached by any other action: posting it is impossible because the row is no longer previewed, and advanceSchedulesService never reaches it because the setNextDate loop steps over it. This invariant is what makes it safe for skip to be additive rather than something posting has to check — and it is load-bearing, which is why AC-9 tests it through all three setNextDate call shapes.",
+      "schedules_next_date rows sync generically by column and need no registration — swept: the only reference outside the schedules app and the AQL view is sync/index.ts:777. This is a reading of the code, not an observed sync.",
+      "f('json') on a nullable TEXT column yields null for existing rows and a parsed array for new ones, so every read site uses `?? []`. Verified in schema-helpers.ts:58-82; not executed against a real migrated database.",
+      "Extending the duplicate-occurrence guard to `today` when a date was named is a deliberate narrowing of an existing decision, justified because the stamp is the identity the preview matches on. The no-date today path stays unguarded so the Schedules page's and advanceSchedulesService's existing behaviour is preserved where it still holds.",
+      "f('json') output reaches both computeSchedulePreviewTransactions and the forecast's normalizeSchedule unfiltered: every schedules query is select('*'), and useSchedules' live query re-runs on the schedules dataset while a skip writes schedules_next_date.",
+      "Posting need not clear a recorded skip: the preview cannot offer both a post and a skip for the same occurrence, and if one somehow arrives the stamp wins the exclusion and the occurrence stays hidden either way."
+    ],
+    "unknowns": [
+      "How a skip behaves after a full re-sync from a device that never saw it, and how two devices that each skip a different occurrence offline merge. The column is one JSON value on a row that also carries the next date, so I expect last-writer-wins on the array and a possible lost skip; the occurrence then stays previewed, the recoverable direction. I did not trace packages/crdt's merge for this table.",
+      "Whether the setNextDate loop behaves correctly when nested inside getNextDateAfter's own MAX_ADVANCE_ATTEMPTS loop under the weekend-solve modes, where a single step is not one day. Untested by anyone; the three call-shape cases and AC-9 are what will answer it.",
+      "Whether any visual-regression snapshot covers register Upcoming rows in a state where an occurrence is skipped, or a forecast bar with one. The column is invisible to the UI so I expect no snapshot change, but yarn vrt was not run.",
+      "Whether the additive-migrations suite or a sync fixture reacts to the new column. I swept the code and found nothing that snapshots schedules_next_date, but I ran the suite only against the current tree, not against the migration."
+    ],
+    "debate_summary": "There was no critique to judge this round — plan/critique.json is an empty object, the critic wrote nothing. So the only adversarial artefact I had was the brief's rejection of v1, and against that the proposal is a straight answer rather than a debate: both required items were done rather than argued. What I did instead was verify, independently, on the theory that an unopposed plan deserves more scrutiny rather than less.\n\nI reproduced the defect myself. I wrote the two cases from scratch as a scratch test file against unmodified production code and ran them: both failed, with exactly the values the proposal reported (next_date 2017-01-09 instead of 2017-01-02; schedule_occurrence 2017-01-02 instead of 2017-01-16). That matters more than agreement would have: the diagnosis, the reproduction and the work order are three independent arrivals at the same fact, and the two failing cases become real regression tests rather than assertions written to match an implementation. I also ran the baseline the change starts from (app.test.ts, 48 green) and swept the callers, the AQL plumbing, the migration rule, the four mobile handlers and the two tests this change deliberately overturns. Every structural claim held.\n\nThe v1 forecast objection was the substantive one and the proposal is right to have taken it as a hole rather than a wording slip. I confirmed it independently: normalizeSchedule rebuilds the record field by field, so a new column is dropped even though the query is select('*'), and buildFutureScheduleOccurrences filters only on isScheduleOccurrencePosted. Left uncovered, this change would have traded a wrong register for a wrong balance projection. I kept the fix and gave it AC-10, its own test file and its own QA step, because a filter that silently reads an empty array fails with no visible symptom.\n\nThree things I changed rather than accepted. First, the migration: the proposal names a literal id, 1791500000000, which is dated four days in the future. Sorted it would work, but a work order that names a literal filename invites that filename being typed, and a future-dated id sorts after migrations that land before it. The work order now says take a current timestamp at write time and re-check the directory. Second, I swept further than the proposal did and resolved one of its four open unknowns in its favour: schedules_next_date has exactly two writers and no wholesale reconstruction anywhere, including schedule.edit, so the new column cannot be silently dropped by an edit path. Third, in each of the four mobile files there is a second hand-rolled split('/') in the onComplete handler directly below the onSkip one; the work order says explicitly not to convert that one, because complete names no occurrence.\n\nWhat I rejected outright is the proposal's route_request. It asked for needs_earlier_stage at stage qa, on the reasoning that the plan's defining claim flipped from reproduced:false to true. QA is already on this ticket's route (plan → implement → review → qa) and QA is not an earlier stage than plan — the request is incoherent as written, and the pipeline would have been asked to act on a stage that is already present. I dropped it and recorded no route_request. The route itself is right for this work: it touches money and date arithmetic and a synced-table migration, and it carries both review and QA, which is what a change like this needs.\n\nI did not re-plan the substance, and I want to be plain that I did not test the fix — it does not exist yet. Everything above is a verified diagnosis plus a design checked against the code it will land in; the loop, the JSON plumbing and the migration are unexecuted. The honest limit on this score is that shape, not doubt about the diagnosis, and it is why I sit at 82 rather than the 84 the proposal claimed for itself.",
+    "residual_risks": [
+      "The setNextDate loop is the highest-consequence piece and nothing has watched it run — I reproduced the defect, not the fix. If it is written with the wrong bound, or unbounded against a schedule whose every future occurrence is recorded as skipped, it can spin; and it nests inside getNextDateAfter's own 7-attempt loop, so the worst case is multiplicative. MAX_ADVANCE_ATTEMPTS is the bound to reuse; a reviewer should read that loop first.",
+      "The forecast filter is the newly added piece and it fails silently by design: it omits rather than errors. It has AC-10, a dedicated test file and a QA step that watches the projected balance, but the why belongs in a code comment there and not only in the PR description.",
+      "There is no way to un-skip an occurrence. Once recorded it hides that date until next_date has moved past it and the prune drops it, which for a long-running schedule may be months. Deliberate — undo is out of scope — but worth saying in the PR description rather than discovering in QA.",
+      "The skip list is pruned only on the next setNextDate write, so a schedule that is skipped repeatedly and never advances keeps growing the array. Bounded by the number of occurrences a user chooses to skip rather than by anything exponential, but nothing enforces a ceiling.",
+      "Cross-version sync: an older client writing schedules_next_date drops a recorded skip, and a newer client will hide that occurrence from a client that never skipped it. Same class of exposure schedule_occurrence already carries, and the failure direction is 'an occurrence shows again', never 'a payment is lost'.",
+      "QA step 11 deliberately reloads the page to prove the skip is persisted rather than filtered in memory. If that step is skipped, the change could pass QA while the column write is silently absent — the persisted record is the one part no purely visual check can see.",
+      "Because the critic produced nothing again this round, there is still no adversarial reading of this plan from another agent. I verified the reproduction, the plumbing and the callers myself and found the diagnosis sound, but the class of defect that survives that is the one that only shows when the code runs — which is the next stage's job, and the reason I did not score this above the low 80s."
+    ]
+  }
 }
