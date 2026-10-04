@@ -653,7 +653,7 @@
   "work_order_posted_at": "2026-10-04T18:08:27.768Z",
   "work_order_from": "plan",
   "work_order_comment": "5982899158",
-  "implemented_version": 1,
+  "implemented_version": 2,
   "follow_ups": {
     "review": [
       {
