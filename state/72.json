@@ -553,7 +553,8 @@
         "detail": "The forecast test setup was restructured from a describe-level `beforeEach`/`afterEach` pair into two nested functions, with a twelve-line comment defending the change. The stated reason — that a case added to the block later must not inherit a running service — is what the hook pair already gave every case in the block, so the split relocates the guarantee rather than adding one.\n\n`packages/loot-core/src/server/forecast/app.test.ts:570`\n\nEvidence: `createForecastWithSplitPostedOccurrence` wraps `startServices()` in a try/finally calling `stopServices()` and delegates to `buildSplitPostedOccurrenceForecast`; the two-function shape spans :570-583. The comment argues that a later case must not find `startServices` already called, which is what `beforeEach`/`afterEach` scoped to the block guaranteed for every case it contained, including the three shipped. The rewrite does make each test read `createForecastWithSplitPostedOccurrence(...)` rather than relying on block state — the one real gain — at the cost of a second function name and the comment.\n\nFix: Keep the hook pair and give each test a helper for the forecast construction only, or accept the two-function shape but cut the comment to the sentence that justifies it."
       }
     ],
-    "pr": "81"
+    "pr": "81",
+    "filed": 93
   },
   "qa": {
     "verdict": "pass",
