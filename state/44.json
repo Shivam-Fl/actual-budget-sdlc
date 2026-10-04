@@ -1,7 +1,7 @@
 {
   "issue": 44,
   "pr": 62,
-  "state": "ci-red",
+  "state": "needs-human",
   "owner": null,
   "lock_expires": null,
   "lock_run": null,
@@ -243,7 +243,7 @@
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-03T11:15:01.263Z",
-  "updated_at": "2026-10-04T00:34:05.789Z",
+  "updated_at": "2026-10-04T00:51:14.746Z",
   "history": [
     {
       "at": "2026-10-03T22:03:28.723Z",
@@ -324,6 +324,11 @@
       "at": "2026-10-04T00:34:05.789Z",
       "agent": "gate",
       "action": "-> ci-red"
+    },
+    {
+      "at": "2026-10-04T00:51:14.746Z",
+      "agent": "triage",
+      "action": "-> needs-human"
     }
   ],
   "epic": 41,
