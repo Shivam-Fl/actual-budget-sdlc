@@ -149,7 +149,10 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+    "upcoming-release-notes/clarify-sqljs-fetch-patch-test-comment.md"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
