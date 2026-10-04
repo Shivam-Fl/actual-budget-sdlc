@@ -23,6 +23,9 @@ const dialogAccessibilityWarning =
 /** How long to let the console channel drain when no dialog warning arrives. */
 const CONSOLE_SETTLE_MS = 1000;
 
+/** How long the probe's expect.poll waits for the emitted warnings to arrive. */
+const PROBE_SETTLE_MS = 1000;
+
 type DialogWarningProbe = { channel: 'error' | 'warn'; message: string };
 
 /**
@@ -36,9 +39,7 @@ type DialogWarningProbe = { channel: 'error' | 'warn'; message: string };
  * driving both through one method would leave the other's channel untested.
  *
  * These are held as literals rather than read out of the installed package, so
- * they can rot if a patch release rewords either message. They are emitted from
- * the page by the probe below so every run re-proves that both channels deliver
- * and the filter still matches the transcribed wording.
+ * they can rot if a patch release rewords either message.
  */
 const DIALOG_WARNING_PROBES: DialogWarningProbe[] = [
   {
@@ -129,11 +130,11 @@ test.describe('Command bar', () => {
     // position correct rather than merely lucky.
     expect(messages).toEqual([]);
 
-    // Every alternative in the filter needs its own probe, or the arm nobody
-    // probes is a blind spot: an edit that breaks it leaves this test green
-    // while the doc comment above claims otherwise. The naive split is correct
-    // for this flat alternation and would need revisiting if the pattern ever
-    // gained a group or an escaped `|`.
+    // Every alternative in the filter needs a probe that matches it, or the
+    // arm nobody probes is a blind spot: an edit that breaks it leaves this test
+    // green while the doc comment above claims otherwise. The naive split is
+    // correct for this flat alternation and would need revisiting if the pattern
+    // ever gained a group or an escaped `|`.
     for (const alternative of dialogAccessibilityWarning.source.split('|')) {
       expect(
         DIALOG_WARNING_PROBES.some(({ message }) =>
@@ -163,7 +164,7 @@ test.describe('Command bar', () => {
       }
     }, DIALOG_WARNING_PROBES);
     await expect
-      .poll(() => [...probe.messages].sort(), { timeout: CONSOLE_SETTLE_MS })
+      .poll(() => [...probe.messages].sort(), { timeout: PROBE_SETTLE_MS })
       .toEqual(DIALOG_WARNING_PROBES.map(({ message }) => message).sort());
 
     // The dialog keeps its accessible name, but assert the ids resolve to real

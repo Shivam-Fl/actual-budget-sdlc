@@ -271,5 +271,23 @@ test.describe('Reports without transactions', () => {
     ).toBeVisible();
     await page.waitForTimeout(PAGE_ERROR_SETTLE_MS);
     expect(pageErrors).toEqual([]);
+
+    // The probe has to stay after the assertion above: the throw below is a real
+    // page error, so emitted first it would fail the emptiness check it is meant
+    // to be independent of. A second collector, not `pageErrors`, keeps the two
+    // reads independent. It proves the channel still delivers into a collector
+    // inside PAGE_ERROR_SETTLE_MS, so a channel that stops delivering turns this
+    // test red on every run instead of passing vacuously. It does NOT prove the
+    // app is free of page errors — only that the channel works.
+    const probeErrors: Error[] = [];
+    page.on('pageerror', error => probeErrors.push(error));
+    await page.evaluate(() => {
+      setTimeout(() => {
+        throw new Error('pageerror probe');
+      }, 0);
+    });
+    await expect
+      .poll(() => probeErrors.length, { timeout: PAGE_ERROR_SETTLE_MS })
+      .toBeGreaterThan(0);
   });
 });
