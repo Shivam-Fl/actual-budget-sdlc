@@ -151,7 +151,10 @@
     "root_cause": "The regression test pins a vitest internal (that globalThis.fetch is a mock function) rather than the behaviour it exists to protect (that globalThis.fetch is patchFetchForSqlJS's sql.js wasm patch, able to serve the wasm asset from baseURL). `vi.isMockFunction` cannot distinguish the real patch from a bare pass-through spy, so the test passes for the wrong reason. Separately, the beforeEach comment was carried over from the pre-fix state and its tense now asserts something the code four lines below guarantees against.",
     "approach": "Two edits to one test file, no other file touched. (1) Strengthen the regression test: keep the existing `vi.isMockFunction(globalThis.fetch)` check (it is cheap and localises the failure), make the test async, and add a functional assertion after it — `const res = await globalThis.fetch(`${baseURL}sql-wasm.wasm`); expect(res.status).toBe(200);`. That URL is exactly what initSqlJS's `locateFile: file => baseURL + file` (packages/loot-core/src/platform/server/sqlite/index.ts:55) requests, so a 200 means the wasm patch is really installed and really serving, and any other spy either rejects or returns a non-200. (2) Put the beforeEach comment's defect description in the past tense so it reads as the reason the beforeEach exists rather than a claim about the file. Leave everything else alone: the test keeps its last-in-file position (load-bearing, per its own comment), the beforeEach keeps its body, and the 'Last on purpose' comment above the test stays as written — I re-measured its claim after the change and it still holds (see evidence)."
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts",
+    "packages/loot-core/src/platform/server/sqlite/index.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
