@@ -362,5 +362,29 @@
       }
     ],
     "pr": "91"
-  }
+  },
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 2,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4"
+    ],
+    "sha": "90b9c3466d050dd69e9aff25bd6aa32fe5f6ef04",
+    "run_id": "37236243998",
+    "work_order_version": 1,
+    "at": "2026-10-04T22:10:07.504Z"
+  },
+  "qa_open_bugs": [
+    {
+      "id": "BUG-1",
+      "title": "`yarn test` silently skips the new release-note gate when only a note changed, so a malformed note passes locally"
+    },
+    {
+      "id": "BUG-2",
+      "title": "The new gate reads upcoming-release-notes/ non-recursively, so a note in a subdirectory is never validated"
+    }
+  ]
 }
