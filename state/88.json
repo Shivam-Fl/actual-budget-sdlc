@@ -174,7 +174,10 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.tsx",
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.test.tsx"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
