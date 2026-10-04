@@ -242,7 +242,17 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/schedules/index.tsx",
+    "packages/desktop-client/src/components/select/RecurringSchedulePicker.tsx",
+    "packages/desktop-client/e2e/page-models/schedule-edit-modal.ts",
+    "packages/desktop-client/e2e/page-models/schedules-page.ts",
+    "packages/desktop-client/e2e/schedules.test.ts",
+    "packages/loot-core/src/shared/schedules.test.ts",
+    "upcoming-release-notes/double-click-schedules-row-opens-one-modal.md",
+    "packages/desktop-client/e2e/schedules.test.ts",
+    "packages/loot-core/src/shared/schedules.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
