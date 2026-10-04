@@ -1,5 +1,7 @@
 import { send } from '@actual-app/core/platform/client/connection';
+import { likePatternToRegex } from '@actual-app/core/shared/likePattern';
 import * as monthUtils from '@actual-app/core/shared/months';
+import { getNormalisedString } from '@actual-app/core/shared/normalisation';
 import type { Handlers } from '@actual-app/core/types/handlers';
 import type {
   CategoryEntity,
@@ -72,6 +74,99 @@ export function isSupportedCategoryCondition(
   return false;
 }
 
+/**
+ * Whether the category conditions are allowed to narrow the row axis at all.
+ *
+ * The query side unions every disjunct, so an axis that is narrower than the
+ * result set silently drops that set's money from every total - the rows are
+ * gone, with no error and no empty state. Narrowing is therefore only sound when
+ * the conditions are a statement about the category axis and nothing else.
+ *
+ * `customName` conditions are excluded because the query side excludes them too
+ * (they are filtered out before 'make-filters-from-conditions'), so they are not
+ * disjuncts of the result set either.
+ */
+export function canNarrowAxisByConditions(
+  conditions: RuleConditionEntity[] | undefined,
+  conditionsOp: BudgetDataConditionsOp | undefined,
+): boolean {
+  if (!conditions || conditions.length === 0) {
+    return false;
+  }
+
+  // Conjunctive: a returned transaction satisfies every condition, so a category
+  // condition describes the axis by itself. This is the behaviour QA validated.
+  if (conditionsOp !== 'or') {
+    return true;
+  }
+
+  // Disjunctive: a returned transaction satisfies only ONE condition, so a
+  // category condition is a single disjunct among several and describes the
+  // result set only when every disjunct is itself about the category axis.
+  const effective = conditions.filter(cond => !cond.customName);
+  return (
+    effective.length > 0 &&
+    effective.every(
+      cond => cond.field === 'category' || cond.field === 'category_group',
+    )
+  );
+}
+
+/**
+ * Narrows both halves of the report's category axis - the flat `list` and the
+ * `grouped` array whose members carry their own nested `categories` - using the
+ * same conditions the query side is filtered by.
+ *
+ * When no condition narrows anything, the input is returned unchanged by
+ * identity: that keeps `filterCategoriesByConditions`'s conservative
+ * "cannot safely interpret -> do not filter" fallback intact, and means a
+ * category group that is legitimately empty in an unfiltered report is not
+ * dropped on every load.
+ */
+export function narrowCategoriesByConditions(
+  categories: {
+    list: CategoryEntity[];
+    grouped: CategoryGroupEntity[];
+  },
+  conditions: RuleConditionEntity[] | undefined,
+  conditionsOp: BudgetDataConditionsOp | undefined,
+): { list: CategoryEntity[]; grouped: CategoryGroupEntity[] } {
+  // An unnarrowed axis is main's behaviour and the safe direction: it is a
+  // superset of the true result set, which costs empty rows under "Show empty
+  // rows" and never costs money.
+  if (!canNarrowAxisByConditions(conditions, conditionsOp)) {
+    return categories;
+  }
+
+  const list = filterCategoriesByConditions(
+    categories.list,
+    categories.grouped,
+    conditions,
+    conditionsOp,
+  );
+
+  // `filterCategoriesByConditions` returns its input untouched whenever it
+  // cannot safely narrow, so the identity check keeps us from rebuilding the
+  // grouped array (and deleting empty groups) for nothing.
+  if (list === categories.list) {
+    return categories;
+  }
+
+  const keep = new Set(list.map(category => category.id));
+
+  return {
+    list,
+    grouped: categories.grouped
+      .map(group => ({
+        ...group,
+        categories: (group.categories ?? []).filter(category =>
+          keep.has(category.id),
+        ),
+      }))
+      .filter(group => group.categories.length > 0),
+  };
+}
+
 export function filterCategoriesByConditions(
   categories: CategoryEntity[],
   categoryGroups: CategoryGroupEntity[],
@@ -139,20 +234,43 @@ export function filterCategoriesByConditions(
       return !condition.value.includes(key);
     }
 
+    // `contains` reaches the query as `$like '%' + value + '%'`
+    // (transaction-rules.ts), which the compiler emits as
+    // `UNICODE_LIKE(<normalised pattern>, NORMALISE(name))`
+    // (aql/compiler.ts). UNICODE_LIKE speaks a PATTERN language in which '%'
+    // and '?' are wildcards and a backslash escapes them - not a substring
+    // language. Reading it as a literal `includes` leaves the axis in a strict
+    // subset of the result set, and a category with no row has nowhere to
+    // render the money the query fetched: it leaves every total silently. So
+    // the axis runs the query's own two primitives instead, in the same order.
     if (condition.op === 'contains') {
       return (
         typeof condition.value === 'string' &&
-        textValue.toLowerCase().includes(condition.value.toLowerCase())
+        likePatternToRegex(
+          getNormalisedString('%' + condition.value + '%'),
+        ).test(getNormalisedString(textValue))
       );
     }
 
+    // The query's `$notlike` also carries an `OR left IS NULL` disjunct
+    // (aql/compiler.ts), which never fires for a category name - `name` is not
+    // nullable - so the exact negation is the whole of it.
     if (condition.op === 'doesNotContain') {
       return (
         typeof condition.value === 'string' &&
-        !textValue.toLowerCase().includes(condition.value.toLowerCase())
+        !likePatternToRegex(
+          getNormalisedString('%' + condition.value + '%'),
+        ).test(getNormalisedString(textValue))
       );
     }
 
+    // `matches` compiles to `$regexp`, not to `$like`, so it is deliberately
+    // NOT routed through `likePatternToRegex`. Its two divergences from the
+    // query - the /i flag the query's REGEXP does not carry, and a value over
+    // 256 characters - both leave the axis WIDER than the result set, which
+    // costs at most an empty row under "Show empty rows" and never money. The
+    // over-long value does not even reject: the failed length test skips this
+    // `if` and falls through to `return true`, keeping every category.
     if (
       condition.op === 'matches' &&
       typeof condition.value === 'string' &&
