@@ -8,6 +8,7 @@ import { q } from '@actual-app/core/shared/query';
 import {
   extractScheduleConds,
   scheduleIsRecurring,
+  scheduleIsSkippable,
 } from '@actual-app/core/shared/schedules';
 import { isPreviewId } from '@actual-app/core/shared/transactions';
 import { validForTransfer } from '@actual-app/core/shared/transfer';
@@ -144,7 +145,7 @@ export function SelectedTransactionsButton({
   const canBeSkipped = useMemo(() => {
     const recurringSchedules = selectedSchedules.filter(s => {
       const { date: dateCond } = extractScheduleConds(s._conditions);
-      return scheduleIsRecurring(dateCond);
+      return scheduleIsSkippable(dateCond, s.next_date);
     });
 
     return recurringSchedules.length === selectedSchedules.length;
