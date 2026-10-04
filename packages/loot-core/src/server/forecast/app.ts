@@ -1,5 +1,7 @@
 import { createApp } from '#server/app';
+import { aqlQuery } from '#server/aql';
 import * as db from '#server/db';
+import { getPostedScheduleTransactionsQuery } from '#shared/schedules';
 import type { RuleConditionEntity } from '#types/models';
 import type { ForecastResult, ForecastSource } from '#types/models/forecast';
 
@@ -136,6 +138,28 @@ export async function generateForecast({
         schedule => schedule._account !== FORECAST_UNASSIGNED_ACCOUNT_ID,
       );
 
+  // A separate query from `transactions`, which stays on the default 'inline'
+  // split set because `projectForecastData` sums the CHILDREN's amounts. The
+  // occurrence stamp needs the opposite row set: `splitTransaction` keeps
+  // `schedule` and `schedule_occurrence` on the row it turns into a parent and
+  // `makeChild` copies neither onto the children, so the split parent is the
+  // only stamped row — and 'inline' filters split parents out. Reading the
+  // stamp off `transactions` therefore misses a posted occurrence whose
+  // transaction has since been split, and projects it a second time. The
+  // fourth reader of the stamp; the other three already pass `splits: 'all'`.
+  //
+  // Deliberately NOT narrowed by `accountIdsToQuery` or `filterInfo.filters`,
+  // which `getTransactions` above does apply: 'posted' means the occurrence was
+  // paid, which is a fact about the ledger and not about what the user happens
+  // to be filtering the forecast by. Narrowing it would make an occurrence read
+  // as unpaid — and get projected on top of the real rows — whenever a filter
+  // excluded the payment. `indexScheduleOccurrences` narrows the PROJECTED rows
+  // by account and conditions separately, so nothing outside the filter leaks
+  // into the result.
+  const { data: postedScheduleTransactions } = await aqlQuery(
+    getPostedScheduleTransactionsQuery(schedules),
+  );
+
   const ruleAccountsById = new Map(
     ruleAccounts.map(account => [account.id, account]),
   );
@@ -151,7 +175,7 @@ export async function generateForecast({
     dateContext.endDateObj,
     accountsById,
     ruleAccountsById,
-    transactions,
+    postedScheduleTransactions,
   );
   const { dataPoints, lowestBalance } = projectForecastData({
     accounts,

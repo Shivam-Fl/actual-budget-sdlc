@@ -593,7 +593,10 @@ async function postTransactionForSchedule({
   // it gets paid twice. `getHasTransactionsQuery` and
   // `getPostedScheduleTransactionsQuery` already pass 'all', so the guard and
   // the status queries agree on whether an occurrence is posted — keep it that
-  // way. This cannot over-block: children never carry the stamp, so the widened
+  // way. So does the balance forecast, the fourth reader of the stamp, which
+  // takes `getPostedScheduleTransactionsQuery`'s result for exactly this
+  // reason rather than its own `transactions` (see forecast/app.ts). This
+  // cannot over-block: children never carry the stamp, so the widened
   // filter matches no row the narrower one did not.
   if (!today) {
     const {

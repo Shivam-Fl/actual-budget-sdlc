@@ -1558,23 +1558,23 @@ describe('schedule app', () => {
         );
       }
 
-      // The split parent and its children, straight from the db view — the
-      // only place the stamp's fate across a split is observable. Columns are
-      // named rather than `*` because `DbViewTransactionInternal` does not
-      // declare `schedule_occurrence`.
+      // The split parent and its children — the only place the stamp's fate
+      // across a split is observable. `splits: 'all'` is required: the default
+      // 'inline' hides the split parent, which is the row carrying the stamp.
       async function readSplitFamily(parentId: string) {
-        return db.all<{
-          id: string;
-          is_parent: number;
-          parent_id: string | null;
-          schedule: string | null;
-          schedule_occurrence: number | null;
-        }>(
-          `SELECT id, is_parent, parent_id, schedule, schedule_occurrence
-             FROM v_transactions_internal
-            WHERE id = ? OR parent_id = ?`,
-          [parentId, parentId],
+        const { data } = await aqlQuery(
+          q('transactions')
+            .options({ splits: 'all' })
+            .filter({ $or: [{ id: parentId }, { parent_id: parentId }] })
+            .select([
+              'id',
+              'is_parent',
+              'parent_id',
+              'schedule',
+              'schedule_occurrence',
+            ]),
         );
+        return data;
       }
 
       it('writes no second transaction when the posted one has been split', async () => {
@@ -1608,10 +1608,10 @@ describe('schedule app', () => {
 
         const family = await readSplitFamily(parent.id);
         const splitParent = family.find(row => row.id === parent.id);
-        expect(splitParent).toMatchObject({ is_parent: 1, schedule: id });
+        expect(splitParent).toMatchObject({ is_parent: true, schedule: id });
 
-        // Read through AQL rather than off the raw view above, which stores the
-        // occurrence as a `20170102` integer.
+        // Read through `readStampedRows` as well, which filters on the
+        // occurrence too.
         expect(
           (await readStampedRows(id, OCCURRENCES[0])).map(row => row.id),
         ).toEqual([parent.id]);
@@ -1621,8 +1621,8 @@ describe('schedule app', () => {
         const children = family.filter(row => row.parent_id === parent.id);
         expect(children).toHaveLength(2);
         for (const child of children) {
-          expect(child.schedule).toBeNull();
-          expect(child.schedule_occurrence).toBeNull();
+          expect(child.schedule).toBeFalsy();
+          expect(child.schedule_occurrence).toBeFalsy();
         }
       });
 
@@ -1645,11 +1645,13 @@ describe('schedule app', () => {
         expect(await readStampedRows(id, OCCURRENCES[1])).toHaveLength(1);
       });
 
-      it('leaves the status queries agreeing with the guard after a split', async () => {
-        // Both status queries already read split parents, so a split parent
-        // stamped for this occurrence keeps the Schedules page showing it as
-        // paid. The guard used to disagree, which is what let a second post
-        // through; this pins the three together.
+      it('still reports a split-parented occurrence as posted', async () => {
+        // Both status queries read split parents, so the split parent stamped
+        // for this occurrence keeps the Schedules page showing it as paid.
+        // That they agree with the guard is pinned by the sibling case above,
+        // 'writes no second transaction when the posted one has been split' —
+        // which is the one that fails if the guard stops reading split parents.
+        // This case does not drive a second post, so it cannot pin that.
         const id = await createWeeklySchedule();
 
         await post(id);
