@@ -1,0 +1,3 @@
+BEGIN TRANSACTION;
+ALTER TABLE schedules_next_date ADD COLUMN skipped_occurrences TEXT DEFAULT NULL;
+COMMIT;
