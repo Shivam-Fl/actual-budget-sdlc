@@ -246,7 +246,19 @@
       "Two closely-named predicates now coexist with different meanings. Mitigated by doc comments on both functions, but a future reader who collapses them still reintroduces this bug."
     ]
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/shared/schedules.ts",
+    "packages/loot-core/src/shared/schedules.test.ts",
+    "packages/desktop-client/src/components/schedules/SchedulesTable.tsx",
+    "packages/desktop-client/src/components/transactions/SelectedTransactionsButton.tsx",
+    "packages/desktop-client/src/components/transactions/useTransactionRowContextActions.ts",
+    "packages/desktop-client/src/components/modals/ScheduledTransactionMenuModal.tsx",
+    "packages/desktop-client/src/components/schedules/ScheduleEditForm.tsx",
+    "packages/desktop-client/e2e/page-models/schedules-page.ts",
+    "packages/desktop-client/e2e/schedules.test.ts",
+    "packages/loot-core/src/shared/schedules.test.ts",
+    "packages/desktop-client/e2e/schedules.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
