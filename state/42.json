@@ -72,5 +72,136 @@
     "decided_at": "2026-10-04T02:25:01.542Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "debug"
+  "dispatched_stage": "debug",
+  "validated_work_order": {
+    "issue": 42,
+    "version": 1,
+    "understanding": "The per-occurrence identity of a posted schedule is the pair (schedule, schedule_occurrence) written by postTransactionForSchedule. Before writing, that handler checks whether the occurrence is already spent, with a query at packages/loot-core/src/server/schedules/app.ts:588-592: q('transactions').filter({ schedule, schedule_occurrence: occurrence }). That query carries no .options({ splits }), so AQL defaults to splits: 'inline' (packages/loot-core/src/server/aql/schema/executors.ts:51-55) and execTransactionsBasic appends `is_parent = 0` (executors.ts:238-244). A split parent is exactly the row the stamp survives on: splitTransaction keeps the original row and sets is_parent: true (packages/loot-core/src/shared/transactions.ts:405-412), while makeChild copies neither `schedule` nor `schedule_occurrence` (transactions.ts:57-82). So the one row carrying the stamp is the one row the guard cannot see, and the occurrence looks unspent. getHasTransactionsQuery (shared/schedules.ts:218-219) and getPostedScheduleTransactionsQuery (schedules.ts:252-253) both already pass splits: 'all'. The guard is the only one of the three that does not, which is why the Schedules page reads an occurrence as paid while a second post for it still writes.\n\nI reproduced this against the checkout, not from the ticket's account of it. A monthly schedule, occurrence 2016-12-02, posted once then split through the real path (shared splitTransaction + makeEmptySplitSubtransactions + the transactions-batch-update handler), then posted again for the same occurrence, leaves two rows stamped 2016-12-02: split parent id6 and a fresh id9, both -10000. Adding .options({ splits: 'all' }) and re-running leaves one. I also confirmed the direction is safe rather than merely different: a split parent stamped for occurrence A does not block occurrence B, a genuinely still-owed later date, from posting — both rows appear, 2016-12-02 and 2017-01-02.",
+    "root_cause": "The duplicate-occurrence guard in postTransactionForSchedule (packages/loot-core/src/server/schedules/app.ts:588-592) queries q('transactions') with no .options({ splits: ... }). AQL defaults 'transactions' to splits: 'inline', which appends `is_parent = 0` and excludes split parents. Since splitTransaction retains the schedule and schedule_occurrence stamp on the parent row only (makeChild copies neither), the guard sees no stamped row after a split. getHasTransactionsQuery and getPostedScheduleTransactionsQuery both already pass splits: 'all', so the guard is the sole outlier of the three.",
+    "approach": "One-line widening of the guard's row set, matching the two sibling queries that already answer the same question, plus the tests the issue asks for. Insert .options({ splits: 'all' }) into the alreadyPosted guard query inside the `if (!today)` block so it sees the split parent carrying the stamp. The `today` branch stays unguarded — it pays next_date early and deliberately leaves the occurrence pending — and is untouched because the guard lives entirely inside `if (!today)`. The explanatory comment above the guard gains a note on why 'all' is required, because the default is the trap: a reader who simplifies it away reintroduces a money bug. Tests go in the existing `consuming an occurrence twice` describe block of app.test.ts, whose helpers (post, createWeeklySchedule) the new cases reuse. The split is driven through the real path rather than by hand-inserting an is_parent row, so the test fails if the stamp ever stops surviving on the parent, not only if the option is removed. Note for the implementer: getTransactionDates() and readPostedTransaction() in that file query with default 'inline' splits and report zero rows for a split parent; post-split assertions must query with .options({ splits: 'all' }) explicitly.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/server/schedules/app.ts",
+        "action": "edit",
+        "change": "In postTransactionForSchedule, inside the `if (!today)` block at lines 585-597, insert `.options({ splits: 'all' })` between `q('transactions')` and `.filter({ schedule: schedule.id, schedule_occurrence: occurrence })` in the alreadyPosted guard query (line 589), so it reads `q('transactions').options({ splits: 'all' }).filter({ ... }).select('id')`. Append to the comment block immediately above the guard (lines 571-584) a short paragraph stating that 'all' is required because splitTransaction keeps the schedule and schedule_occurrence stamp on the parent row and makeChild copies neither, so the default 'inline' (is_parent = 0) excludes the only row carrying the stamp; and that the option matches getHasTransactionsQuery and getPostedScheduleTransactionsQuery, which already pass it, so the guard and the status queries agree on whether an occurrence is posted. Do not change the `today` branch, the filter, the select, or the `alreadyPosted != null` early return.",
+        "why": "This is the whole fix, and the only place the guard lives. Verified by reproduction: without it a post/split/post sequence leaves two stamped transactions; with it, one."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/server/schedules/app.test.ts",
+        "action": "edit",
+        "cases": [
+          "In the `consuming an occurrence twice` describe block: post an occurrence, split the resulting transaction through the real path (splitTransaction from #shared/transactions with makeEmptySplitSubtransactions, applied via the transactions-batch-update handler), then post the SAME occurrence again — assert exactly one transaction carries that schedule and schedule_occurrence. Query with .options({ splits: 'all' }); getTransactionDates() uses the default 'inline' splits and returns zero rows for a split parent, so it cannot be used as-is here.",
+          "In the same block: assert the split parent itself retains the stamp (schedule and schedule_occurrence both equal the occurrence) after splitTransaction, so a failure of the new test is attributable to the guard's query rather than to the stamp having been lost by the split.",
+          "In the same block: the pre-existing case where the occurrence is posted twice with no split in between must still pass unchanged — the widening must not have broken the case it was already covering.",
+          "New case, the over-blocking guard the issue names: a monthly schedule whose occurrence A has been posted and split must still allow a genuinely different, still-owed occurrence B to post. Assert both rows exist afterwards, stamped A and B respectively, and that the number of rows carrying B's occurrence is exactly one. This fails if the guard is ever widened to something coarser than an exact stamp match.",
+          "Existing case that must keep passing: `does not guard today, which may legitimately be posted twice` — the `today` path deliberately stays unguarded and writes twice; the fix must not reach it."
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "On a one-off schedule, posting the occurrence, splitting the resulting transaction in the account register, and then choosing 'Post transaction' on that schedule again leaves exactly one transaction for the occurrence — the split parent — and creates no second row.",
+        "how_to_verify": "Boot with `yarn start` and use 'View demo' on the setup screen. On /schedules add a new one-off schedule: payee, account, amount, date a few days out. Open that row's actions menu and choose 'Post transaction' (NOT 'Post transaction today' — `today` is deliberately unguarded and must keep writing twice). Note the transaction in the register. Select it, click its Category cell, choose 'Split'. Confirm one row now carries the Split marker. Return to /schedules, choose 'Post transaction' again on the same row. The register must still contain exactly one transaction for that payee and date — the split parent — not a second un-split row. Before this change the register shows two.",
+        "source": "IAC-1",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "A split parent stamped for one occurrence does not mark a different, still-owed occurrence of the same schedule as paid: posting that later occurrence afterwards still writes its transaction.",
+        "how_to_verify": "Covered by the test 'a split parent stamped for occurrence A does not block occurrence B' in packages/loot-core/src/server/schedules/app.test.ts, added by this change. Run `yarn workspace @actual-app/core run test`; the case fails if the guard is ever widened beyond an exact stamp match. Not a browser check: it needs two occurrences of one schedule with a specific split in between, which is faster and less flaky to assert directly.",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "After an occurrence is posted and its transaction split, the duplicate-occurrence guard and getHasTransactionsQuery agree: both report the occurrence as already posted, and neither reports it as unpaid.",
+        "how_to_verify": "Assert in the same new test that after the split, getHasTransactionsQuery (which already passes splits: 'all') still returns a row matching the schedule, while a second post writes nothing. If the guard and the status query ever disagree again, one of the two assertions fails. Not a browser check: the disagreement is between two queries, and no screen renders it as a distinct observable state.",
+        "source": "IAC-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "The post-then-split-then-post case has a permanent regression test, and the full loot-core schedules suite still passes with the widened guard.",
+        "how_to_verify": "Run `yarn workspace @actual-app/core run test`. The new case is in the `consuming an occurrence twice` block of packages/loot-core/src/server/schedules/app.test.ts; the pre-existing cases in that block and in the `occurrence stamp` block must all still pass. Verified green on this checkout with the fix applied: 276 tests across 14 files, including src/server/schedules/app.test.ts (48), src/shared/schedules.test.ts (80) and src/server/forecast/app.test.ts (15).",
+        "source": "IAC-3",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "Boot with `yarn start` (port 3001) and, on the setup screen, choose 'View demo' so the budget has accounts and sample data rather than being empty.",
+      "Go to /schedules and add a new ONE-OFF schedule (a single date, not a recurring rule): pick a payee, an account, an amount, and a date a few days out. One-off matters — a recurring schedule's next_date advances after a post, so 'Post transaction' would target a different occurrence and prove nothing.",
+      "Open that row's actions menu and choose 'Post transaction'. Do NOT choose 'Post transaction today': `today` deliberately pays early, leaves the occurrence pending, and is meant to be re-postable. Choosing it would produce two transactions even after this fix and read as a regression.",
+      "Open the account's register and confirm exactly one transaction for that payee and date.",
+      "Select that transaction and click its Category cell; choose 'Split' from the dropdown. The register now shows one row carrying the Split marker.",
+      "Return to /schedules, open the SAME row's actions menu, and choose 'Post transaction' again.",
+      "Go back to the register: there must still be exactly ONE transaction for that payee and date (the split parent). A second, un-split row is the bug.",
+      "Negative control, to prove the setup can actually produce two rows: with the same one-off schedule, post it once WITHOUT splitting, then choose 'Post transaction' again from /schedules. Even before this change that yields one row — confirm it, so step 7's single row is evidence about the split and not about a menu item that never worked.",
+      "Adversarial pass, the direction the fix could plausibly over-reach: on a RECURRING schedule, post the first occurrence from the register's Upcoming section, split that transaction, then post the SECOND occurrence from Upcoming. The second occurrence must still post and appear — if a split on one occurrence ever made the next occurrence read as paid, this change has over-blocked."
+    ],
+    "risks": [
+      "Money, on the write path: this is the guard that decides whether one occurrence of a schedule can be paid twice, and the change widens the row set that guard matches. The direction is safe — a broader guard sees more rows, never fewer, and the rows it newly sees are precisely those carrying the stamp — but it is the kind of widening that must not be widened further by a later reader.",
+      "The default is the trap. Omitting .options({ splits: ... }) on a 'transactions' query is valid AQL and silently means 'inline', which excludes split parents. A future edit that simplifies the query back loses this fix with no type error and no failing test other than the new split case. The comment added above the guard is load-bearing for that reason.",
+      "Test helpers in the same file silently disagree about splits: getTransactionDates() and readPostedTransaction() query with the default 'inline' and report zero rows for a split parent. Reusing either for a post-split assertion would make a correct implementation look broken. The new tests query with .options({ splits: 'all' }) explicitly.",
+      "The change touches no path in forbidden_paths and adds no dependency, no new host, and no network call — nothing in env.api_allowlist is involved."
+    ],
+    "out_of_scope": [
+      "Splitting a posted occurrence still leaves the stamp only on the parent row, never on the children. That is what makes this bug possible, but moving or copying the stamp onto children would change what a split means for schedules and is not what the issue asks for; the guard is fixed to read the row that already carries it.",
+      "Unsplitting a posted-and-split transaction drops the stamp entirely — confirmed by reproduction that after makeAsNonChildTransactions no schedule-linked transaction remains and getHasTransactionsQuery returns zero rows. Whether unsplitting should preserve the stamp is a separate question about the stamp's lifecycle, a different defect with a different fix, and it would ship on its own if this ticket did not exist.",
+      "Merging transactions and transferring them already carry schedule_occurrence explicitly (packages/loot-core/src/server/transactions/merge.ts:174,186 and transfer.ts:69,136) and already pass splits: 'all' where they query. No change needed there.",
+      "No UI change. Both surfaces named in the issue — the register's Upcoming section and the Schedules page menu — dispatch the same schedule/post-transaction handler, and both are correct once the guard is; the register's dispatch passes an explicit date (Account.tsx:1567) and the Schedules page menu does not (SchedulesTable.tsx:184), which is why the QA script uses a one-off schedule for the page path.",
+      "The `today` branch of postTransactionForSchedule stays unguarded by design and is not changed."
+    ],
+    "kind": "bug",
+    "confidence": 93,
+    "confidence_rationale": "The defect was reproduced on this checkout rather than taken from the ticket's description, the one-line fix was applied and confirmed to collapse the duplicate to a single transaction, and the over-blocking direction was checked explicitly (a split on occurrence A still lets occurrence B post). The 276 tests across the schedules, shared-schedules, forecast and transactions suites pass with the fix applied. The residual 7% is the browser step in AC-1, which I verified as reachable by tracing the code path and reproducing the same handler sequence server-side, but which I did not drive through a live UI.",
+    "reproduced": true,
+    "evidence": [
+      "Without the fix: post occurrence 2016-12-02, split it, post again -> two rows stamped 2016-12-02 (split parent id6, new id9, both -10000). The guard saw no stamped row at all: the parent by is_parent = 0, and the new row did not exist yet at check time.",
+      "With .options({ splits: 'all' }) added: the same script leaves exactly one row (id6, is_parent true, stamped 2016-12-02).",
+      "Over-blocking check with the fix applied: monthly schedule, occurrence 2016-12-02 posted then split, then 2017-01-02 posted -> both rows present, distinct occurrences ['2016-12-02', '2017-01-02']. The widened guard does not make a still-owed occurrence read as paid.",
+      "One-off schedule via the Schedules-page dispatch shape (post with no date argument, which is what SchedulesTable.tsx:184 sends): reproduces two stamped transactions without the fix, one with it.",
+      "Full suite with the fix applied: 14 files, 276 tests passed — src/server/schedules/app.test.ts (48), src/shared/schedules.test.ts (80), src/server/forecast/app.test.ts (15), src/server/transactions/* (67), src/shared/transactions.test.ts (19).",
+      "Default confirmed in code: packages/loot-core/src/server/aql/schema/executors.ts:51-55 defaults the option to 'inline'; execTransactionsBasic at :238-244 appends `is_parent = 0` whenever the option is not 'all'."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Copy `schedule` and `schedule_occurrence` onto split children in makeChild, so the stamp survives on a row the default 'inline' query can see.",
+        "rejected_because": "Changes what a split means for every schedule-linked transaction and every other consumer of children (forecast, merge, register totals), and would double-count a stamp across parent and children. getHasTransactionsQuery/getPostedScheduleTransactionsQuery already read parents via splits: 'all' — so the guard, not the split model, is the outlier."
+      },
+      {
+        "approach": "Give the guard its own shared query builder in packages/loot-core/src/shared/schedules.ts, next to getHasTransactionsQuery, so the three occurrence queries sit together and cannot drift.",
+        "rejected_because": "The guard's question (exact stamp match, no date fallback) is a different shape from getHasTransactionsQuery's (stamp OR a lower-bound date arm); a shared builder would either grow a switch flag or unify two queries that are deliberately different. It also spreads a one-line fix across two files. Worth revisiting only if a fourth occurrence query appears."
+      },
+      {
+        "approach": "Add an explicit is_parent/is_child check or a post-hoc filter over the 'all' result set instead of setting splits: 'all'.",
+        "rejected_because": "Equivalent to what splits: 'all' already does, but by hand and less legibly. The sibling queries express the same intent declaratively, and matching them is what keeps the three in agreement."
+      },
+      {
+        "approach": "Leave the guard alone and fix the divergence on the read side instead, so the status queries also ignore split parents.",
+        "rejected_because": "Inverts the fix in the direction the issue warns about: the Schedules page would read a genuinely paid occurrence as unpaid, the forecast row would come back, and the occurrence could then be posted for real. That turns a read-side cosmetic bug into an actual double payment."
+      }
+    ],
+    "assumptions": [
+      "The issue's stated fix — add .options({ splits: 'all' }) to the guard — is the intended shape, and it is correct as reproduced. No recorded decision contradicts it.",
+      "'Post transaction' (no date) on the Schedules page for a ONE-OFF schedule re-dispatches the same occurrence, because a one-off's next_date never advances. Confirmed server-side; this is what makes the browser check in AC-1 deterministic rather than dependent on recurring-date arithmetic.",
+      "QA drives the browser app at localhost:3001 with a demo budget ('View demo' on the setup screen), which is the environment .sdlc/config.yml describes."
+    ],
+    "unknowns": [
+      "Not driven through a live UI: the AC-1 browser walkthrough was established by tracing the dispatch path and reproducing the identical handler sequence server-side, not by clicking through the running app. If the Split affordance's location has moved, QA should expect to reach it from the transaction's Category cell dropdown.",
+      "Whether a schedule split created by a RULE (execSplitActions in packages/loot-core/src/server/rules/rule.ts) leaves the stamp in the same place as one created by the UI. Both route through shared splitTransaction, so it should, but no test covers the rule-created variant and this change does not add one."
+    ],
+    "debate_summary": "No council divergence to record: the brief held no decisions and no prior rejection, and the fix was settled by reproduction rather than by argument. Two judgement calls are worth naming. First, the direction of the widening was checked empirically rather than argued from the principle that a broader guard is safe — a split parent on occurrence A was confirmed not to block a still-owed occurrence B. Second, the one-off schedule in the QA script is load-bearing, not incidental: a recurring schedule advances next_date after a post, so 'Post transaction' would target a different occurrence and the browser check would pass vacuously.",
+    "residual_risks": [
+      "Deliberately not covered: a schedule posted and split by a RULE rather than by the UI. It shares the same splitTransaction path so the guard fix covers it, but nothing asserts it, and a rule-created split that lost the stamp would re-open this bug silently.",
+      "Deliberately not covered: the stamp's lifecycle across unsplit. Confirmed by reproduction that unsplitting a posted-and-split transaction drops the stamp entirely (no schedule-linked row survives, getHasTransactionsQuery returns zero). A separate defect with a separate fix, listed in out_of_scope; it means an occurrence whose payment was split and then unsplit can be posted again — pre-existing behaviour this change neither causes nor fixes.",
+      "The guard is widened, not restructured. Nothing prevents a later change from widening it further (for instance to a date range), and the only thing standing between that and a missed payment is the AC-2 over-blocking test."
+    ],
+    "mode": "committed"
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-04T02:43:49.730Z",
+  "validated_ac_changes": []
 }
