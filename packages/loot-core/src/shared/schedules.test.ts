@@ -937,28 +937,27 @@ describe('schedules', () => {
     });
   });
 
-  /* Dec 2020 calendar for reference:
-    | Su | Mo | Tu | We | Th | Fr | Sa |
-    |    |    | 01 | 02 | 03 | 04 | 05 |
-    | 06 | 07 | 08 | 09 | 10 | 11 | 12 |
-    | 13 | 14 | 15 | 16 | 17 | 18 | 19 |
-    | 20 | 21 | 22 | 23 | 24 | 25 | 26 |
-    | 27 | 28 | 29 | 30 | 31 |
-    */
-  function weeklyOnSaturday(extra = {}): RuleConditionEntity {
-    return {
-      field: 'date',
-      op: 'isapprox',
-      value: {
-        start: '2020-12-05',
-        frequency: 'weekly',
-        patterns: [],
-        ...extra,
-      },
-    };
-  }
-
   describe('getNextDateAfter', () => {
+    /* Dec 2020 calendar for reference:
+      | Su | Mo | Tu | We | Th | Fr | Sa |
+      |    |    | 01 | 02 | 03 | 04 | 05 |
+      | 06 | 07 | 08 | 09 | 10 | 11 | 12 |
+      | 13 | 14 | 15 | 16 | 17 | 18 | 19 |
+      | 20 | 21 | 22 | 23 | 24 | 25 | 26 |
+      | 27 | 28 | 29 | 30 | 31 |
+      */
+    function weeklyOnSaturday(extra = {}) {
+      return {
+        op: 'isapprox',
+        value: {
+          start: '2020-12-05',
+          frequency: 'weekly',
+          patterns: [],
+          ...extra,
+        },
+      };
+    }
+
     it('returns the next occurrence after the given date', () => {
       expect(getNextDateAfter(weeklyOnSaturday(), '2020-12-05')).toBe(
         '2020-12-12',
@@ -1054,6 +1053,23 @@ describe('schedules', () => {
   });
 
   describe('scheduleIsSkippable', () => {
+    /* This block's own copy of the Saturday fixture, because
+      `scheduleIsSkippable` takes a `RuleConditionEntity | null` and so needs
+      the typed one — `getNextDateAfter` reads only `op` and `value`, so its
+      copy above stays shaped like the conditions the app actually stores. */
+    function weeklyOnSaturday(extra = {}): RuleConditionEntity {
+      return {
+        field: 'date',
+        op: 'isapprox',
+        value: {
+          start: '2020-12-05',
+          frequency: 'weekly',
+          patterns: [],
+          ...extra,
+        },
+      };
+    }
+
     /* Whether "Skip next scheduled date" can be offered is not the same
       question as "is this recurring?": `setNextDate` moves the schedule to
       `getNextDateAfter(...)` and writes nothing when that is null, so a

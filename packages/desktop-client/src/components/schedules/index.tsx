@@ -13,7 +13,7 @@ import { Search } from '#components/common/Search';
 import { FeatureErrorFallback } from '#components/FeatureErrorFallback';
 import { Page } from '#components/Page';
 import { useSchedules } from '#hooks/useSchedules';
-import { pushModal } from '#modals/modalsSlice';
+import { pushModal, replaceModal } from '#modals/modalsSlice';
 import { useDispatch } from '#redux';
 
 import { SchedulesTable } from './SchedulesTable';
@@ -27,8 +27,11 @@ export function Schedules() {
 
   const onEdit = useCallback(
     (id: ScheduleEntity['id']) => {
+      // Replaces rather than pushes: the row is a single onClick target, so a
+      // double-click fires it twice, and two stacked copies of the same form
+      // mean one Cancel leaves the other on screen.
       dispatch(
-        pushModal({ modal: { name: 'schedule-edit', options: { id } } }),
+        replaceModal({ modal: { name: 'schedule-edit', options: { id } } }),
       );
     },
     [dispatch],
