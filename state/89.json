@@ -686,5 +686,161 @@
       "AC-5 asserts a nested note is held to the same rules, which is a stronger contract than the product strictly needs today, because QA found parseReleaseNotes (util.mjs:158-165) is also non-recursive and a nested note therefore never reaches the published changelog. The checker does select it, so the gate and the checker disagree about the same directory, and closing that is the point — but the user-visible impact of this half is smaller than AC-5's wording implies."
     ],
     "mode": "committed"
+  },
+  "approved_work_order": {
+    "issue": 89,
+    "version": 2,
+    "understanding": "The plan PR #91 was built from was not wrong about the cause. Its diagnosis holds: PR #9 (squash 026f8b6) shipped a user-visible custom-report fix with nothing under upcoming-release-notes/, the composite action .github/actions/release-notes/check/action.yml is referenced by no workflow, and ci-verify.yml runs typecheck, lint, unit, build and e2e only — so the release-note requirement is advisory and a squashed bot-authored PR slipped past it. The remedy it chose, a unit-test gate over the real notes directory, is the right shape given that .github/** is forbidden to every plan. What was wrong was the shipped gate, in two independent ways QA measured, and neither is a wrong acceptance criterion so none is rewritten: AC-1..AC-4 are kept verbatim and AC-5 (nested-note escape) and AC-6 (cache-skipped gate) are added after them. (1) The gate enumerated upcoming-release-notes/ with a single non-recursive fs.readdirSync, copying its inclusion rule from parseReleaseNotes rather than from selectReleaseNotePaths (util.mjs:129-156, fed by the recursive git diff pathspec), so a nested note is selected by the release-notes checker and counted by count-points.mjs while escaping the unit gate (gap-nested-note.txt, GATE_EXIT=0; T-13 failed on those bytes). (2) The gate lives inside lage's cached `test` task and no release note can ever enter that task's hash: QA measured the same key d1677e96… with `» skip @actual-app/ci-actions test` and exit 0 on bytes direct vitest rejects with exit 1, across four standalone evidence files. This makes the plan's central claim — that the suite runs in CI on every PR — true only on a cold cache. T-12's literal assertion failure is its own control, not the behaviour under test: `withNote` is declared async with a synchronous body, so the note is already restored when the control's vitestGate() runs, and the control throws before the assertion under test is reached. That is a defect in QA's spec and does not clear the product defect. Answering the outstanding plan-review objection, the only reason the previous work order was refused: AC-6's how_to_verify told the reader to restore the note at step (4) and then required `yarn test` at step (5) to exit non-zero with the same message, so the criterion could only be satisfied by a gate that fires on a valid note. Its steps (4)-(5) are rewritten to the reviewer's first option, keeping both halves the check text claims and adding a no-false-positive half: (4) with the note still broken, `yarn test` → non-zero with the same message; (5) restore the note and run `yarn test` again → exit 0 with no release-notes failure. Every step now asserts about the state the note is actually in at that step. Nothing else changes. Limits, stated plainly: this checkout has no node_modules, so neither defect was re-executed here. The nested-note blindness was reproduced with a standalone node script over the shipped readdirSync logic, and the cache behaviour and every lage mechanism the approach depends on were read out of the exact tarball the lockfile pins (lage 2.15.17) rather than assumed — WrappedTarget.successful is `status === 'skipped' || status === 'success'`; TargetFactory writes `cache: s.cache !== false`; the worker's runTargetWithCaching returns cacheHit:false and runs whenever `!target.cache`; getReadyTargets admits a target only when every dependency is successful, so the cache lookup for `test` happens after the gate has already run; expandDepSpecs maps a bare dependsOn entry to the same package's task; runAction sets process.exitCode = 1 whenever results !== 'success'; and NpmScriptRunner.shouldRun returns false for a package whose package.json lacks the script, which lands in onSkipped and so still counts as successful. AC-6 is written as the command sequence that will actually execute it. `version` is deliberately left unset: the prompt forbids setting it, the schema requires it, and .github/workflows/sdlc-root-cause.yml:540-547 runs bump-version.mjs BEFORE validation precisely to resolve that, so preflight's \"missing required property version\" is the known artifact of preflighting before the bump — check-forbidden.mjs (6 paths, none forbidden) and check-split-criteria.mjs (every IAC-n answered) both pass.",
+    "root_cause": "Two independent defects, both introduced by the gate this PR added to packages/ci-actions/bin/release-notes-check.test.mjs. (1) NON-RECURSIVE ENUMERATION — readNotes() enumerates upcoming-release-notes/ one level deep, and its inclusion rule was copied from parseReleaseNotes (also non-recursive) rather than from selectReleaseNotePaths (util.mjs:148-149, fed by a recursive `git diff` pathspec, excluding only the top-level README.md); the two functions that read the same directory already disagree and the gate copied the wrong one, so a nested note is checked by the release-notes checker, counted by count-points.mjs and published in the changelog while escaping the gate. (2) THE GATE LIVES INSIDE A CACHED TASK WHOSE INPUTS CANNOT CONTAIN A RELEASE NOTE — `yarn test` is `lage test --continue`; lage hashes each target's inputs, and by construction those inputs can never include upcoming-release-notes/**, because PackageTree.addToPackageTree buckets every tracked file under the nearest ancestor workspace package and the notes directory has none. A note-only change leaves the hash untouched, lage prints `» skip @actual-app/ci-actions test - <same hash>` and exits 0 on a note the checker rejects — the gate is a no-op on precisely the change it exists to police.",
+    "approach": "Extract the gate into packages/ci-actions/bin/release-notes-gate.mjs — recursive walk, inclusion rule matching selectReleaseNotePaths (every *.md at any depth, README.md excluded only at the top level), rules from ../src/release-notes/util.mjs plus the two checks validateFile contributes, failure strings keyed by the relative path with forward slashes and otherwise byte-identical to the ones QA's T-8/T-9/T-10 assert, YAML parse errors reported rather than thrown. It runs as a CLI when invoked directly. The vitest block in release-notes-check.test.mjs imports it instead of carrying its own copy, keeps its existing cases, and gains two: one reproducing T-13 by writing upcoming-release-notes/qa-nested/bad-note.md and asserting the failure names `qa-nested/bad-note.md`, and one reproducing T-12's cause structurally by asserting the wiring. Make the gate reachable on a warm cache: add `\"release-notes\": \"node bin/release-notes-gate.mjs\"` to packages/ci-actions/package.json, and a `cache: false` `release-notes` pipeline task that `test` dependsOn, in lage.config.js — verified against the lage 2.15.17 bundle the lockfile pins rather than assumed: expandDepSpecs maps a bare dependsOn entry to the same package's task; TargetFactory turns `cache: false` into target.cache = false and the worker's runTargetWithCaching then returns cacheHit:false, so an uncached target always runs; SimpleScheduler.getReadyTargets requires every dependency to be successful while the cache lookup for `test` lives in WrappedTarget.run() after that point, so the gate runs on every invocation even when `test` itself is a cache hit; a gate failure leaves dependents pending, which keeps results !== 'success' and makes runAction set process.exitCode = 1. Packages without the script are skipped cleanly by NpmScriptRunner.shouldRun returning false, which lands in onSkipped — and WrappedTarget.successful counts skipped as successful, so their `test` targets are unaffected. The note file itself does not change.",
+    "files": [
+      {
+        "path": "packages/ci-actions/bin/release-notes-gate.mjs",
+        "action": "create",
+        "change": "New ESM module exporting listNotePaths() (recursive readdirSync, every *.md at any depth, README.md excluded only at the top level — selectReleaseNotePaths' rule — paths relative to the notes dir joined with '/', sorted), validateNote(relPath) (the checker's category/authors/one-line-body rules via ../src/release-notes/util.mjs, failures keyed `${relPath} …` with the exact strings QA's T-8/T-9/T-10 assert, front-matter parse errors reported as `<path> front matter is not valid YAML: <reason>`), collectFailures(), and a main() that prints `::error::<failure>` per failure and exits 1, or prints `Validated N release note(s).` and exits 0, guarded by an import.meta.url check so importing it has no side effects.",
+        "why": "T-13, and the duplication that caused it: one walk and one rule set with two callers, so the gate and the checker cannot drift apart again the way parseReleaseNotes and selectReleaseNotePaths already have. The CLI entry exists for T-12 — the gate must be runnable as its own task, outside the cached test task."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.test.mjs",
+        "action": "edit",
+        "change": "Leave the existing subprocess-driven describe block untouched. In the describe('the real upcoming-release-notes/ directory') block this PR added, delete the inlined non-recursive readNotes() and validate(name) and import { collectFailures, listNotePaths } from './release-notes-gate.mjs' instead; keep 'contains release notes to check' and keep 'every note carries a category the published changelog has a header for' asserting expect(collectFailures()).toEqual([]). Add it('holds a note in a subdirectory to the same rules') — write upcoming-release-notes/qa-nested/bad-note.md with category Chore and author github-actions, assert collectFailures() includes `qa-nested/bad-note.md`, remove the directory in a finally. Add it('is reachable on every run, not only on a cold cache') — createRequire to read ../../../lage.config.js and this package's package.json, assert config.pipeline['release-notes'].cache === false, that pipeline.test.dependsOn includes 'release-notes', and that pkg.scripts['release-notes'] mentions release-notes-gate.mjs. Comment both with the defect each reproduces; run npx oxfmt and commit the formatting.",
+        "why": "T-13's reproduction and T-12's cause, restated as cases that go red if either defect returns — neither can be expressed by the existing block, since the nested case needs a note that is not there and the cache defect is a property of the task graph, not of any note."
+      },
+      {
+        "path": "packages/ci-actions/package.json",
+        "action": "edit",
+        "change": "Add one key to scripts, beside test and typecheck: \"release-notes\": \"node bin/release-notes-gate.mjs\". Nothing else changes; test stays vitest --run and no dependency changes.",
+        "why": "lage runs an npmScript task only for packages that define it — NpmScriptRunner.shouldRun returns false when package.json.scripts[task] is absent — so this single key scopes the new task to this package and leaves every other workspace untouched."
+      },
+      {
+        "path": "lage.config.js",
+        "action": "edit",
+        "change": "Add a 'release-notes' pipeline task with `type: 'npmScript'` and `cache: false`, commented with the reason (it reads upcoming-release-notes/, which lives at the repo root outside every workspace package, so no note can appear in a test task's hash and a cache hit would skip the gate on the one change it exists to police — the same reasoning as the existing build:browser entry), and give `test` a `dependsOn: ['release-notes']` alongside its existing options.outputGlob. Change nothing else.",
+        "why": "T-12. The gate cannot be fixed by moving it and cannot be given inputs that reach it (root-level files bucket under a non-target key). Root package.json is refused by reservedChanges(), which flags pre/post hooks of any gating script, and .github/** is forbidden to every plan, so this file is the only place the fix can live."
+      },
+      {
+        "path": "upcoming-release-notes/fix-custom-report-show-empty-rows-categories.md",
+        "action": "edit",
+        "change": "No change. Leave byte-identical to what the PR already added: front matter category: Bugfix / authors: [Shivam-Fl], one blank line, the single body line, one trailing newline. Confirm with git diff --name-status origin/main...HEAD -- upcoming-release-notes/ that the branch still shows exactly one A row.",
+        "why": "AC-1..AC-3 assert these exact bytes off the branch. Both bugs are in the gate, not the note, and touching it would risk AC-1's 'exactly one new file' for nothing."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.test.mjs",
+        "action": "edit",
+        "cases": [
+          "reproduces T-13 — 'holds a note in a subdirectory to the same rules': writes upcoming-release-notes/qa-nested/bad-note.md with category Chore and author github-actions, asserts collectFailures() reports it as `qa-nested/bad-note.md` with forward slashes, removes the directory in a finally. Fails against the gate as shipped, where a non-recursive readdirSync sees 0 nested notes (gap-nested-note.txt: Tests 8 passed, GATE_EXIT=0, on these bytes)",
+          "reproduces T-12's cause — 'is reachable on every run, not only on a cold cache': asserts lage.config.js declares a `release-notes` task with cache: false, that pipeline.test.dependsOn includes it, and that this package's package.json defines the script. Fails against PR #91, where the gate exists only inside the cached test task and lage prints `» skip @actual-app/ci-actions test - <same hash>` and exits 0 on a note-only change (hostile-cache-cold-isolation.txt: EXIT2=0 against bytes direct vitest rejects with exit 1). The live behaviour it stands for is AC-6; this case is the wiring, which is what a unit test can actually see",
+          "kept — 'contains release notes to check': listNotePaths() is non-empty so a moved or mis-resolved NOTES_DIR cannot let the rule case pass vacuously",
+          "kept — 'every note carries a category the published changelog has a header for': collectFailures() is empty over the real directory, with per-note failure strings naming the offending file rather than throwing on the first",
+          "kept unchanged — the six existing subprocess-driven cases against throwaway git repos, which prove the checker's own diff selection and rule wording",
+          "counts on the fixed branch, for QA to assert rather than assume: the file reports `release-notes-check.test.mjs (10 tests)` (8 today plus the two above) and the package reports `Tests 73 passed (73)` (71 today plus the same two)",
+          "confirmed by running against the shipped gate — a two-line body fails with `fix-custom-report-show-empty-rows-categories.md body should contain exactly one line` (neg-control-A-two-line-body.txt)",
+          "confirmed by running against the shipped gate — a github-actions author fails with `fix-custom-report-show-empty-rows-categories.md authors are not people: github-actions` (neg-control-B-bot-author.txt)"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "Exactly one new file exists under upcoming-release-notes/ on this branch, named fix-custom-report-show-empty-rows-categories.md — a short descriptive slug, not a bare number — and no other note is added, modified, renamed or deleted. Carried forward verbatim from the original criteria; PROVEN BY CI, which QA must cite as \"ci\".",
+        "how_to_verify": "CI: the 'Unit tests' step of .github/workflows/ci-verify.yml. For the name-only part: `git diff --name-status origin/main...HEAD -- upcoming-release-notes/` must show exactly one row, `A<TAB>upcoming-release-notes/fix-custom-report-show-empty-rows-categories.md`.",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "The note's front matter is exactly `category: Bugfix` on line 2 and `authors: [Shivam-Fl]` on line 3, and the author is a person (the repository owner, not a bot or agent login). Carried forward verbatim.",
+        "how_to_verify": "CI: the 'Unit tests' step. Directly: `head -3 upcoming-release-notes/fix-custom-report-show-empty-rows-categories.md`. Independently: `BASE_REF=main node packages/ci-actions/bin/release-notes-check.mjs` prints `Validated 1 release note(s). 🎉` and exits 0; with `authors: [github-actions]` it exits 1 naming the login.",
+        "source": "IAC-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "The note's body is exactly one non-empty line that says what a user sees change and contains no implementation vocabulary. Carried forward verbatim, including its note on the issue's own contradictory wording.",
+        "how_to_verify": "CI: the 'Unit tests' step. Directly: `sed -n '6p'` prints the single body line, `sed -n '7p'` nothing, `wc -l` reports 6, and a grep for implementation vocabulary returns 0.",
+        "source": "IAC-3",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "The repository's release-notes check accepts the note, and it is a check that runs. Carried forward verbatim and NOT rewritten: it is true as written, because ci-verify.yml restores no lage cache, so the gate runs on every CI run. AC-6 is added beside it for the local `yarn test` case it did not cover.",
+        "how_to_verify": "CI: the 'Unit tests' step. Second route: `BASE_REF=main node packages/ci-actions/bin/release-notes-check.mjs` → `Validated 1 release note(s). 🎉`, exit 0; with a two-line body, exit 1 naming the file.",
+        "source": "IAC-4",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "A release note placed in a subdirectory of upcoming-release-notes/ is held to exactly the same rules as one at the top level. A note at upcoming-release-notes/qa-nested/bad-note.md with `category: Chore` and `authors: [github-actions]` makes `yarn test` exit non-zero and names the file as `qa-nested/bad-note.md`, with forward slashes — the same outcome as the identical bytes at the top level. Nothing may treat a subdirectory as out of scope: the release-notes checker selects such a note through its diff, the changelog generator lists it with `git ls-tree -r`, and count-points.mjs counts it under `upcoming-release-notes/**/*`, so a note the gate cannot see is a note that is published and credited to nobody.",
+        "how_to_verify": "(1) `node packages/ci-actions/bin/release-notes-gate.mjs; echo EXIT=$?` → `Validated 92 release note(s).`, EXIT=0. (2) `mkdir -p upcoming-release-notes/qa-nested` and write bad-note.md with category Chore / author github-actions. (3) Re-run the same command → EXIT=1 with output containing `qa-nested/bad-note.md category` and `qa-nested/bad-note.md authors are not people: github-actions`. (4) `yarn workspace @actual-app/ci-actions run release-notes` → non-zero. (5) `rm -rf upcoming-release-notes/qa-nested` and confirm green again. On PR #91 as shipped, step 3 printed `Tests 8 passed`, GATE_EXIT=0, on these exact bytes.",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "`yarn test` fails on a release note the checker rejects even when nothing inside any workspace package has changed and the lage cache is already warm. Run `lage test --scope @actual-app/ci-actions --continue` once with the note valid and let it cache green; change ONLY the note's body so it spans two physical lines, changing no file under packages/; run the same command again. It must exit non-zero and print `body should contain exactly one line` naming fix-custom-report-show-empty-rows-categories.md. It must NOT print `» skip @actual-app/ci-actions test`, and it must not exit 0. The same holds through `yarn test` itself. A gate that only fires when its cache is cold is not a gate: this is the change a contributor makes when they add a release note, and it is the change `yarn test` is run to check.",
+        "how_to_verify": "With node_modules installed and nothing else touching the tree: `rm -rf node_modules/.cache/lage`; (1) cold run with the valid note → EXIT1=0; (2) append a second body line and confirm `git status --porcelain` lists only that one file; (3) re-run the same lage command → non-zero, output containing `body should contain exactly one line` and the file name, and NOT containing `» skip @actual-app/ci-actions test`; (4) with the note still broken, run `yarn test` → non-zero with the same message; (5) restore the note and run `yarn test` again → exit 0, with no release-notes failure in the output. Steps (3) and (4) assert against the broken note and step (5) against the restored one, so no step claims a failure from a tree that is clean. If step 3 prints `» skip`, if step 4 exits 0, or if step 5 exits non-zero on a release note, this criterion fails. On PR #91 as shipped, steps 1-3 gave the same key d1677e96… both times, `» skip` in run 2, and EXIT2=0 on bytes direct vitest rejects.",
+        "source": "IAC-4",
+        "verify": "test"
+      }
+    ],
+    "kind": "bug",
+    "confidence": 88,
+    "confidence_rationale": "Both defects are confirmed by four independent QA evidence files and the gate's own output, and every lage mechanism the approach depends on was read out of the exact tarball the lockfile pins (lage 2.15.17) rather than inferred — WrappedTarget.successful counts skipped as successful, TargetFactory writes `cache: s.cache !== false`, the worker returns cacheHit:false and always runs when `!target.cache`, getReadyTargets gates the cache lookup for `test` behind the dependency, and runAction sets exitCode 1 whenever results !== 'success'. The nested-note fix is ordinary recursive directory traversal against a rule set read directly out of util.mjs. The 12 points held back are execution: this checkout has no node_modules, so nothing was run end-to-end here, and AC-6's step (5) additionally assumes no unrelated package fails during the same `yarn test`.",
+    "reproduced": false,
+    "evidence": [
+      "qa-evidence/qa-evidence/qa-evidence/results.json — 11 passed, 2 unexpected: T-12 and T-13",
+      "hostile-cache-cold-isolation.txt — run 1 cold, note valid, `local cache fetch: d1677e96… false`, EXIT1=0; run 2 warm, note broken, `local cache fetch: d1677e96… true`, `» skip @actual-app/ci-actions test`, EXIT2=0; the same bytes under vitest directly fail 1 | 7 passed (8), VITEST_EXIT=1",
+      "hostile-cache-cause-isolation.txt — run 2 touches a file inside packages/ci-actions and the key changes to 3c7e0ab0…; run 3 reverts that and breaks only the note, key back to d1677e96…, `» skip`, EXIT3=0 — this isolates the cause to the notes living outside every workspace package",
+      "hostile-lage-cache-vs-note-change.txt — `[Tasks Count] success: 0, skipped: 1` with EXIT2=0 on a broken note; the independent route `node packages/ci-actions/bin/release-notes-check.mjs` exits 1 naming the file",
+      "T-12-developer-adds-note.txt — the real-world shape: `yarn test` green, developer adds `?? upcoming-release-notes/my-new-feature.md`, `yarn test` again prints `» skip @actual-app/ci-actions test - d1677e96…` and exits 0",
+      "hostile-lage-test-continue-failure.txt — the same gate under `lage test --continue` on a COLD cache does fail correctly (LAGE_EXIT=1, `body should contain exactly one line`), which is what makes the warm-cache skip the defect rather than the rule",
+      "gap-nested-note.txt — upcoming-release-notes/nested/bad-note.md with category Chore and author github-actions → `Tests 8 passed (8)`, GATE_EXIT=0; `git diff --diff-filter=AMR` would select the same path",
+      "T-13-nested-note-impact.txt — parseReleaseNotes (util.mjs:158-165) is also non-recursive, while release-notes-generate.mjs:139 lists notes with `git ls-tree -r` and count-points.mjs:36 globs `upcoming-release-notes/**/*`; QA's read is that a nested note never reaches readers, so I did not rewrite AC-5 over it — the inconsistency that is real is that the checker selects it and the gate does not",
+      "qa-evidence/qa-evidence/qa-evidence/spec/release-note.spec.ts — T-12's `withNote` is `async` with a synchronous body, so the note is restored before the control's `vitestGate()` runs; the control `expect(direct.status).not.toBe(0)` throws 'the note under test breaks no rule, so this case would prove nothing' before the assertion under test is reached",
+      "lage 2.15.17 bundle read directly (npm pack lage@2.15.17): `get successful(){return status==='skipped'||status==='success'}`; `createPackageTarget` `cache: s.cache !== false`; worker's `txn` returns `{hash: undefined, cacheHit: false}` when `!n.cache` and `nxn` runs whenever `(!cacheHit || !(n.target.cache && shouldCache && hash))`; `getReadyTargets` requires `s.target.dependencies.every(f => targetRuns.get(f).successful)`; bare depSpec maps to `getTargetId(packageName, depSpec)`; `runAction` does `results !== 'success' && (process.exitCode = 1)`; `NpmScriptRunner.shouldRun` returns false when package.json lacks the script, and `NoOpRunner.shouldRun` is true",
+      ".github/workflows/sdlc-root-cause.yml:540-547 — 'BEFORE validation, not after. The prompt tells the agent NOT to set `version`, and the schema requires it', so work-order.json leaves `version` unset and preflight's complaint about it is the known pre-bump artifact; check-forbidden.mjs (6 paths, none forbidden) and check-split-criteria.mjs (every IAC-n answered) both pass"
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Set `cache: false` on the existing `test` pipeline task, so no note can be skipped because the whole suite is uncached.",
+        "rejected_because": "It works, but it throws away lage's test caching for all 15 workspace packages to fix one package's gate — the repo documents that caching as the point of using lage, and the cost lands on every contributor's `yarn test` forever. An uncached dependency is targeted at exactly the task that needs it."
+      },
+      {
+        "approach": "Move the notes under packages/ci-actions so they enter that package's lage hash.",
+        "rejected_because": "It relocates 93 shipped notes and breaks every path the checker, count-points.mjs and release-notes-generate.mjs use — including the repo's own documented convention that notes live at upcoming-release-notes/. It fixes the hash and destroys the contract."
+      },
+      {
+        "approach": "Give the `test` task extra cache inputs via lage's `inputs` option.",
+        "rejected_because": "lage 2.15.17's generateHashOfFiles only reads files inside the package root plus dependency hashes — there is no config surface to add root-level paths, so this cannot be built as described."
+      },
+      {
+        "approach": "Wire the checker into ci-verify.yml as a step.",
+        "rejected_because": ".github/** is forbidden to every plan, so the guard would refuse the whole diff. This is why the fix has to live in lage.config.js and the package's own task graph."
+      },
+      {
+        "approach": "Treat T-12's assertion failure as the defect and change nothing in the gate.",
+        "rejected_because": "T-12's control throws before the assertion under test runs, so its failure is a defect in QA's spec. But four standalone evidence files reproduce the warm-cache skip without that ordering mistake, and T-13 is an independent repro. Ignoring both would leave a gate that is a no-op on the exact change it exists to police."
+      }
+    ],
+    "assumptions": [
+      "lage 2.15.17 is what the job installs — read from yarn.lock (`lage@npm:2.15.17`) and verified against that exact tarball, not against whatever a newer release happens to do",
+      "`yarn test` is `lage test --continue` and ci-verify.yml's 'Unit tests' step runs it, so a failed dependency target in that graph fails the CI step",
+      "The lage cache directory QA used (node_modules/.cache/lage) is where it lands for this repo; the AC-6 steps rm it explicitly rather than assume",
+      "No other workspace package defines a `release-notes` script today, and adding the key to @actual-app/ci-actions is the only change needed to scope the task",
+      "QA writes its hostile spec against this work order, so the test counts it will assert (10 in the file, 73 in the package) are stated in tests[] rather than left to be guessed"
+    ],
+    "unknowns": [
+      "Whether `yarn test` in AC-6 step (5) exits 0 depends on every other workspace package's tests being green in QA's environment; if one is flaky the step could fail for an unrelated reason. The criterion's wording requires no release-notes failure in the output as well, but the exit code itself is environment-dependent.",
+      "AC-5's how_to_verify expects `Validated 92 release note(s).` — that is the count on this branch (92 existing + 1 new). If the note count on the branch at QA time differs, the number in that expected string is stale even though the criterion's substance holds.",
+      "I did not execute the fixed gate. The recursion and the exact failure strings are derived from util.mjs and from the strings QA's T-8/T-9/T-10 assert today, but the byte-identity of those strings under the new module is an implementation claim the implementer should check against the shipped gate's own output."
+    ],
+    "residual_risks": [
+      "lage's optimisation pass (optimizeTargetGraph) was not traced in full. If it ever dropped a `release-notes` target from the graph the gate would silently stop running — the AC-6 sequence is what would catch that, which is why it is an acceptance criterion rather than a test.",
+      "The gate adds one process per `yarn test` run over 93 markdown files. Measured cost is not known from here; if it is material the fix is to narrow the walk, not to re-cache the task.",
+      "AC-5 asserts a nested note is held to the same rules, which is a stronger contract than the product strictly needs today, because QA found parseReleaseNotes (util.mjs:158-165) is also non-recursive and a nested note therefore never reaches the published changelog. The checker does select it, so the gate and the checker disagree about the same directory, and closing that is the point — but the user-visible impact of this half is smaller than AC-5's wording implies."
+    ],
+    "mode": "committed"
   }
 }
