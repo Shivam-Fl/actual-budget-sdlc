@@ -593,5 +593,31 @@
       }
     ],
     "pr": "71"
-  }
+  },
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 1,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6",
+      "AC-7",
+      "AC-8",
+      "AC-9",
+      "AC-10"
+    ],
+    "sha": "93d336bbe0ab813db4432e982442331b3a7c1bcd",
+    "run_id": "37182210549",
+    "work_order_version": 1,
+    "at": "2026-10-04T10:02:11.994Z"
+  },
+  "qa_open_bugs": [
+    {
+      "id": "BUG-1",
+      "title": "After this PR the mobile schedule menu shows next_date while acting on the tapped occurrence"
+    }
+  ]
 }
