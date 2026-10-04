@@ -24,7 +24,7 @@
     "from": "qa",
     "pr": 9,
     "work_order_version": 2,
-    "at": "2026-10-02T19:31:26.388Z"
+    "at": "2026-10-04T13:50:46.101Z"
   },
   "work_order": {
     "issue": 4,
@@ -643,7 +643,7 @@
     "decided_at": "2026-10-02T04:33:57.411Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "plan",
+  "dispatched_stage": "root-cause",
   "validated_from": "root-cause",
   "validated_at": "2026-10-02T19:38:12.278Z",
   "validated_ac_changes": [
