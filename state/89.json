@@ -184,8 +184,11 @@
     "mode": "committed"
   },
   "touch_paths": [
-    "upcoming-release-notes/fix-custom-report-show-empty-rows-categories.md",
+    "packages/ci-actions/bin/release-notes-gate.mjs",
     "packages/ci-actions/bin/release-notes-check.test.mjs",
+    "packages/ci-actions/package.json",
+    "lage.config.js",
+    "upcoming-release-notes/fix-custom-report-show-empty-rows-categories.md",
     "packages/ci-actions/bin/release-notes-check.test.mjs"
   ],
   "acceptance": [],
