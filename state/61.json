@@ -101,6 +101,234 @@
   "stopped_at": null,
   "dispatched_stage": "plan",
   "validated_from": "plan",
-  "validated_at": "2026-10-04T02:33:19.518Z",
-  "validated_ac_changes": []
+  "validated_at": "2026-10-04T03:20:41.296Z",
+  "validated_ac_changes": [],
+  "validated_work_order": {
+    "issue": 61,
+    "version": 3,
+    "mode": "proposal",
+    "kind": "bug",
+    "reproduced": true,
+    "confidence": 86,
+    "confidence_rationale": "I re-derived the load-bearing claims myself rather than accepting the proposal's, and re-executed its central claim: a scratch vitest spec in packages/loot-core, run and then deleted, confirms that for {start: today, frequency: 'monthly', endMode: 'after_n_occurrences', endOccurrences: 1} scheduleIsRecurring returns true while getNextDateAfter returns null — so the UI offers an action setNextDate silently drops — and the same split for a past on_date end. I then wrote the proposed scheduleIsSkippable body verbatim and ran it against seven contract cases of my own construction, all green, including both UI-shaped fixtures. I confirmed by reading that there are exactly four skip-eligibility sites plus three inverted canBeCompleted readers plus one preview reader and no fifth site anywhere in packages/; that ScheduleEditForm.tsx:134 is the only unguarded nullable string input among siblings already carrying || ''; that all four call sites already select '*' with non-optional next_date; that SchedulesTable's Complete is gated on status alone; and that the e2e duplication is as described (grep -c tableOptions = 2, grep -c 'as unknown as' = 2). I verified the brief's required correction against SchedulesTable.tsx:196/:202/:208 and the e2e comment at :358 rather than treating it as settled. Not higher for two reasons no amount of reading retires: the four e2e hygiene edits are entirely unexecuted and gate nothing in CI, and AC-1's browser recipe stops one interaction short of having been driven end to end — the picker's popover gating is read from source, not watched. If that recipe turns out to be wrong, AC-1 stalls and the ticket's one behavioural fix goes unverified; that is the single most likely thing I have wrong. One green QA pass over steps 4-6 would move this into the 90s.",
+    "understanding": "Issue #61 bundles eight follow-ups from PR #59 (merged as 0fb77b4): five e2e-test hygiene items, three QA findings of which two are real defects and one does not hold. I re-derived the load-bearing claims from the code and re-executed the reproduction myself rather than taking the proposal's word for it.\n\nReal: review 1 (the page model returns a lazy Locator read with non-retrying count()/allTextContents()), review 2 (the test builds payee locators at :340-347 then asserts against raw indices 2 and 3 at :360/:369 under an index-independence comment), review 4 (two byte-for-byte identical 12-key $send('query') envelopes at :24-37 and :136-155 — grep -c tableOptions returns 2), review 5 (redundant open/dismiss/re-open). Not a change to this repo: review 3 (PR #59 is merged, 0fb77b4 already carries [AI], .github/** is forbidden).\n\nQA 1 is real and I reproduced it by execution in this arbiter session: for {start: today, frequency: 'monthly', endMode: 'after_n_occurrences', endOccurrences: 1}, scheduleIsRecurring returns true while getNextDateAfter returns null — and likewise for a past on_date end. QA 3 is real with a one-line cause at ScheduleEditForm.tsx:134. QA 2 does not hold: runMutator is a single serialised queue every mutating handler shares, including via the API.\n\nThe brief's required correction is confirmed by reading: SchedulesTable.tsx's hidden conditions are restart=status!=='completed' (:196), skip=status==='completed'||!canSkip (:202), complete=status==='completed' (:208). Complete is not gated on canSkip, so a recurring due schedule renders Skip and Complete together — which the e2e test this plan edits already asserts, its comment at :358 saying a due recurring row \"legitimately fills to five\". v2's AC-2, AC-5 and qa_script step 8 asserted a mutual exclusivity the code does not produce. That claim is deleted here, not qualified.",
+    "root_cause": "Three distinct causes. (1) The UI and the write ask different questions: four skip-eligibility sites call scheduleIsRecurring ('is this a recurrence at all?') while setNextDate asks the strictly stronger 'does getNextDateAfter return a date?', which is false once the recurrence is exhausted. PR #59 introduced the weaker predicate, so the UI offers an action the server silently drops. (2) ScheduleFormFields.name is nullable by type and seeded to null (useScheduleEdit.ts:266), and ScheduleEditForm.tsx:134 renders it into a controlled Input without the || '' guard its siblings at :159 and :175 already carry — the only unguarded nullable string pass-through in the file. (3) The e2e page model returns a lazy Locator that consumers read with non-retrying calls, the test grew a second index-based path alongside the payee-based one, plus a duplicated AQL envelope and a redundant open/dismiss cycle.",
+    "approach": "Three changes in dependency order. (A) Add scheduleIsSkippable(dateCond, nextDate) to loot-core shared/schedules.ts: false on null/undefined nextDate, else scheduleIsRecurring(dateCond) && getNextDateAfter(dateCond, nextDate) != null. It reuses getNextDateAfter rather than reimplementing occurrence logic, so the UI predicate and the setNextDate write are driven by the same function and cannot drift — that reuse is the fix, not an implementation detail. A new function rather than a widened scheduleIsRecurring, because three sites read that predicate inverted for Complete and computeSchedulePreviewTransactions uses it for preview expansion. Then swap the four skip-eligibility call sites, passing the row's next_date; all four already select '*' and hold the full entity. SchedulesTable's Complete item is left exactly as it is. (B) value={fields.name || ''} at ScheduleEditForm.tsx:134, matching :159 and :175; the reducer's initial null is left alone since it is read for truthiness. (C) e2e hygiene: await expect(menu).toBeVisible() once inside _openNthScheduleMenu so all three consumers inherit the wait; widen three helpers' row parameter to number | Locator so the existing payee locators replace the raw indices; hoist a module-level Node-side aqlQuery<T> owning the duplicated envelope, with the split-transfer test's queries moving Node-side through it (page.evaluate is serialised and cannot close over a Node binding, so the rule-get/rule-update block stays browser-side taking plain serialisable arguments); delete the redundant open/count-0/Escape block; add a console assertion modelled on command-bar.test.ts, regex-filtered to the two React warning texts.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/shared/schedules.ts",
+        "action": "edit",
+        "change": "Add exported scheduleIsSkippable(dateCond, nextDate) after scheduleIsRecurring (ends line 493): false on null/undefined nextDate, else scheduleIsRecurring(dateCond) && getNextDateAfter(dateCond, nextDate) != null. Its doc comment ties it to setNextDate's newNextDate != null guard at server/schedules/app.ts:243 and states that scheduleIsRecurring answers a different question and must not be widened to cover this. Also add that one sentence to scheduleIsRecurring's own doc comment (:485) saying it does not answer the skip question — the proposal named this edit in risks but not in files; it is in files now so the implementer does not lose it. getNextDateAfter (line 393) and MAX_ADVANCE_ATTEMPTS = 7 (line 391) are reused unchanged.",
+        "why": "getNextDateAfter already exists and is already tested for the exhausted case; only the UI's weaker question was wrong. I re-executed the proposed body against seven independent contract cases — all green."
+      },
+      {
+        "path": "packages/loot-core/src/shared/schedules.test.ts",
+        "action": "edit",
+        "change": "Import scheduleIsSkippable; add a describe block beside the getNextDateAfter block (ends line 1051, before 'shared presets') reusing the local weeklyOnSaturday factory (line 947). Cover null dateCond, null/undefined nextDate, a one-off plain-date condition, never-ending weekly, after_n_occurrences-2 at 2020-12-05 (true) and 2020-12-12 (false), an on_date end in the past, both UI-shaped fixtures, and scheduleIsRecurring unchanged. endOccurrences is numeric here, unlike the picker's string. Note for the implementer: a plain-date condition is a bare string value, not {start: ...} — Condition.parse (server/rules/condition.ts) only treats an object as a date when it has a frequency.",
+        "why": "The exhausted-recurrence case has no coverage today."
+      },
+      {
+        "path": "packages/desktop-client/src/components/schedules/SchedulesTable.tsx",
+        "action": "edit",
+        "change": "Import scheduleIsSkippable; line 177 becomes scheduleIsSkippable(dateCond, schedule.next_date); extend the comment at :174-176 to name the exhausted recurrence as the second case getNextDateAfter drops, not just the one-off. The hidden expressions at :202 and :208 are left untouched — Complete stays gated on status alone and keeps coexisting with Skip on a recurring schedule.",
+        "why": "The menu PR #59 added, where the one-off case was fixed and the exhausted case missed."
+      },
+      {
+        "path": "packages/desktop-client/src/components/transactions/SelectedTransactionsButton.tsx",
+        "action": "edit",
+        "change": "canBeSkipped memo (:144-151) calls scheduleIsSkippable(dateCond, s.next_date); canBeCompleted at :156 stays on scheduleIsRecurring. The selectedSchedules query already selects '*'.",
+        "why": "Bulk-skip is the same silent no-op at the same predicate."
+      },
+      {
+        "path": "packages/desktop-client/src/components/transactions/useTransactionRowContextActions.ts",
+        "action": "edit",
+        "change": "canBeSkipped memo (:103-110) calls scheduleIsSkippable(dateCond, s.next_date); canBeCompleted at :115 stays on scheduleIsRecurring. The query selects '*'.",
+        "why": "Third copy of the identical filter. I grepped the whole packages/ tree: there is no fifth skip-eligibility site, and none in components/mobile/schedules/."
+      },
+      {
+        "path": "packages/desktop-client/src/components/modals/ScheduledTransactionMenuModal.tsx",
+        "action": "edit",
+        "change": "Line 61 becomes scheduleIsSkippable(dateCond, schedule.next_date); canBeCompleted at line 62 unchanged. The query at :47 selects '*'.",
+        "why": "Fourth skip-eligibility site, the per-transaction schedule menu."
+      },
+      {
+        "path": "packages/desktop-client/src/components/schedules/ScheduleEditForm.tsx",
+        "action": "edit",
+        "change": "Line 134 value={fields.name} becomes value={fields.name || ''}, matching payee (:159) and account (:175). Lines 234/261/269 also pass nullable fields but into AmountInput and the date pickers, which are not controlled DOM inputs and are not what QA reported; left alone.",
+        "why": "Input spreads props without coercing value, so the nullable name reaches React; both warnings come from this prop."
+      },
+      {
+        "path": "packages/desktop-client/e2e/page-models/schedules-page.ts",
+        "action": "edit",
+        "change": "Import expect; _openNthScheduleMenu awaits expect(menu).toBeVisible() before returning so all three consumers inherit the wait; widen the row parameter of _openNthScheduleMenu, nthScheduleMenuHasItem and nthScheduleMenuItemNames to number | Locator (resolve a number via getNthScheduleRow, use a Locator as given); update doc comments.",
+        "why": "The auto-wait, and the widening that lets payee locators replace raw indices without disturbing the six existing index callers (postNthSchedule x4, completeNthSchedule x2)."
+      },
+      {
+        "path": "packages/desktop-client/e2e/schedules.test.ts",
+        "action": "edit",
+        "change": "Hoist a module-level aqlQuery<T>(page, {table, filterExpressions, selectExpressions}) owning the evaluate, the window cast and the 12-key envelope; readScheduleNextDate calls it. In the split-transfer test, move the three queries Node-side through it and pass schedule.rule and destinationPayee.id into the remaining page.evaluate as plain serialisable arguments, so the rule-get/rule-update block keeps its own $send but loses its duplicated envelope. Delete the redundant open/count-0/Escape block (:349-355); swap the raw indices at :360 and :369 for oneOffRow and recurringRow; add the console assertion regex-narrowed to the two React warnings, following command-bar.test.ts:64-95 including its note that console events arrive over CDP out of band.",
+        "why": "Two review findings plus the QA 3 regression guard; page.evaluate is serialised, so a shared envelope needs a Node-side owner rather than a hoisted object."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/shared/schedules.test.ts",
+        "action": "edit",
+        "cases": [
+          "scheduleIsSkippable returns false for a null date condition",
+          "scheduleIsSkippable returns false for a null next date",
+          "scheduleIsSkippable returns false for an undefined next date",
+          "scheduleIsSkippable returns true for a weekly never-ending rule with an occurrence ahead",
+          "scheduleIsSkippable returns false for a one-off plain-date condition",
+          "scheduleIsSkippable returns true for an after_n_occurrences-2 rule whose next date is 2020-12-05, where one occurrence is still ahead",
+          "scheduleIsSkippable returns false for the same rule once next date is 2020-12-12, the last remaining occurrence",
+          "scheduleIsSkippable returns false for an on_date rule whose endDate is already past",
+          "scheduleIsSkippable returns false for the UI-shaped fixture the Schedules table builds — start seeded to today with endMode after_n_occurrences and endOccurrences 1",
+          "scheduleIsSkippable returns true for the same UI-shaped fixture with endOccurrences 2, where today's occurrence has a successor",
+          "scheduleIsRecurring is unchanged by this addition: a weekly never-ending rule is still true and a one-off plain date is still false",
+          "the pre-existing getNextDateAfter 'returns null when the schedule has no further occurrences' test still passes"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/e2e/schedules.test.ts",
+        "action": "edit",
+        "cases": [
+          "hides skip on a one-off schedule and offers it on a recurring one — asserts the exact one-off menu item list from a payee-located row, asserts the skip item is present on the payee-located recurring row, and observes next_date moving strictly later",
+          "hides skip on a one-off schedule and offers it on a recurring one — fails on any React controlled/uncontrolled input warning raised while the modal is open and the menus are exercised"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "An exhausted recurrence — after_n_occurrences with every occurrence used, or an on_date end already past — no longer offers 'Skip next scheduled date' in the Schedules row menu, the per-transaction schedule menu, the bulk-select action bar, or the transaction row context menu; a one-off stays hidden.",
+        "how_to_verify": "Browser, entirely through the UI. The controls exist: components/select/RecurringSchedulePicker.tsx:442 renders repeat_end_dropdown, :454 #end_occurrences, :468 #end_date, and Apply at :579 calls onSave(unparseConfig(config)). The picker is behind a Button (:627-634) whose label is the recurring description, so the recipe must click that button to open the Popover before touching those controls — this is the step most easily missed. ScheduleEditModal.tsx:47 seeds start to monthUtils.currentDay(), so a 'for 1 occurrence' schedule's only occurrence is today. Add new schedule -> Schedule Name -> check Repeats (#form_repeats) -> click the recurrence description button -> repeat_end_dropdown = 'for' -> #end_occurrences = 1 -> Apply -> Add. Right-click the row: Skip must be absent and the other items unchanged. Repeat with #end_occurrences = 2: Skip present, and clicking it moves the date strictly later. Then check the per-transaction schedule menu and the bulk bar.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "Complete's visibility is unchanged by this change: an exhausted recurrence that showed Complete still shows it, and a one-off that showed Complete still does. On the Schedules row menu a due recurring schedule still offers Skip and Complete together.",
+        "how_to_verify": "Browser, same fixtures as AC-1. Stated as what the code actually guarantees, because v2 of this plan got it wrong and the brief rejected it for it. canBeCompleted stays `!scheduleIsRecurring` at SelectedTransactionsButton.tsx:156, useTransactionRowContextActions.ts:115 and ScheduledTransactionMenuModal.tsx:62, and scheduleIsSkippable does not touch it — so on those three menus an exhausted recurrence (still a recur) shows neither Complete nor Skip, exactly as before. The Schedules row menu's Complete is gated on `status === 'completed'` alone (SchedulesTable.tsx:208), which is a different rule: it coexists with Skip on every recurring schedule, and this change must leave it visible there, removing only Skip. Check a due recurring row in the Schedules table and confirm Complete is still offered. Do not assert mutual exclusivity anywhere — the code does not have it and the e2e test at :358-365 depends on it not having it.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "scheduleIsSkippable returns false for a null date condition, null/undefined next date and a one-off plain date; true for a weekly never-ending rule; false for endOccurrences 2 at next date 2020-12-12 and true at 2020-12-05; false for a UI-shaped endOccurrences-1 fixture and true for endOccurrences 2; false for an on_date rule already past. scheduleIsRecurring's answers are unchanged and getNextDateAfter's existing exhausted test still passes.",
+        "how_to_verify": "Test, and the only criterion CI gates. yarn test, or yarn workspace @actual-app/core run test, or npx vitest --run src/shared/schedules.test.ts. The proposer ran the third on the unmodified tree (80 tests, all passing) and I re-executed the proposed predicate body against seven independent contract cases in this session — all green. Scratch files deleted.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "Opening the schedule edit modal — add and edit paths — logs neither React controlled/uncontrolled input warning ('value prop on an input should not be null' nor 'A component is changing an uncontrolled input to be controlled'), on open or on typing a name. Scoped to those two warnings, matching the narrowed e2e filter; not a claim that dev-mode console is otherwise silent.",
+        "how_to_verify": "Browser. Console open -> Add new schedule -> type into Schedule Name -> observe neither warning; repeat on an existing schedule's edit path. The fix is ScheduleEditForm.tsx:134, whose siblings at :159 and :175 already carry the guard. No vitest case mounts this component — ScheduleEditForm pulls in useScheduleEdit, which needs live queries, redux and modals — so AC-3 cannot cover it; the e2e console assertion guards it durably but gates nothing in CI.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-5",
+        "check": "The four menus that can offer 'Skip next scheduled date' agree about Skip: a schedule offering it in the Schedules row menu offers it in its per-transaction schedule menu, and one hiding it there hides it in all four.",
+        "how_to_verify": "Browser, AC-1 fixtures. Compare each schedule's row menu against its per-transaction schedule menu and against the bulk action bar once the schedule is selected alongside others. This is deliberately about Skip alone. It is not a Complete/Skip pairing, and cannot be: the three transaction-side menus do gate Complete on !scheduleIsRecurring, but the Schedules row menu gates Complete on status alone (SchedulesTable.tsx:208) and shows both items on a recurring schedule, which the e2e test at :358-365 already relies on. Agreement about Skip is what would catch a fourth-or-fifth skip-eligibility call site existing where grep did not reach — the residual reading code cannot retire. Note the bulk bar additionally requires every selected schedule to be skippable, so compare on a single selected schedule.",
+        "verify": "browser"
+      }
+    ],
+    "qa_script": [
+      "yarn install (node_modules may be absent; it exits 0), then yarn workspace @actual-app/core run test. Both the new scheduleIsSkippable describe and the pre-existing getNextDateAfter block pass. This is the only gate that runs in CI.",
+      "yarn typecheck and yarn lint from the repository root, not from a workspace.",
+      "yarn start, open http://localhost:3001, and create a file budget. Do not use View demo here — this ticket needs two schedules created by hand, and the demo fixture's four seeded schedules only make row indices harder to reason about.",
+      "Build the AC-1 fixture through the UI. Go to Schedules, click Add new schedule, give it a name, check Repeats (#form_repeats), then click the button labelled with the recurring description to open the picker popover — the end controls do not exist until that popover opens. Set repeat_end_dropdown to 'for', set #end_occurrences to 1, Apply, then Add. The modal seeds the start date to today, so this schedule's only occurrence is today and it is exhausted.",
+      "Right-click that schedule's row. 'Skip next scheduled date' must be absent, and the other items unchanged — including 'Complete', which is still offered and must not have been removed. This is AC-1's half and AC-2's Schedules-row-menu half.",
+      "Create a second schedule the same way but with #end_occurrences = 2. Right-click its row: Skip must be present, and it must be present alongside 'Complete' on this same menu. Click Skip and confirm the row's date moves strictly later, not to the same date. If Skip is missing here the predicate is wrong in the other direction.",
+      "AC-5: on each of those two schedules, compare the row menu against the per-transaction schedule menu reached from a transaction posted from it, and against the bulk action bar with that schedule selected alone. All four menus must agree about Skip. This is what catches a missed call site.",
+      "AC-2: confirm 'Complete' is offered on exactly the same schedules as before the change — a one-off in all menus, and in the Schedules row menu a recurring one too. Do not expect Complete and Skip to be mutually exclusive anywhere: they are not today, they are not after this change, and the Schedules row menu deliberately shows both on a recurring schedule.",
+      "AC-4: with the console open, click Add new schedule, type a name into Schedule Name, then close without saving. Neither React controlled/uncontrolled warning may appear. Repeat for editing an existing schedule. Scope is those two warnings only — unrelated dev-mode console noise during this step is expected and is not a failure.",
+      "Run the Playwright schedules suite if a browser environment is available — yarn workspace @actual-app/web run playwright test schedules.test.ts --browser=chromium. It is not in CI, so treat a green run here as evidence, not as a gate.",
+      "grep -c tableOptions packages/desktop-client/e2e/schedules.test.ts returns 1 (2 today), and grep -c 'as unknown as' on the same file returns 1 (2 today). Both verified as 2 by me. grep -rn scheduleIsRecurring packages/ shows scheduleIsSkippable used at the four skip sites and scheduleIsRecurring untouched at its three inverted readers plus the preview reader."
+    ],
+    "risks": [
+      "scheduleIsSkippable calls getNextDateAfter per render per schedule row — up to MAX_ADVANCE_ATTEMPTS (7) iterations, each constructing a Condition and calling rschedule's occurrences() — materially more work than the single getValue() scheduleIsRecurring does, though it returns on the first iteration in the common case. The three useMemo sites recompute only when selectedSchedules changes; SchedulesTable computes canSkip per row per render, unmemoised. React Compiler is enabled for desktop-client and matches all of packages/*/src, so it may memoise the expression itself. No profiling was done and no budget-size data was found; memoising per schedule id is the follow-up if a large list regresses.",
+      "ScheduleEditForm.tsx, useScheduleEdit.ts and SchedulesTable.tsx all carry // @ts-strict-ignore, so the ScheduleEditForm change is unchecked by the strict plugin. The loot-core predicate is grandfathered too, but its new signature is explicitly typed and three of its four call sites are in checked files.",
+      "Two closely-named predicates now coexist with different meanings. The three canBeCompleted sites keep reading scheduleIsRecurring inverted, so a future reader could collapse the two and reintroduce this bug. Mitigated by a doc comment on scheduleIsSkippable plus one added sentence on scheduleIsRecurring; not eliminated.",
+      "The e2e work is unverifiable in CI: verify.e2e is the empty string, .github/workflows/ci-verify.yml skips it, and desktop-client's vitest include excludes e2e/. AC-3 is the only gating criterion; the four review findings can regress silently.",
+      "AC-1's browser recipe is verified control by control but has never been driven end to end. Every named control exists and the resulting config was executed by hand, but the picker's popover-gating — the end controls only exist once the description button is clicked — is read from RecurringSchedulePicker.tsx:627-642, not watched. That is the step QA is most likely to have to iterate on.",
+      "A consequence worth naming: on the three transaction-side menus an exhausted recurrence selected alone now offers neither Complete nor Skip, since canBeCompleted is !scheduleIsRecurring and an exhausted recurrence is still a recur. That is unchanged behaviour, not a regression introduced here, but it means the fix removes the last menu item on an exhausted schedule and QA should not read that as a bug."
+    ],
+    "out_of_scope": [
+      "Review 3 — retitling PR #59 with the [AI] prefix. The premise has expired: PR #59 is merged and 0fb77b4 already carries [AI], so history is compliant. The fix would be `gh pr edit`, and .github/** is a forbidden path.",
+      "QA 2 — two concurrent skips advancing next_date twice. The stated cause does not exist: one serialised queue that every mutating handler shares, including via the API. The stated fix (compare-and-swap) would turn two legitimate sequential skips into one, trading a cosmetic double-advance for a real lost action.",
+      "The reframed residual from QA 2: a retry of schedule/skip-next-date after a timeout advances next_date twice. Closing it needs a caller-supplied idempotency key or server-side dedupe — a new handler argument, a decision about sync replay, and a change to the undo boundary. A feature, not a small fix.",
+      "Widening scheduleIsRecurring in place instead of adding scheduleIsSkippable. Three sites read it inverted for Complete and computeSchedulePreviewTransactions uses it for preview expansion, where 'is this recurring?' is the right question. One predicate cannot serve both. Guarded explicitly by AC-2.",
+      "Making the Schedules row menu's Complete mutually exclusive with Skip, which is what v2's AC-2 asserted. The code does not do this today and the e2e test at :358-365 depends on a due recurring row showing five items. Changing it would alter Complete's behaviour, which no finding raises. AC-2 is restated to guard the real invariant instead.",
+      "Making setNextDate report the no-op instead of dropping it (QA's suggested alternative). It changes a handler's return contract and the API surface to fix a menu-visibility question better answered where the question is asked; the null guard is load-bearing and asserted by an existing test.",
+      "Adding a component test for the ScheduleEditForm null guard. ScheduleEditForm pulls in useScheduleEdit, which needs live queries, redux and modals, and no existing desktop-client component test mounts anything that heavy. The console assertion plus AC-4 cover it at a fraction of the setup.",
+      "Enabling Playwright in CI so the e2e hygiene work gates something. That is a change to .sdlc/config.yml and .github/workflows, both forbidden paths."
+    ],
+    "evidence": [
+      "plan/critique.json is an empty object — the critic wrote nothing, so there was no critique to judge. This council's third round is a single-planner plan that I audited rather than arbitrated between.",
+      "EXECUTED BY ME: scratch vitest spec in packages/loot-core (run, 7 tests, all passing, then deleted). It reproduces the QA 1 split — scheduleIsRecurring true while getNextDateAfter null for an after_n_occurrences-1 monthly recur starting today, and for an on_date rule whose endDate has passed — and it runs the proposed scheduleIsSkippable body against seven contract cases: null dateCond, null nextDate, undefined nextDate, one-off plain date, never-ending weekly, after_n_occurrences-2 at 2020-12-05 true and 2020-12-12 false (using the repo's own isapprox weekly factory shape), past on_date, and both UI-shaped fixtures (endOccurrences 1 false, 2 true).",
+      "CONFIRMING THE BRIEF'S REQUIRED CORRECTION BY READING: SchedulesTable.tsx hidden conditions are restart: status !== 'completed' (:196), skip: status === 'completed' || !canSkip (:202), complete: status === 'completed' (:208). Complete is not gated on canSkip, so a recurring not-yet-completed schedule renders Skip and Complete together. e2e/schedules.test.ts:357-365 asserts the one-off menu is exactly ['Post transaction','Post transaction today','Complete','Delete'] and its comment says the assertion is by name rather than by counting, 'which a due recurring row legitimately fills to five'. v2's mutual-exclusivity claim contradicted the test it was editing. AC-2, AC-5 and qa_script step 8 are rewritten accordingly.",
+      "grep -rn scheduleIsRecurring packages/ returns exactly the definition (schedules.ts:485), computeSchedulePreviewTransactions (:548), four skip-eligibility sites (SchedulesTable.tsx:177, SelectedTransactionsButton.tsx:147, useTransactionRowContextActions.ts:106, ScheduledTransactionMenuModal.tsx:61) and three inverted canBeCompleted readers (:156, :115, :62). I ran this grep myself. No fifth skip-eligibility site exists, and none in components/mobile/schedules/.",
+      "Read all four call sites: each holds the full entity from a select('*') query, so s.next_date / schedule.next_date is in scope at every one; types/models/schedule.ts:26 types next_date as a non-optional string.",
+      "schedules.ts:391 MAX_ADVANCE_ATTEMPTS = 7; :393-411 getNextDateAfter returns null once no occurrence lies past afterDate. server/schedules/app.ts:240-243 — setNextDate computes getNextDateAfter when advance is true and writes only `if (newNextDate != null && newNextDate !== nextDate)`; null falls through and nothing is written.",
+      "ScheduleEditForm.tsx:134 is the unguarded value={fields.name}, against value={fields.payee || ''} at :159 and value={fields.account || ''} at :175. useScheduleEdit.ts:266 seeds name: null and :119 reads schedule.name ?? null.",
+      "e2e/page-models/schedules-page.ts:71-107 — _openNthScheduleMenu returns a lazy Locator read by consumers with count() at :73 and allTextContents() at :85, neither retrying. Its callers are _performNthAction (:92), nthScheduleMenuHasItem and nthScheduleMenuItemNames.",
+      "e2e/schedules.test.ts:344-372 — payee-located rows with toHaveCount(1), redundant open/count-0/Escape block at :349-355, raw indices at :360 and :369 under an index-independence comment at :338-339. grep -c tableOptions returns 2 and grep -c 'as unknown as' returns 2 — the duplicated 12-key envelope. Verified by me.",
+      "Issue #61 has no '## Acceptance (from the split)' section — only '## From the review' and 'Found by QA — pre-existing' — so there are no IAC-n criteria to source and none are deferred. state/61.json records planned_route [plan, implement, review, qa], which already contains review and qa.",
+      "Nothing in the file list touches .sdlc/memory/**, docs/spec/**, docs/prd.md, docs/trd.md, docs/ui.md or .github/**."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Follow QA 1's stated remedy: drop setNextDate's `newNextDate != null` guard and surface the no-op to the caller instead.",
+        "rejected_because": "It fixes the wrong layer. The null guard is load-bearing — getNextDateAfter legitimately returns null for an exhausted recurrence and an existing test at schedules.test.ts:1042-1050 asserts it — so removing it would write null into schedules_next_date. The UI needs eligibility up front regardless, since a client cannot learn from an absent error that an action was dropped."
+      },
+      {
+        "approach": "Fix QA 1 by teaching scheduleIsRecurring itself to check for a remaining occurrence, leaving the four call sites untouched.",
+        "rejected_because": "Smaller diff, wrong answer. Three sites read the predicate inverted for Complete and computeSchedulePreviewTransactions uses it for preview expansion, where 'is this recurring?' is the right question. One predicate cannot serve both."
+      },
+      {
+        "approach": "Fix QA 2 as reported, with a compare-and-swap on schedules_next_date keyed on the next_date that was read.",
+        "rejected_because": "There is no race for it to close — runMutator is a single serialised queue, so the second skip legitimately reads the first's committed write. A CAS would make a user's second deliberate skip do nothing and silently lose a client retry."
+      },
+      {
+        "approach": "For review 2 and 5, delete the payee locators and the index-independence comment and keep the raw indices, on the grounds that they are correct today and fail loudly on drift.",
+        "rejected_because": "The reviewer already granted the indices are correct; the objection is that the comment claims a guarantee the test does not keep. Deleting the locators removes the better mechanism to satisfy the weaker one."
+      },
+      {
+        "approach": "For review 4, hoist only the 12-key envelope object to module scope and spread it into both page.evaluate callbacks.",
+        "rejected_because": "It does not work. A page.evaluate callback is serialised into the browser and cannot reference a Node-scope binding, so the spread would throw a ReferenceError. Deduplication requires a Node-side function that owns its own evaluate, and the split-transfer test's remaining rule-get/rule-update block has to take its data in as plain arguments."
+      },
+      {
+        "approach": "Fix QA 3 in useScheduleEdit by seeding the reducer's initial state with name: '' instead of null.",
+        "rejected_because": "A wider edit with no behavioural gain — name is read for truthiness where '' and null are both falsy — and it touches the state contract rather than the render site, where lines 159 and 175 already establish the codebase's convention."
+      },
+      {
+        "approach": "Make Complete and Skip mutually exclusive on the Schedules row menu, so v2's original AC-2 becomes true.",
+        "rejected_because": "This is what the brief's rejection forbids and the code confirms: it would change Complete's behaviour on every recurring schedule, which no finding asks for, and it would contradict the e2e test this plan edits — schedules.test.ts:358-365 depends on a due recurring row showing five items. The regression guard now states the real invariant instead."
+      },
+      {
+        "approach": "Ask for a scope_changed route so the two real defects split from the five e2e-hygiene items into separate tickets.",
+        "rejected_because": "Considered as the arbiter and declined. The ticket is a follow-up bundle of one PR's review and QA findings, the split parts are individually small, and two planning rounds have already converged on this shape; splitting now would spend a round to produce two work orders covering fewer lines than the single one. Recorded here rather than requested so the reasoning is visible if a human disagrees."
+      }
+    ],
+    "assumptions": [
+      "verify.e2e is empty and desktop-client's vitest include excludes e2e/, so no Playwright assertion in this plan gates CI. Read from both configs and the workflow; the workflow was not run.",
+      "scheduleIsRecurring has exactly the call sites grep found, and scheduleIsSkippable is added alongside rather than replacing any of them.",
+      "All four skip-eligibility sites hold the full schedule entity from a select('*') query, so next_date is in hand, and ScheduleEntity.next_date is non-optional. I read each call site and each query; not verified at runtime that a row's next_date is never null, but the predicate short-circuits on null regardless.",
+      "The @actual-app/api send path reaches the same runHandler the desktop client does, which is what makes QA 2's diagnosis wrong. Traced through api/methods.ts and the server receiver but not executed.",
+      "A React controlled input given value={null} produces both recorded warnings. Standard React behaviour corroborated by the file's sibling guards, but not observed in a browser here.",
+      "The Schedules table keeps a saved 'for 1 occurrence' schedule with next_date set to today rather than culling it. Every control in the recipe exists and the resulting config was executed against the real predicates, but this save-to-table step is unobserved."
+    ],
+    "unknowns": [
+      "Whether the Schedules table has a schedule count large enough for the extra getNextDateAfter call per row per render to matter. No budget-size data, no profiling; React Compiler may memoise it. The risk is stated but unmeasured.",
+      "Whether some other caller — a plugin, a script, an importer — constructs a recur condition with an exhausted end and depends on Skip being offered. Grep found only the four UI sites and computeSchedulePreviewTransactions, but plugins live outside this repository.",
+      "Whether the reviewer would accept the console-assertion addition to the e2e test as belonging in this ticket, or as scope creep on a file that already carries four changes.",
+      "What the correct behaviour is for Complete on an exhausted recurrence — whether it too is a silent no-op elsewhere. Left alone because no finding raises it; AC-2 records current behaviour as the thing to preserve, not as correct."
+    ],
+    "debate_summary": "There was no debate to arbitrate. plan/critique.json is an empty object — the critic wrote nothing — so this council's third round is a single-planner plan that I audited rather than arbitrated between. I am recording that plainly rather than manufacturing agreement. The findings below are my own verification and my own edits, not the critic's.\n\nWhat the brief's rejection changed, and what I checked about it. The brief records a rejected v1 whose single required correction was that v2's AC-2, AC-5 and qa_script step 8 asserted a Complete/Skip mutual exclusivity the code does not produce. The v3 proposal claims it deleted that claim rather than qualifying it. I verified against the source rather than taking the claim: SchedulesTable.tsx:196/:202/:208 gate restart on status, skip on status-or-canSkip, and complete on status alone, so a recurring due schedule shows both items — and e2e/schedules.test.ts:357-365 already depends on that, its own comment saying the menu is asserted by name rather than by counting 'which a due recurring row legitimately fills to five'. The brief was right and the proposal fixed it properly. My one addition to AC-2 is the positive statement of the pairing that does hold, so the criterion is falsifiable in both directions rather than only in the direction the fix moves. I also noted in AC-5's how_to_verify that the bulk bar additionally requires every selected schedule to be skippable, which the criterion's phrasing did not account for.\n\nWhat I re-executed. The proposal's central claim is that the UI offers an action the server silently drops, because scheduleIsRecurring and setNextDate's getNextDateAfter ask different questions. I did not take that on trust: I wrote a scratch vitest spec inside packages/loot-core and ran it. Seven tests, all passing, then deleted. It reproduces the split — for an after_n_occurrences-1 monthly recur starting today, scheduleIsRecurring true while getNextDateAfter null, and the same for a past on_date end — and it runs the proposed scheduleIsSkippable body against seven contract cases of my own construction. One of my seven initially failed, on a fixture I had guessed rather than copied; I replaced it with the shape the repo's own weeklyOnSaturday factory produces, after which it passed. That is worth saying plainly: my first failure was my fixture, exactly as the proposal reported about its own, and neither failure says anything about the predicate. reproduced:true is now backed by my own execution, not the proposer's word.\n\nWhat I checked and did not change. I did not re-litigate QA 2. The drop rests on runMutator being a single serialised queue every mutating handler shares, including through the API path, which I traced through mutators.ts, shared/async.ts and the handler registration; the reasoning holds and QA observed precisely what serialised execution produces. I kept the decision to add scheduleIsSkippable rather than widen scheduleIsRecurring, which AC-2 now guards explicitly. I kept all four files[] edits to the four skip-eligibility sites as the proposal has them; I read each call site and each query and confirmed s.next_date is in scope at every one, so the signature change compiles without widening a query.\n\nMy own edits. (1) I promoted one thing out of risks and into files[]: the proposal decided to add a sentence to scheduleIsRecurring's own doc comment saying it does not answer the skip question, and named that decision in risks[2] and residual_risks[4] — but never put it in files[], so an implementer working from the file list would have dropped it, and it is the mitigation for the two-predicate hazard the proposal itself calls the sharpest remaining one. It is now the second half of the schedules.ts entry. (2) I added one clause to AC-2 making the Skip/Complete coexistence on the Schedules row menu part of the check, since a criterion that only says 'Complete unchanged' would pass just as well if the change had removed Complete from every recurring schedule by accident. (3) I added the bulk-bar nuance to AC-5. (4) I added a risk naming a consequence of the fix that is not a regression: on the three transaction-side menus an exhausted recurrence selected alone will now offer neither Complete nor Skip, because canBeCompleted is !scheduleIsRecurring and an exhausted recurrence is still a recur. That behaviour is unchanged, but QA hitting an empty menu could reasonably call it a bug, and it should be expected rather than discovered.\n\nWhere I disagree with the proposal. Its confidence_rationale says the previous round's error was 'argued' rather than verified and presents v3 as having verified it. I verified it too, and it holds — but I do not treat 'v2 got this wrong once' as strong evidence that v3 will survive review intact. The error was a real one, made in the last round, on the same file, about the same menu. That is a reason to read AC-2 and the SchedulesTable diff carefully during review, and it is why I did not raise the score on the strength of the correction alone.\n\nOne thing I considered and declined. This ticket bundles two real defects with five e2e-hygiene items, which is arguably two tickets. I did not request a scope_changed route: the parts are individually small, the bundle is a single PR's follow-ups, and two rounds have converged on this shape. The reasoning is recorded in alternatives_considered so a human can disagree with me cheaply. I also omitted route_request — the route [plan, implement, review, qa] already contains review and qa, and I found nothing in the code that needs a stage it lacks.\n\nResidual disagreement I did not resolve. Two closely-named predicates with different meanings now coexist, and the doc comments mitigate the hazard without eliminating it; a future reader who collapses them reintroduces this bug. I kept the decision, and record it as a live hazard (residual_risks[4]) rather than agreeing it is tidied away. If I am wrong about one thing here, the likeliest candidate is AC-1's recipe: the picker's popover-gating is read from source at :627-642, not watched, and if it is wrong the ticket's one behavioural fix goes unverified at QA.",
+    "residual_risks": [
+      "QA goes here first: AC-1 depends on a recipe nobody has driven. Every control exists and the config was executed against the real predicates, but the picker's popover-gating step is read from source rather than watched. If the exhausted fixture does not survive the round trip, AC-1 stalls — and it is the ticket's one behavioural fix.",
+      "Nothing in CI runs Playwright, so the four e2e review findings can regress silently. Only AC-3 gates. They are also the only part of this plan no CI test will ever have run.",
+      "Duplicate delivery of schedule/skip-next-date — a network retry, a sync re-delivery, a client firing twice — advances next_date twice. The queue guarantees serialisation, not that two calls are the same request. Closing it needs an idempotency key, a feature with its own design questions.",
+      "The QA 1 fix hides the menu item rather than surfacing why. A user with an exhausted recurrence who remembers the item gets no explanation. Accepted cost of the rejected alternative.",
+      "Two closely-named predicates now coexist with different meanings. Mitigated by doc comments on both functions, but a future reader who collapses them still reintroduces this bug."
+    ]
+  }
 }
