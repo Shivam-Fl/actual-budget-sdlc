@@ -106,6 +106,10 @@ export function useSchedules({
   const scheduleQueryRef = useRef<LiveQuery<ScheduleEntity> | null>(null);
   const statusQueryRef = useRef<LiveQuery<TransactionEntity> | null>(null);
   const postedQueryRef = useRef<LiveQuery<TransactionEntity> | null>(null);
+  // `publish` runs from a query callback, not during render, so it cannot read
+  // the `data` state variable without closing over the render that created the
+  // query. This ref always holds the most recently published `ScheduleData`.
+  const latestDataRef = useRef<ScheduleData>(data);
 
   useEffect(() => {
     let isUnmounted = false;
@@ -144,28 +148,47 @@ export function useSchedules({
         // order, so each publishes with whatever the other has most recently
         // reported. Waiting for both would strand the register in its loading
         // state whenever one of them is slow to deliver.
-        let statuses: ScheduleStatuses = new Map();
-        let postedTransactionsBySchedule = new Map<
-          string,
-          PostedScheduleTransaction[]
-        >();
+        //
+        // Starting from empty maps instead would let whichever query lands
+        // first publish a schedule list paired with an empty status map. Every
+        // schedule then fails `isForPreview` and the register's Upcoming rows
+        // vanish for a round trip. So both start from the last published values
+        // instead: a schedule whose status genuinely changed shows its previous
+        // status until the status query corrects it, which is strictly better
+        // than showing nothing at all for the same window.
+        let statuses: ScheduleStatuses = latestDataRef.current.statuses;
+        let postedTransactionsBySchedule =
+          latestDataRef.current.postedTransactionsBySchedule;
 
         const publish = () => {
           if (isUnmounted) {
             return;
           }
 
-          setData({
+          const previous = latestDataRef.current;
+          // The status query always builds a fresh map, so an unchanged `statuses`
+          // is the previous map by identity and its labels are still valid.
+          // Rebuilding unconditionally would hand consumers a new
+          // `statusLabels` instance on every published-transaction event.
+          const statusLabels =
+            statuses === previous.statuses
+              ? previous.statusLabels
+              : new Map(
+                  [...statuses.keys()].map(key => [
+                    key,
+                    getStatusLabel(statuses.get(key) || ''),
+                  ]),
+                );
+
+          const next: ScheduleData = {
             schedules,
             statuses,
-            statusLabels: new Map(
-              [...statuses.keys()].map(key => [
-                key,
-                getStatusLabel(statuses.get(key) || ''),
-              ]),
-            ),
+            statusLabels,
             postedTransactionsBySchedule,
-          });
+          };
+
+          latestDataRef.current = next;
+          setData(next);
         };
 
         statusQueryRef.current = loadStatuses(
