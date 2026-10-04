@@ -12,6 +12,7 @@ import {
   indexPostedScheduleTransactions,
   isScheduleOccurrencePosted,
 } from '#shared/schedules';
+import type { PostedScheduleTransaction } from '#shared/schedules';
 import type { RuleConditionEntity, TransactionEntity } from '#types/models';
 import type { RecurConfig } from '#types/models/schedule';
 
@@ -182,7 +183,8 @@ export async function buildFutureScheduleOccurrences(
   endDateObj: Date,
   accountsById: Map<string, AccountWithComputedBalance>,
   ruleAccountsById: Map<string, DbAccountForRules>,
-  postedTransactions: TransactionEntity[],
+  /** Rows from `getPostedScheduleTransactionsQuery`; only the three columns `indexPostedScheduleTransactions` reads. */
+  postedTransactions: PostedScheduleTransaction[],
 ) {
   const postedByScheduleId =
     indexPostedScheduleTransactions(postedTransactions);
