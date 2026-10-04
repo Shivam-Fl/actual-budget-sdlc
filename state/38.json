@@ -577,5 +577,28 @@
       }
     ],
     "pr": "56"
-  }
+  },
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 1,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6",
+      "AC-7"
+    ],
+    "sha": "d39574091d7dbbb5b751815454ce30a98ca33448",
+    "run_id": "37156687775",
+    "work_order_version": 1,
+    "at": "2026-10-04T00:21:13.096Z"
+  },
+  "qa_open_bugs": [
+    {
+      "id": "BUG-1",
+      "title": "PR title is missing the mandatory [AI] prefix, so AC-7 fails"
+    }
+  ]
 }
