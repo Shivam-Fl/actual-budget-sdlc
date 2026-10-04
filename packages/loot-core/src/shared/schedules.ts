@@ -482,7 +482,15 @@ export function getUpcomingDays(
   }
 }
 
-export function scheduleIsRecurring(dateCond: Condition | null) {
+/**
+ * Is this a recurrence at all? This does not answer whether a schedule can be
+ * skipped — an exhausted recurrence is still a recur — so for the skip
+ * question use `scheduleIsSkippable`, which asks the stronger one.
+ *
+ * Takes a stored date condition rather than a `Condition`: every caller passes
+ * what `extractScheduleConds` read off the schedule's rule.
+ */
+export function scheduleIsRecurring(dateCond: RuleConditionEntity | null) {
   if (!dateCond) {
     return false;
   }
@@ -490,6 +498,33 @@ export function scheduleIsRecurring(dateCond: Condition | null) {
   const value = cond.getValue();
 
   return value.type === 'recur';
+}
+
+/**
+ * Can this schedule's next date be skipped, i.e. does `setNextDate` have a date
+ * to move it to? `setNextDate` computes the successor with `getNextDateAfter`
+ * and writes only when it returns one (server/schedules/app.ts), so offering
+ * Skip for a schedule with no successor would be an action the server silently
+ * drops.
+ *
+ * `scheduleIsRecurring` answers a different, weaker question — "is this a
+ * recurrence?" — and stays true for a recurrence whose occurrences are all used
+ * up, which is exactly the case `getNextDateAfter` drops. Widening it to cover
+ * that would be wrong: several callers read it to decide whether a schedule is
+ * *not* recurring, and preview expansion needs the plain answer.
+ */
+export function scheduleIsSkippable(
+  dateCond: RuleConditionEntity | null,
+  nextDate: string | null | undefined,
+) {
+  if (nextDate == null) {
+    return false;
+  }
+
+  return (
+    scheduleIsRecurring(dateCond) &&
+    getNextDateAfter(dateCond, nextDate) != null
+  );
 }
 
 export type ScheduleStatusType = ReturnType<typeof getStatus>;

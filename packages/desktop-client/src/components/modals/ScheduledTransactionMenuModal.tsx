@@ -12,6 +12,7 @@ import { q } from '@actual-app/core/shared/query';
 import {
   extractScheduleConds,
   scheduleIsRecurring,
+  scheduleIsSkippable,
 } from '@actual-app/core/shared/schedules';
 
 import {
@@ -58,7 +59,7 @@ export function ScheduledTransactionMenuModal({
   const schedule = schedules?.[0];
   const { date: dateCond } = extractScheduleConds(schedule._conditions);
 
-  const canBeSkipped = scheduleIsRecurring(dateCond);
+  const canBeSkipped = scheduleIsSkippable(dateCond, schedule.next_date);
   const canBeCompleted = !scheduleIsRecurring(dateCond);
 
   return (
