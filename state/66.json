@@ -317,7 +317,8 @@
         "detail": "The PR title is missing the mandatory `[AI]` prefix. `.github/agents/pr-and-commit-rules.md` states 'ALL pull request titles MUST be prefixed with [AI]' and gives 'Fix type error in account validation' (MISSING PREFIX — NOT ALLOWED) as the counterexample. PR #67 is titled 'fix: Follow-ups from #58: 2 from the review'. The commit message on the branch does carry it ('[AI] Rewrap the sql.js fetch patch comment and add a release note'), so the pipeline applies the rule to commits and not to titles.\n\n`.github/agents/pr-and-commit-rules.md:9`\n\nEvidence: .github/agents/pr-and-commit-rules.md:9 — '**ALL pull request titles MUST be prefixed with `[AI]`**'. gh pr view 67 --json title returns 'fix: Follow-ups from #58: 2 from the review'. git log origin/main..FETCH_HEAD shows messageHeadline '[AI] Rewrap the sql.js fetch patch and add a release note'.\n\nFix: Rename the PR to '[AI] fix: Follow-ups from #58: 2 from the review'. Flagging it as minor and noting it is pre-existing rather than introduced here: gh pr list shows PRs #53, #59, #60, #64 and #65 all titled the same way, so this is the pipeline's PR-opening step, not a choice in this diff. Drop the finding if the council treats pipeline-wide PR metadata as out of scope for a per-PR review — but the rule is unambiguous and the edit is one string."
       }
     ],
-    "pr": "67"
+    "pr": "67",
+    "filed": 70
   },
   "qa": {
     "verdict": "pass",
