@@ -261,5 +261,14 @@
   "work_order_posted_at": "2026-10-04T07:20:54.930Z",
   "work_order_from": "plan",
   "work_order_comment": "5977656921",
-  "implemented_version": 1
+  "implemented_version": 1,
+  "follow_ups": {
+    "review": [
+      {
+        "title": "The PR title lacks the mandatory `[AI]` prefix, which the repo's own rules require on every pull request; the work order's out_of_scope reasoning conflates 'the generator cannot be fixed in this repo' with 'this PR's title cannot be fixed', and the remedy costs one command and touches no file.",
+        "detail": "The PR title lacks the mandatory `[AI]` prefix, which the repo's own rules require on every pull request; the work order's out_of_scope reasoning conflates 'the generator cannot be fixed in this repo' with 'this PR's title cannot be fixed', and the remedy costs one command and touches no file.\n\n`.github/agents/pr-and-commit-rules.md:11`\n\nEvidence: `gh pr view 73 --json title -q .title` returns `fix: Follow-ups from #66: 3 from the review` — no `[AI]`. .github/agents/pr-and-commit-rules.md states 'ALL pull request titles MUST be prefixed with `[AI]` — you have to apply it yourself', and the branch's own commit message does carry it (`[AI] Attribute the console spies to the tests that install them`), so the omission is in the PR title alone. The work order's out_of_scope entry argues this is 'not a change this repository can make' because .sdlc/bin/open-pr.mjs:138 builds the title as `fix: ${issueData.title}`; I confirmed both halves of that (line 138 has no `[AI]`; .sdlc/config.yml:218 lists `.sdlc/bin/**` under forbidden_paths). But forbidden_paths governs edits to *files in the repository*; renaming an already-open PR is a metadata operation (`gh pr edit 73 --title \"[AI] ...\"`) that changes no file and is therefore not gated at all. The scope claim is true about fixing the generator and false about fixing this PR.\n\nFix: Rename the PR to `fix: [AI] Follow-ups from #66: 3 from the review` (or `[AI] fix: ...` to match the commit's placement). Fixing open-pr.mjs:138 stays out of scope and stays with the pipeline owner, exactly as the work order says — but the pipeline owner is not the only one who can put the prefix on this PR."
+      }
+    ],
+    "pr": "73"
+  }
 }
