@@ -82,6 +82,56 @@ function CardWithInnerControl({ onInnerClick }: { onInnerClick?: () => void }) {
   );
 }
 
+// Deliberately native controls rather than the component library's Button:
+// react-aria's Button stops propagation itself, so a case built from it passes
+// whether or not the card's keydown guard exists.
+function CardWithNativeInnerControls() {
+  return (
+    <ReportCard widgetId="widget-1" to="/reports/net-worth">
+      <View>
+        <span>Balance Forecast</span>
+        <button type="button">Native control</button>
+        <input type="text" aria-label="Widget name" defaultValue="March" />
+      </View>
+    </ReportCard>
+  );
+}
+
+function getCard() {
+  return screen.getByRole('button', { name: /Balance Forecast/ });
+}
+
+function dispatchKeyDown(target: Element, key: string, repeat = false) {
+  const event = new KeyboardEvent('keydown', {
+    key,
+    code: key === ' ' ? 'Space' : key,
+    repeat,
+    bubbles: true,
+    cancelable: true,
+  });
+  target.dispatchEvent(event);
+  return event;
+}
+
+// The rules emotion actually injected for an element's classes, including any
+// `:hover` variant of them. jsdom resolves none of that in getComputedStyle —
+// a hover state does not exist there — so reading the cascade is the only way
+// to make the hover assertion falsifiable rather than vacuous.
+function injectedCssFor(element: Element) {
+  const styleSheetText = Array.from(document.querySelectorAll('style'))
+    .map(tag => tag.textContent ?? '')
+    .join('\n');
+
+  return (styleSheetText.match(/[^{}]+\{[^{}]*\}/g) ?? [])
+    .filter(rule => {
+      const selector = rule.slice(0, rule.indexOf('{'));
+      return Array.from(element.classList).some(name =>
+        selector.includes(`.${name}`),
+      );
+    })
+    .join('\n');
+}
+
 describe('ReportCard click surface', () => {
   let consoleErrorSpy: MockInstance<typeof console.error>;
   let originalIntersectionObserver: typeof IntersectionObserver;
@@ -186,4 +236,70 @@ describe('ReportCard click surface', () => {
       expect(mockNavigate).not.toHaveBeenCalled();
     },
   );
+
+  it.each(['Enter', ' '])(
+    'navigates once and still prevents the default when %j is held down on the focused card',
+    async key => {
+      renderCard(<CardWithInnerControl />);
+      await act(() => Promise.resolve());
+
+      const card = getCard();
+      // One real keypress, then the auto-repeats a held key produces. Playwright
+      // does not synthesize repeats, which is why QA saw six history entries.
+      const events = [
+        dispatchKeyDown(card, key),
+        ...Array.from({ length: 5 }, () => dispatchKeyDown(card, key, true)),
+      ];
+
+      expect(mockNavigate).toHaveBeenCalledTimes(1);
+      expect(events.map(event => event.defaultPrevented)).toEqual(
+        events.map(() => true),
+      );
+    },
+  );
+
+  it('does not navigate when a keypress starts on a native control inside the widget body', async () => {
+    renderCard(<CardWithNativeInnerControls />);
+    await act(() => Promise.resolve());
+
+    dispatchKeyDown(
+      screen.getByRole('button', { name: 'Native control' }),
+      'Enter',
+    );
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('leaves a native control inside the widget body free to be activated by its own keypress', async () => {
+    renderCard(<CardWithNativeInnerControls />);
+    await act(() => Promise.resolve());
+
+    const event = dispatchKeyDown(
+      screen.getByRole('button', { name: 'Native control' }),
+      'Enter',
+    );
+
+    // Preventing default here would suppress the click the browser synthesizes
+    // for the inner button, leaving it keyboard-dead. This pins the guard order.
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('leaves a space typed into a text field inside the widget body alone', async () => {
+    renderCard(<CardWithNativeInnerControls />);
+    await act(() => Promise.resolve());
+
+    const event = dispatchKeyDown(screen.getByLabelText('Widget name'), ' ');
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('gives the click surface no background, at rest or on hover', async () => {
+    renderCard(<CardWithInnerControl />);
+    await act(() => Promise.resolve());
+
+    // The affordance is the card body's shadow deepening, not a tint on the
+    // surface; reintroducing one would be a new look rather than this fix.
+    expect(injectedCssFor(getCard())).not.toMatch(/background(-color)?\s*:/);
+  });
 });

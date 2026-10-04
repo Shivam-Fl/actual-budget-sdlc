@@ -122,10 +122,17 @@ export function ReportCard({
           tabIndex={0}
           onClick={goToReport}
           onKeyDown={e => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              goToReport();
-            }
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            // A keypress that starts on a control inside the widget body is
+            // that control's, not the card's. This check has to come before
+            // preventDefault(): preventing a native descendant control's
+            // keydown suppresses the click the browser synthesizes for it,
+            // which would leave that control keyboard-dead.
+            if (e.target !== e.currentTarget) return;
+            e.preventDefault();
+            // One press, one navigation, however long the key is held.
+            if (e.repeat) return;
+            goToReport();
           }}
           style={{
             height: '100%',
