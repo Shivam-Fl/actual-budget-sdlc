@@ -86,6 +86,166 @@
   "stopped_at": null,
   "dispatched_stage": "plan",
   "validated_from": "plan",
-  "validated_at": "2026-10-04T22:24:30.118Z",
-  "validated_ac_changes": []
+  "validated_at": "2026-10-04T22:38:25.640Z",
+  "validated_ac_changes": [],
+  "validated_work_order": {
+    "issue": 87,
+    "version": 2,
+    "understanding": "The weekly end-bound suite exists twice and runs twice on every test run. packages/desktop-client/src/components/reports/spreadsheets/weekly-end-date.test.ts is 338 lines with 10 `it(...)`; custom-spreadsheet.test.ts is 1100 lines and carries all ten of those titles under `weekly custom report end bound` (line 380, seven cases) and `weekly grouped report end bound` (line 504, three cases). I re-verified the comparison the epic asked for rather than carrying v1's finding over. The ten `it('...')` titles extracted from each file are identical. Diffing the two describe blocks returns 76 changed lines across 11 hunks, and filtering those 76 lines for `expect|toEqual|toBe|toHave` returns nothing: no assertion, expected value or snapshot line differs anywhere. Every hunk is the props wrapper alone, `runCustom({...})` against `runCustom(weeklyProps({...}))`. The weeklyRows fixture is byte-identical (md5 6342ab83b4f60f70b3f77d129ec0d601). The category fixtures are the same two objects under different const names (categories/categoryGroups at lines 27-35 of the shorter file, weeklyCategories/weeklyCategoryGroups at 320-328 of the survivor). weeklyProps supplies precisely the defaults the shorter file's own runCustom already defaulted to, plus `balanceTypeOp: undefined`, which sortData.ts:24 already guards with `if (!balanceTypeOp || !sortByOp) return () => 0`. So the comparison resolves one way: weekly-end-date.test.ts contributes no unique case and is deleted outright, nothing folded back. A repo-wide grep for 'weekly-end-date' returns no hit outside the file's own path, and vitest discovers tests by the glob at vite.config.mts:406, so nothing has to be unlisted along with the deletion.",
+    "root_cause": "The suite was copied rather than moved into custom-spreadsheet.test.ts during a merge-conflict resolution. b593293 ('[AI] Fix weekly reports truncating the final week to one day (#12)', already an ancestor of main) added the ten cases to custom-spreadsheet.test.ts; the merge commit 9c44b8d cited in the issue is not reachable in this checkout, but the copy is demonstrably present on main. The last commit touching either file is 026f8b6, the #9 category-filtering fix, so both copies are still maintained by later work and neither has rotted out of use.",
+    "approach": "Delete weekly-end-date.test.ts outright and change nothing else. No case needs to move: the ten titles and their bodies already exist in custom-spreadsheet.test.ts, verified by diff rather than by eye, so the epic's 'fold back whatever it uniquely adds' reduces to a plain delete. custom-spreadsheet.test.ts is not edited except for one comment block recording the comparison — editing it further would widen a diff whose whole point is that it is a deletion.\n\nThis plan addresses the one objection raised against v1: v1 required the release note to state the comparison and what it found (AC-2.how_to_verify, AC-3.how_to_verify, qa_script step 6) while files[2] specified a release note whose body said only that the tests ran twice and now run once, so an implementer following files[] exactly would have produced a note that failed its own acceptance criteria. The direction chosen narrows that obligation to one artefact: the full comparison — what was compared, what the diff showed, and the conclusion that there was no unique case — is required in the code comment block above `describe('weekly custom report end bound', ...)` and nowhere else. The release note is required only to exist, carry `category: Maintenance` and an `authors:` list, and say the duplicate weekly end-date suite was removed, which is what the repo's own release-note convention asks for ('keep it short and clear — ideally one sentence'; clarify-sqljs-fetch-patch-test-comment.md is a Maintenance note whose whole body is one clause). AC-2, AC-3 and qa_script step 6 have been rewritten to match files[] exactly, so no two artefacts in this work order disagree. Per .github/agents/pr-and-commit-rules.md the PR template is left blank, so the comparison cannot go in the PR Description — it goes in the code comment, which is part of the PR's diff.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/weekly-end-date.test.ts",
+        "action": "delete",
+        "change": "Delete the file in full (338 lines). It contributes no case custom-spreadsheet.test.ts lacks: the ten `it('...')` titles are identical between the files, and `diff <(sed -n '181,338p' weekly-end-date.test.ts) <(sed -n '380,549p' custom-spreadsheet.test.ts)` produces 76 changed lines of which none contains an assertion — every hunk is the props wrapper. Nothing else in the repo imports it or names its path, and vitest discovers it by glob. Delete the file whole; do not move, rename or `it.skip` anything in it.",
+        "why": "The epic asked for the two suites to be diffed before deleting anything. The diff is empty of content, so the file is deleted rather than folded back — and because vitest globs, no config file changes."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+        "action": "edit",
+        "change": "Insert one comment block immediately above `describe('weekly custom report end bound', ...)` (currently line 380), separated by a blank line, using exactly the text supplied in the work order: it states this file is the sole owner of the weekly end-bound suite, that weekly-end-date.test.ts held a second copy left by a merge-conflict resolution, that the two were compared, that the ten `it` titles were identical and the describe-block diff differed only in the props wrapper and never in an assertion, and that nothing was folded back. Change nothing else — no code, no fixture, no helper, no assertion, no `it` title.",
+        "why": "This block is the single place the epic's comparison is recorded, so the next person reading this file does not have to redo the diff. It is stated in one artefact on purpose — the release note does not repeat it."
+      },
+      {
+        "path": "upcoming-release-notes/remove-duplicate-weekly-end-date-suite.md",
+        "action": "create",
+        "change": "Create a Markdown file whose entire contents are: front matter `category: Maintenance` and `authors: [Shivam-Fl]`, then one sentence phrased as a command — 'Remove the duplicate weekly report end-date tests, which ran twice on every test run, so they run once'. It states the duplicate suite was removed and that the tests now run once. It does NOT restate the file-by-file comparison, and must not be asked to — the comparison lives in the code comment alone.",
+        "why": "The contributing guide asks for a release note on every PR and the filename is resolved into the changelog at release time. Maintenance is correct because the change removes duplicate internal tests and touches no user-facing behaviour."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/weekly-end-date.test.ts",
+        "action": "delete",
+        "cases": [
+          "covers the whole final week once that week has elapsed",
+          "widens a week-start end date to the week it labels",
+          "clamps to today while the final week is still in progress",
+          "does not report the final week beyond the days that have happened",
+          "leaves the non-final buckets on their existing day-before-next rule",
+          "honours a Monday first day of week rather than assuming Sunday",
+          "leaves Daily and Monthly on their existing end bounds",
+          "applies the same bound as the custom spreadsheet",
+          "clamps to today the same way the custom spreadsheet does",
+          "widens a week-start end date in the table view too"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "source": "IAC-1",
+        "check": "Each of the ten weekly end-bound cases runs exactly once across the desktop-client unit suite, and the suite's reportable test count drops by exactly ten relative to main.",
+        "verify": "test",
+        "how_to_verify": "On main, run `yarn workspace @actual-app/web run vitest run src/components/reports/spreadsheets/ --reporter=verbose` and note the passed count and that each of the ten titles appears under two describes. After the change, run the same command: each of the ten titles appears exactly once, under `weekly custom report end bound` and `weekly grouped report end bound` in custom-spreadsheet.test.ts, and the passed count is ten lower. No test outside those ten changes result."
+      },
+      {
+        "id": "AC-2",
+        "source": "IAC-2",
+        "check": "weekly-end-date.test.ts is deleted outright, on the finding that it adds nothing the surviving file lacks, and the comparison that produced that finding is recorded verbatim in the comment block above `describe('weekly custom report end bound', ...)` in custom-spreadsheet.test.ts.",
+        "verify": "test",
+        "how_to_verify": "`git diff --stat main` lists the file as deleted and no other test file as deleted or renamed. `git diff main -- .../custom-spreadsheet.test.ts` shows exactly one added block: the comment above line 380, beginning 'The weekly end-bound suite' and naming weekly-end-date.test.ts, the identical `it` titles, the props-wrapper-only difference and the conclusion that nothing was folded back. The release note is NOT required to carry the comparison — this obligation is on the comment block alone."
+      },
+      {
+        "id": "AC-3",
+        "source": "IAC-3",
+        "check": "The decision is recorded on the pull request: the comment block above the surviving describe states what was compared and what the comparison found, and a Maintenance release note records that the duplicate suite was removed.",
+        "verify": "test",
+        "how_to_verify": "The PR's changed-file list carries the added comment block in custom-spreadsheet.test.ts and the new file upcoming-release-notes/remove-duplicate-weekly-end-date-suite.md. The comment block states the comparison and its finding; the release note states that the duplicate weekly end-date tests were removed. The PR template is left blank and the title carries `[AI]`, per .github/agents/pr-and-commit-rules.md; the record lives in these two files. Do not require the release note to contain the comparison narrative — it is one sentence by repo convention."
+      },
+      {
+        "id": "AC-4",
+        "source": "IAC-4",
+        "check": "No case loses coverage: all ten titles that ran before still run afterwards, under the same names, in custom-spreadsheet.test.ts, and no assertion inside them is weakened, removed or reworded.",
+        "verify": "test",
+        "how_to_verify": "Extract the `it('...')` titles from `git show main:packages/desktop-client/src/components/reports/spreadsheets/weekly-end-date.test.ts` and from custom-spreadsheet.test.ts after the change, and diff the two lists — they must be identical. The diff of custom-spreadsheet.test.ts shows only the added comment block and no changed assertion."
+      },
+      {
+        "id": "AC-5",
+        "source": "IAC-5",
+        "check": "The surviving suite passes, giving the same results it gave before apart from the ten duplicate runs no longer appearing: the reports/spreadsheets tests are green and the rest of the desktop-client unit suite is unchanged.",
+        "verify": "test",
+        "how_to_verify": "`yarn test` from the repository root is green after the change. Every test in the reports/spreadsheets directory other than the ten deleted duplicates reports the same pass/fail as on main; nothing outside that directory changes result. Per AGENTS.md this runs the lage suite across all packages and must be run from the repository root."
+      }
+    ],
+    "qa_script": [
+      "Confirm the diff is a deletion plus two small additions: `git diff --stat main` lists weekly-end-date.test.ts as deleted, custom-spreadsheet.test.ts as modified and upcoming-release-notes/remove-duplicate-weekly-end-date-suite.md as added, and nothing else.",
+      "Confirm no case was lost: extract the ten `it('...')` titles from `git show main:packages/desktop-client/src/components/reports/spreadsheets/weekly-end-date.test.ts` and from custom-spreadsheet.test.ts on the branch and diff the two lists — they must be identical.",
+      "Confirm nothing else referenced the deleted file: `grep -rn 'weekly-end-date' --exclude-dir=node_modules .` returns no hit outside plan/ and this work order.",
+      "Run `yarn workspace @actual-app/web run vitest run src/components/reports/spreadsheets/ --reporter=verbose` and confirm each of the ten titles appears exactly once and the suite is green.",
+      "Run `yarn test` from the repository root and confirm the desktop-client suite is green and the total passed count is ten lower than on main.",
+      "Confirm the decision is recorded: read the comment block above `describe('weekly custom report end bound')` in custom-spreadsheet.test.ts and confirm it names weekly-end-date.test.ts, states the comparison was made and what it found, and concludes nothing was folded back. Separately confirm upcoming-release-notes/remove-duplicate-weekly-end-date-suite.md exists with `category: Maintenance`, an `authors:` list, and one sentence saying the duplicate weekly end-date tests were removed. The comparison narrative is required in the comment block only; do not fail the release note for omitting it.",
+      "Confirm the PR template is unmodified and the PR title is prefixed `[AI]`, per .github/agents/pr-and-commit-rules.md."
+    ],
+    "risks": [
+      "The one real risk is a silent coverage loss if the diff were read only at the title level. It was not: the ten titles diff clean, filtering the 76 changed lines for `expect|toEqual|toBe|toHave` returns nothing, and the weeklyRows fixture is md5-identical. AC-4 carries the exact command.",
+      "This plan deliberately records the comparison in exactly one artefact. That is a considered answer to the objection raised against v1, not an oversight: requiring it in both the comment and the release note means an implementer following files[] would fail the plan's own acceptance criteria. A reviewer who disagrees with that split should change files[2] and AC-2/AC-3/step 6 together, never in one place.",
+      "The survivor's server double is stricter than the deleted file's — it applies the `$transform` precision and splits the amount filter, which the shorter file did not. This changes nothing for these ten cases (every weeklyRows amount is positive and the interval is Weekly), and the survivor is where these tests already run and pass today, but it is why this file is the copy to delete.",
+      "The category fixtures in the two files are the same two objects under different const names, so the describe-block diff does not cover lines 27-35 of the deleted file. Those helpers have no behaviour of their own and are replaced by name, not by value.",
+      "No new hosts are contacted by this change and no data is sent anywhere, so env.api_allowlist in .sdlc/config.yml needs no addition. Nothing in forbidden_paths is touched.",
+      "The implementer must not be tempted to also delete or merge the other describes in custom-spreadsheet.test.ts (weekly budgeted, category axis narrowing, 'any of', text operators). They are not duplicates and are out of scope."
+    ],
+    "out_of_scope": [
+      "The other describes in custom-spreadsheet.test.ts (weekly budgeted at line 551, category axis narrowing at 644, 'any of' at 802, text operators at 954) — none is a duplicate, and none is touched.",
+      "The shared server double, fixtures and helpers inside custom-spreadsheet.test.ts. Simplifying them is a separate change that would enlarge a diff whose whole point is that it is a deletion.",
+      "Any other duplication between these two files' shape and test files elsewhere in the suite. The epic raised this one pair; a next pair, if it exists, is its own ticket.",
+      "Making the desktop-client suite faster. Dropping ten duplicate runs is the ticket; profiling or re-sharding the suite is not."
+    ],
+    "kind": "chore",
+    "confidence": 95,
+    "confidence_rationale": "Every factual claim was re-checked against the files in this run, not carried over from v1. The ten titles diff clean; the describe-block diff contains no assertion line at all, verified by filtering its 76 changed lines for `expect|toEqual|toBe|toHave` and getting nothing; the shared fixture is md5-identical; the props defaults were read side by side and match; balanceTypeOp's undefined handling was traced to sortData.ts:24; the path grep is empty; and the vitest include glob was read at vite.config.mts:406, so the deletion needs no unlisting. The delete-or-fold judgement the epic flagged resolves cleanly on this evidence to 'delete outright'. The residual 5 is that CI runs the full suite and this planner could not execute vitest in this checkout (no node_modules state file), so the test-count deltas in AC-1 and AC-5 are specified as measurements taken against main rather than things measured here.",
+    "reproduced": true,
+    "evidence": [
+      "diff <(sed -n '181,338p' .../weekly-end-date.test.ts) <(sed -n '380,549p' .../custom-spreadsheet.test.ts) — 76 changed lines across 11 hunks, every one the props wrapper (`runCustom({...})` vs `runCustom(weeklyProps({...}))`); filtering those 76 lines for `expect|toEqual|toBe|toHave` returns nothing.",
+      "The same diff piped to `grep -oP \"it\\('\\K[^']+\"` on each side and compared — the two title lists are identical, ten lines each.",
+      "sed -n '36,47p' weekly-end-date.test.ts | md5sum and sed -n '43,54p' custom-spreadsheet.test.ts | md5sum — both 6342ab83b4f60f70b3f77d129ec0d601 (the weeklyRows fixture).",
+      "weekly-end-date.test.ts lines 27-35 and custom-spreadsheet.test.ts lines 320-328 read side by side — the same two category objects under the const names `categories`/`categoryGroups` and `weeklyCategories`/`weeklyCategoryGroups`.",
+      "weekly-end-date.test.ts `runCustom` defaults (lines 100-140) against custom-spreadsheet.test.ts `weeklyProps` defaults (lines 329-363) — identical startDate '2026-08-30', interval 'Weekly', firstDayOfWeekIdx '0', conditions [], conditionsOp 'and', four show* flags true, trimIntervals false, groupBy 'Category'; the only extra key is `balanceTypeOp: undefined`.",
+      "grep -rn 'balanceTypeOp' in spreadsheets/ excluding test files — sortData.ts:24 guards it with `if (!balanceTypeOp || !sortByOp) return () => 0`, so an explicit undefined behaves as an omitted key.",
+      "grep -rn 'weekly-end-date' --exclude-dir=node_modules . — no hit in any source file; nothing names the deleted file's path.",
+      "packages/desktop-client/vite.config.mts:406 — vitest `include: ['src/**/*.{test,spec}.?(c|m)[jt]s?(x)']`, so deletion requires no config change and no unlisting.",
+      "wc -l: weekly-end-date.test.ts 338, custom-spreadsheet.test.ts 1100; the ten describes occupy lines 380-549 of the larger file, split 380 / 504.",
+      "git log --oneline -3 -- weekly-end-date.test.ts — 026f8b6 (the #9 category-filtering fix) and b593293 ('[AI] Fix weekly reports truncating the final week to one day (#12)'). The merge commit 9c44b8d cited in the issue is not reachable in this checkout.",
+      "upcoming-release-notes/merge-duplicate-themes-directories.md — the precedent for a Maintenance release note on an identical dedup; clarify-sqljs-fetch-patch-test-comment.md — a Maintenance note whose entire body is one clause, which is why this plan's release note is one sentence and carries no comparison narrative.",
+      "packages/docs/docs/contributing/index.md, 'Writing Good Release Notes' — 'Keep it short and clear — ideally one sentence', category must be one of Features/Enhancements/Bugfix/Maintenance, `authors` is an array of GitHub usernames, messages phrased as commands.",
+      "vitest could not be executed in this checkout (no node_modules state file), so the test-count deltas in AC-1 and AC-5 are specified as measurements to take against main, not as measurements taken here."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Delete weekly-end-date.test.ts and move anything unique into custom-spreadsheet.test.ts.",
+        "rejected_because": "There is nothing to move. The diff over the two describe blocks contains no assertion line at all, the ten titles are identical, and the bodies differ only in the props wrapper, whose defaults are the ones the shorter file already defaulted to. This was the epic's first option and it reduces to a plain delete."
+      },
+      {
+        "approach": "Keep weekly-end-date.test.ts and delete the ten cases from custom-spreadsheet.test.ts instead.",
+        "rejected_because": "It keeps the weaker of the two suites. The survivor would lose the server double that applies `$transform` precision and splits the amount filter, and it would strand the `weeklyProps` helper, which the weekly budgeted describe also uses. It also means editing a 1100-line file to delete ten cases rather than deleting a 338-line file outright."
+      },
+      {
+        "approach": "Extract the ten cases plus their fixtures and server double into a shared test helper both files import.",
+        "rejected_because": "It leaves both files running the same ten cases, which is the duplication the ticket exists to remove — it hides the duplication behind an import instead of ending it, and it adds a shared helper to a codebase trying to lose a file, not gain a layer."
+      },
+      {
+        "approach": "Keep weekly-end-date.test.ts but mark the ten cases `it.skip`, or move them under a single shared describe imported by both.",
+        "rejected_because": "Skipped tests still count in a reportable total, so AC-1's 'drops by exactly ten' would fail; and the shared-describe form keeps two files alive for one suite. Either leaves the 338 lines a reviewer is asked to judge, which the ticket names as half the cost."
+      },
+      {
+        "approach": "Record the comparison in both the code comment and the release note, as v1's AC-2/AC-3/qa_script step 6 required.",
+        "rejected_because": "This is the objection v1 was rejected for. It cannot be carried out by the implementer: the repo's release-note convention says one sentence, and the existing precedent for a Maintenance note of this kind is a single clause with no narrative. Requiring both means the release note either violates the repo convention or fails the plan's own acceptance criteria. The obligation is therefore narrowed to the code comment, and AC-2, AC-3 and qa_script step 6 have been rewritten to match."
+      }
+    ],
+    "assumptions": [
+      "main is the base branch — .sdlc/config.yml leaves base_branch empty, meaning the repo default, and the issue's own verification is against main.",
+      "Vitest discovers test files by the glob at packages/desktop-client/vite.config.mts:406 rather than by an explicit list, so nothing has to be unlisted along with the deletion.",
+      "`authors: [Shivam-Fl]` on the release note is correct: it matches every other file in upcoming-release-notes/ and Shivam-Fl is the repo owner named in .sdlc/config.yml's allowlist. If the PR ends up authored under a different account, change that one line and nothing else."
+    ],
+    "unknowns": [
+      "The epic cites merge commit 9c44b8d as the conflict resolution that moved the suite out. That object is not reachable in this checkout, so the copy's exact provenance is taken from the issue. It does not affect the decision — the duplication is present on main either way, which is what the diff shows.",
+      "The exact baseline passed count for the desktop-client suite cannot be quoted here because vitest cannot run in this checkout. AC-1 and AC-5 are written as a before/after measurement the implementer and QA take against main, so the delta is measured rather than asserted."
+    ],
+    "debate_summary": "v1 was rejected on one objection, an internal inconsistency between two parts of the same work order: AC-2.how_to_verify, AC-3.how_to_verify and qa_script step 6 all required the release note to state that a comparison was made and what it found, while files[2] specified a release note whose one-sentence body said only that the tests ran twice and now run once. An implementer following files[] exactly would therefore have produced a note that failed the plan's own acceptance criteria. The reviewer's recommended direction — narrow the obligation to the code comment — is the one taken here. The full comparison (what was compared, that the ten `it` titles were identical, that the diff showed only the props wrapper and no differing assertion, and that nothing was folded back) is now required in the code comment block above `describe('weekly custom report end bound', ...)` and nowhere else; the release note is held only to the repo's own convention (exists, `category: Maintenance`, `authors:` list, one sentence saying the duplicate suite was removed). AC-2, AC-3 and qa_script step 6 were rewritten to match files[] exactly, with explicit wording telling QA not to fail the release note for omitting the comparison narrative. The technical finding was re-verified from scratch rather than carried over: it is unchanged and now rests on a stronger check than title comparison — filtering the 76 changed lines of the describe-block diff for any assertion yields nothing.",
+    "residual_risks": [
+      "The AC-1 and AC-5 test-count deltas are the only claims here not directly executed, because this checkout has no node_modules state and vitest cannot start. Both are stated as measurements to take against main, not as results."
+    ],
+    "mode": "committed"
+  }
 }
