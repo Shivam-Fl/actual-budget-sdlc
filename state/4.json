@@ -1068,7 +1068,31 @@
         "detail": "`contains` on a category axis now means LIKE-pattern in the custom and grouped reports and literal substring in the budgeted Sankey and budget-analysis reports, so the same filter text gives different answers in four reports - but this is an inconsistency, not fetched money being dropped.\n\n`packages/desktop-client/src/components/reports/spreadsheets/sankey-spreadsheet.ts:459`\n\nEvidence: sankey-spreadsheet.ts:459/:465 and budget-analysis-spreadsheet.ts:246/:251 both still read `name.toLowerCase().includes(value.toLowerCase())`. Neither site is a row-axis/query divergence, though: filterCategoryGroups has exactly one caller, :328 inside createBudgetSpreadsheet, whose data comes from `send('api/budget-month', { month: m })` - no conditions passed - and the comment at :425-428 says so explicitly (\"Budget data is fetched unconditionally ... so we must apply category conditions manually in JS\"). budget-analysis-spreadsheet.ts:339 sums `send('envelope-budget-month', { month })`, likewise unconditioned. In both, the JS filter is the only filter, so nothing fetched is discarded; the reports just answer the question differently. The new module header's claim to be the single definition makes the leftover copies more visible than they were.\n\nFix: Raise as a follow-up ticket to route both sites through likePatternToRegex, matching what budgetDataQuery.ts:246-265 now does. It is a real consistency bug and a fair thing to want fixed; it is not the money-losing defect class, and neither file is in this PR's diff."
       }
     ],
-    "pr": "9"
+    "pr": "9",
+    "qa": [
+      {
+        "id": "BUG-4",
+        "severity": "minor",
+        "area": "reports/custom — Data Table rendering",
+        "title": "The custom report renders three table rows with the empty-string React key, so React logs a duplicate-key warning on every report render",
+        "expected": "Every rendered row has a unique React key.",
+        "actual": "React logs \"Encountered two children with the same key, ``\" on the custom report. The probe recovered the colliding key as the empty string. categoryLists in ReportOptions.ts appends uncategorizedCategory, offBudgetCategory and transferCategory, and all three are declared with id: \"\", so ReportTableList renders three siblings with key={category.id} === \"\".",
+        "repro": [
+          "Open $PREVIEW_URL and choose \"Try the demo\".",
+          "Open Reports -> Custom Report; leave Mode=Total, Viz=Data Table.",
+          "Options -> enable \"Show empty rows\" (this is what makes the three synthetic rows render).",
+          "Watch the console: the warning fires on the report render, before any filter is applied."
+        ],
+        "evidence": [
+          "/home/runner/work/actual-budget-sdlc/actual-budget-sdlc/qa-evidence/key-collision-probe.log",
+          "/home/runner/work/actual-budget-sdlc/actual-budget-sdlc/qa-evidence/test-results/probes-T-19-probe-—-a-bare-4d868-React-key-collision-warning-chromium/test-finished-1.png",
+          "/home/runner/work/actual-budget-sdlc/actual-budget-sdlc/qa-evidence/test-results/probes-T-19-probe-—-a-bare-4d868-React-key-collision-warning-chromium/trace.zip"
+        ],
+        "suspected_cause": "ReportOptions.ts declares uncategorizedCategory, transferCategory and offBudgetCategory with id: \"\", and ReportTableList keys each category row with key={category.id}. Not localised beyond that read; no wrong row or total was observed in any QA run.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "pass",
