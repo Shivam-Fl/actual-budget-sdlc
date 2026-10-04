@@ -126,7 +126,7 @@
           "**AC-5** The remaining suite passes, with the same results it gave before this change apart from the ten duplicate runs no longer appearing."
         ],
         "kind": "chore",
-        "issue": null
+        "issue": 87
       },
       {
         "title": "A custom report's three synthetic rows get distinct React keys, and its console stays clean",
@@ -167,6 +167,7 @@
   "children": [
     84,
     85,
-    86
+    86,
+    87
   ]
 }
