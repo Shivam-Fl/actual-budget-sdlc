@@ -106,22 +106,44 @@ export function ReportCard({
   );
 
   if (to && !isEditing && !disableClick) {
+    const goToReport = () => {
+      void navigate(to, { state: { goBack: true } });
+    };
+
+    // Deliberately not a <Button>: the card is a wrapper around widget bodies,
+    // and some of them render their own buttons. A <button> here puts a button
+    // inside a button, which is invalid HTML and trips React's
+    // validateDOMNesting. A View with role="button" keeps the click target and
+    // the contents-derived accessible name the e2e selectors rely on.
     return (
       <Layout {...layoutProps}>
-        <Button
-          variant="bare"
-          onPress={() => navigate(to, { state: { goBack: true } })}
+        <View
+          role="button"
+          tabIndex={0}
+          onClick={goToReport}
+          onKeyDown={e => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            // A keypress that starts on a control inside the widget body is
+            // that control's, not the card's. This check has to come before
+            // preventDefault(): preventing a native descendant control's
+            // keydown suppresses the click the browser synthesizes for it,
+            // which would leave that control keyboard-dead.
+            if (e.target !== e.currentTarget) return;
+            e.preventDefault();
+            // One press, one navigation, however long the key is held.
+            if (e.repeat) return;
+            goToReport();
+          }}
           style={{
             height: '100%',
             width: '100%',
-            background: 'transparent',
-            padding: 0,
             textAlign: 'left',
             overflow: 'visible',
+            cursor: 'pointer',
           }}
         >
           {content}
-        </Button>
+        </View>
       </Layout>
     );
   }

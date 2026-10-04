@@ -1,15 +1,24 @@
 import MockDate from 'mockdate';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { aqlQuery } from '#server/aql';
 import { createAllBudgets } from '#server/budget/base';
 import * as db from '#server/db';
 import { loadMappings } from '#server/db/mappings';
+import { runHandler } from '#server/mutators';
 import {
   createSchedule as createScheduleBase,
   getRuleForSchedule,
+  app as schedulesApp,
 } from '#server/schedules/app';
 import * as sheet from '#server/sheet';
+import { app as transactionsApp } from '#server/transactions/app';
 import { loadRules, updateRule } from '#server/transactions/transaction-rules';
+import { q } from '#shared/query';
+import {
+  makeEmptySplitSubtransactions,
+  splitTransaction,
+} from '#shared/transactions';
 import type { RuleConditionEntity } from '#types/models';
 
 import { generateForecast } from './app';
@@ -19,6 +28,7 @@ const { emptyDatabase } = global as typeof globalThis & {
   emptyDatabase: () => () => Promise<void>;
 };
 const createSchedule = createScheduleBase as (args: {
+  schedule?: { posts_transaction: boolean };
   conditions: RuleConditionEntity[];
 }) => Promise<string>;
 
@@ -531,6 +541,177 @@ describe('forecast app', () => {
     expect(balanceByDate['2024-03-09']).toBe(0);
     expect(balanceByDate['2024-03-10']).toBe(100);
     expect(balanceByDate['2024-03-31']).toBe(100);
+  });
+
+  // A split keeps the occurrence stamp on the parent — `splitTransaction`
+  // leaves `schedule` and `schedule_occurrence` on the row it turns into a
+  // parent and `makeChild` copies neither onto the children. So the parent is
+  // the ONE stamped row, and the forecast's occurrence-posted check used to
+  // read the stamp off a query passing the default `splits: 'inline'`, which
+  // filters split parents out. A posted occurrence whose transaction was later
+  // split therefore looked unspent and got projected a second time.
+  describe('a posted occurrence whose transaction has been split', () => {
+    const OCCURRENCE = '2024-03-10';
+    const NEXT_OCCURRENCE = '2024-03-17';
+    const AMOUNT = -100_000;
+
+    // Posted through the real handler so the row carries a genuine occurrence
+    // stamp, then split through the same reducer the register's Split
+    // affordance uses, with the amount divided between the two children.
+    //
+    // The schedules service is started and stopped HERE rather than in a
+    // describe-wide hook pair, matching the sibling cases in this file: the
+    // lifecycle is opened at the point of use, so a case added to this block
+    // later cannot silently inherit a running service, and a throw between
+    // the two does not leave one running for the rest of the file. It is
+    // needed because the `_account` and other rule-derived fields on a
+    // schedule only resolve once the JSON-path mappings are populated, and
+    // `schedule/post-transaction` bails out without them.
+    async function createForecastWithSplitPostedOccurrence(
+      conditions?: RuleConditionEntity[],
+    ) {
+      schedulesApp.startServices();
+
+      try {
+        return await buildSplitPostedOccurrenceForecast(conditions);
+      } finally {
+        await schedulesApp.stopServices();
+      }
+    }
+
+    async function buildSplitPostedOccurrenceForecast(
+      conditions?: RuleConditionEntity[],
+    ) {
+      const accountId = await db.insertAccount({
+        id: 'acct',
+        name: 'Checking',
+      });
+
+      const scheduleId = await createSchedule({
+        schedule: { posts_transaction: true },
+        conditions: [
+          { op: 'is', field: 'account', value: accountId },
+          { op: 'is', field: 'amount', value: AMOUNT },
+          {
+            op: 'is',
+            field: 'date',
+            value: {
+              start: OCCURRENCE,
+              frequency: 'weekly',
+            },
+          },
+        ] satisfies RuleConditionEntity[],
+      });
+
+      await runHandler(schedulesApp.handlers['schedule/post-transaction'], {
+        id: scheduleId,
+        date: OCCURRENCE,
+      });
+
+      const { data: stamped } = await aqlQuery(
+        q('transactions')
+          .options({ splits: 'all' })
+          .filter({ schedule: scheduleId })
+          .select(['id']),
+      );
+      const [parent] = stamped;
+
+      const { diff } = splitTransaction(
+        [await db.getTransaction(parent.id)],
+        parent.id,
+        makeEmptySplitSubtransactions,
+      );
+      await runHandler(
+        transactionsApp.handlers['transactions-batch-update'],
+        diff,
+      );
+
+      // Give each child half the amount the parent carried, so the split adds
+      // up and the register shows it as filled in.
+      const { data: children } = await aqlQuery(
+        q('transactions')
+          .options({ splits: 'all' })
+          .filter({ parent_id: parent.id })
+          .select(['id']),
+      );
+      for (const child of children) {
+        await runHandler(
+          transactionsApp.handlers['transactions-batch-update'],
+          {
+            updated: [{ ...child, amount: AMOUNT / 2 }],
+          },
+        );
+      }
+
+      const result = await generateForecast({
+        accountIds: [accountId],
+        startDate: '2024-03-01',
+        endDate: '2024-03-31',
+        conditions,
+      });
+
+      return {
+        balanceByDate: Object.fromEntries(
+          result.dataPoints.map(({ date, balance }) => [date, balance]),
+        ),
+        dataPointByDate: Object.fromEntries(
+          result.dataPoints.map(dataPoint => [dataPoint.date, dataPoint]),
+        ),
+      };
+    }
+
+    it('is not projected a second time', async () => {
+      const { balanceByDate, dataPointByDate } =
+        await createForecastWithSplitPostedOccurrence();
+
+      // The real rows — the two children of the split — are counted once.
+      expect(balanceByDate[OCCURRENCE]).toBe(AMOUNT);
+      expect(balanceByDate['2024-03-09']).toBe(0);
+      expect(balanceByDate['2024-03-18']).toBe(AMOUNT * 2);
+
+      // And the occurrence's own day carries no projected entry. Before the
+      // fix this was a projected AMOUNT sitting on top of the real AMOUNT.
+      expect(dataPointByDate[OCCURRENCE].transactions).toEqual([]);
+    });
+
+    it('keeps projecting the next occurrence', async () => {
+      // The control arm: the fix must remove the duplicate, not all projection
+      // for a schedule whose posted payment has been split.
+      const { dataPointByDate } =
+        await createForecastWithSplitPostedOccurrence();
+
+      expect(dataPointByDate[NEXT_OCCURRENCE].transactions).toHaveLength(1);
+      expect(dataPointByDate[NEXT_OCCURRENCE].transactions[0]).toMatchObject({
+        amount: AMOUNT,
+      });
+    });
+
+    it('stays suppressed when an active filter excludes the posted transaction', async () => {
+      // Pins what the separate query means when a forecast filter is on. The
+      // posted-transaction query is deliberately NOT narrowed by `filterInfo`
+      // or `accountIdsToQuery` — it answers "has this occurrence been paid",
+      // which does not depend on what the user is currently filtering the
+      // forecast by. Narrowing it would resurrect the duplicate projection
+      // below whenever a filter excluded the real payment, because the
+      // occurrence would read as unpaid and be projected on top of rows that
+      // the filter is already hiding. `indexScheduleOccurrences` applies both
+      // narrowings to the PROJECTED rows separately.
+      //
+      // Filtering on the OCCURRENCE's amount discriminates the two readings.
+      // The real rows are the two children at AMOUNT / 2 each, so this filter
+      // excludes the payment that proves the occurrence was paid while still
+      // admitting a projected occurrence of AMOUNT. Were the posted query
+      // narrowed by the filter, the occurrence would read as unpaid and appear
+      // here — projected on top of rows the filter is already hiding.
+      const { dataPointByDate } = await createForecastWithSplitPostedOccurrence(
+        [{ op: 'is', field: 'amount', value: AMOUNT }],
+      );
+
+      expect(dataPointByDate[OCCURRENCE].transactions).toEqual([]);
+      // The next occurrence IS projected, so the filter is not simply
+      // suppressing everything and the assertion above is meaningful.
+      expect(dataPointByDate[NEXT_OCCURRENCE].transactions).toHaveLength(1);
+    });
   });
 
   it('does not double-count schedule occurrences already posted on the due date', async () => {
