@@ -18,7 +18,245 @@
   },
   "halted": null,
   "pending": null,
-  "work_order": null,
+  "work_order": {
+    "acceptance": [
+      {
+        "check": "A Weekly custom report with To set to the current week's start (today 2026-10-02, To: 2026-09-27) shows a header ending 2026-10-02 — the same value the final bucket's intervalEndDate carries — and never a header stopping at 2026-09-27.",
+        "how_to_verify": "Unit: ReportSummary.test.tsx cases 1 and 2. Browser: qa_script steps 2-4, where step 2 is what makes the header exist at all.",
+        "source": "IAC-1",
+        "id": "AC-1",
+        "verify": "test"
+      },
+      {
+        "check": "Daily, Monthly and Yearly report headers render exactly as they do today — '08/30/2026 to 09/27/2026' under Daily, \"Aug '26 to Sep '26\" under Monthly, and a bare '2026' with no separator under Yearly; a Weekly report whose To falls in a past week stops at that week's end; a Weekly report whose To falls in a future week stops at today. None projects into later days.",
+        "how_to_verify": "Unit: ReportSummary.test.tsx past-week and future-To cases plus the three separate Daily/Monthly/Yearly unchanged cases, each with its own expected string; reportRanges.test.ts pass-through cases. Browser: qa_script step 5.",
+        "source": "IAC-2",
+        "id": "AC-2",
+        "verify": "test"
+      },
+      {
+        "check": "A saved Weekly report with balance type Budgeted widens its end date the same way every other Weekly report does — no new guard — and a comment above the existing balanceTypeOp !== 'totalBudgeted' guard in both factories records why the widening and the week-start remap below it disagree.",
+        "how_to_verify": "Unit: the custom-spreadsheet.test.ts budgeted cases assert the widened month list ['2026-08','2026-09','2026-10'] and figure-for-figure equality with the un-widened run. Code read: the comment above both guards is word-for-word identical. Browser: qa_script step 6.",
+        "source": "IAC-3",
+        "id": "AC-3",
+        "verify": "test"
+      },
+      {
+        "check": "The end-date clamp exists once, as a single exported helper in reportRanges.ts beside validateEnd/boundedRange; custom-spreadsheet, grouped-spreadsheet and recalculate all call it, and no site restates the rule.",
+        "how_to_verify": "grep for getWeekEnd across packages/desktop-client/src/components/reports returns only reportRanges.ts (the new helper and the getSpecificRange preset, which is a different rule that stays) and no clamp restatement in the three spreadsheet files; grep for getEffectiveEndDate shows one definition and four call sites. Verified against today's tree: the only four hits are recalculate.ts:97, grouped-spreadsheet.ts:58, custom-spreadsheet.ts:125 and reportRanges.ts:196 (getSpecificRange).",
+        "source": "IAC-4",
+        "id": "AC-4",
+        "verify": "test"
+      },
+      {
+        "check": "The ten existing weekly-report tests in custom-spreadsheet.test.ts pass with their bodies unmodified, and new tests pin both the header behaviour and the budgeted-path choice.",
+        "how_to_verify": "git diff on custom-spreadsheet.test.ts shows additions only; yarn workspace @actual-app/web run vitest --run over the three test files is green. Verified the file contains exactly ten it( blocks today.",
+        "source": "IAC-5",
+        "id": "AC-5",
+        "verify": "test"
+      },
+      {
+        "check": "The header's end date and the final bucket's intervalEndDate come from the same function, so a future change to the week rule moves both together rather than letting them drift again.",
+        "how_to_verify": "Code read: ReportSummary.tsx and custom-spreadsheet.ts both call getEffectiveEndDate from reportRanges, and no formatting of a raw endDate remains in the header.",
+        "source": "IAC-1",
+        "id": "AC-6",
+        "verify": "test"
+      }
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Add copy to the summary saying the last bucket covers its full week (the issue's second IAC-1 resolution).",
+        "rejected_because": "Needs a new user-facing string and a layout change, and the issue puts summary copy beyond the date range it names out of scope. It also leaves the header and the buckets computed from two different rules, which is the drift this slice exists to remove."
+      },
+      {
+        "approach": "Make setData's data.endDate the clamped value so both the header and every downstream consumer read one value.",
+        "rejected_because": "data.endDate also feeds drilldown ranges and the report graphs, so widening it changes behaviour well beyond the header — a scope increase the issue does not ask for. Recorded in out_of_scope as its own candidate slice."
+      },
+      {
+        "approach": "Add the balanceTypeOp !== 'totalBudgeted' guard to the widening, so Weekly+Budgeted reports stay un-widened (the issue's second IAC-3 resolution).",
+        "rejected_because": "It would leave Weekly+Budgeted reports missing the final week, and it introduces a second divergence axis into the one rule this slice exists to make single — for no benefit, since the budgeted path provably cannot move a figure. The comment IAC-3 requires is still being added at the guard."
+      },
+      {
+        "approach": "Put the clamp in ReportSummary by widening only when interval === 'Weekly' inline, leaving the three spreadsheet copies alone.",
+        "rejected_because": "Fails IAC-4 outright and leaves the triplication the issue names as its third finding in place."
+      },
+      {
+        "approach": "Assert the Daily/Monthly/Yearly unchanged case as byte-identical output before and after the change, dropping the literals entirely.",
+        "rejected_because": "There is no 'before' to compare against in a unit test — the component under test is the changed one — so this reduces to asserting nothing. Naming the correct expected string per interval is both possible and stronger, and it is what makes the Yearly collapse guard assertable at all."
+      }
+    ],
+    "approach": "One helper, four callers, no figure changes.\n\n1. The shared rule (IAC-4). Export getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx?) from reportRanges.ts, declared next to validateEnd. Its body is a literal transcription of custom-spreadsheet.ts:120-128: return endDate unchanged unless interval === 'Weekly'; otherwise return currentDay() < getWeekEnd(endDate, firstDayOfWeekIdx) ? today : weekEnd. Carry the canonical comment onto the helper, rewritten to describe the rule rather than a call site. The helper takes the date as an argument because the two families of call site anchor differently (recalculate's non-Weekly branch must receive the report's endDate, not the bucket start).\n\n2. The three existing call sites (IAC-4). custom-spreadsheet.ts:120-128 and grouped-spreadsheet.ts:55-61 become one getEffectiveEndDate call each. recalculate.ts:94-108 collapses to a ternary. Verified safe: _weekRange pushes weekFromDate(end) last (months.ts:299-308), so for the final Weekly bucket getWeekEnd(intervalItem) === getWeekEnd(endDate); and for every non-Weekly interval the helper returns endDate unchanged, exactly what recalculate's else-branch assigns today.\n\n3. The header (IAC-1) — chosen resolution: pass the same clamped value, not new copy. ReportSummary gains an optional firstDayOfWeekIdx prop and renders getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx), including inside the format(startDate) !== format(endDate) collapse check so the separator still collapses correctly. CustomReport.tsx passes the pref it already holds (lines 154-155). Chosen over the copy alternative: no new i18n string, no layout change, and header and buckets stay derived from one function.\n\n4. The budgeted path (IAC-3) — chosen resolution: widen on all paths; no new guard. A word-for-word identical comment sits above the existing balanceTypeOp !== 'totalBudgeted' guard in both factories, recording that the widening applies to every balance type while the week-start remap below does not, because budget rows arrive keyed by month. Verified: fetchBudgetData keys date by month (spreadsheets/budgetDataQuery.ts:231) while Weekly bucket labels are week starts, so no budget row can match a bucket and every Weekly+Budgeted bucket is already 0 today — as is totalBudgeted, which mirrors totalAssets + totalDebts (custom-spreadsheet.ts:350) accumulated from those same buckets. Widening pulls one extra month of rows that are then discarded.\n\n5. Tests (IAC-5). All ten existing weekly cases pass unmodified. Added: ReportSummary.test.tsx pinning the header (one case per interval, with per-interval expected strings — v1's rejected literal, corrected); reportRanges.test.ts pinning the helper with the same discriminating dates; a totalBudgeted weekly case asserting both the widened month list and figure-for-figure equality; a release note.\n\nScope correction carried from v2: v1's risk list claimed this slice changes the financial figures a user sees, inherited from the issue's Risk paragraph. git log shows the widening landed in b593293 (#12), the commit this issue reviews. The consolidation is value-preserving and the only new behaviour is the header label.",
+    "assumptions": [
+      "getWeekEnd(endDate) equals getWeekEnd(intervalItem) for the final bucket of a Weekly report, because _weekRange pushes weekFromDate(end) last and weekFromDate(end) and end share a week by construction. Verified by reading months.ts:292-311; it holds for any endDate, not just week starts.",
+      "fetchBudgetData rows can never match a Weekly bucket, because it keys date by month (spreadsheets/budgetDataQuery.ts:231) while Weekly interval labels are week-start dates. Verified by reading the function; the added test pins the consequence rather than the premise.",
+      "Under TestProviders, useDateFormat() returns undefined so ReportSummary's 'MM/dd/yyyy' fallback supplies the day-level format for the Weekly/Daily literals. Verified from prefsSlice's `synced: {}` initial state and the absence of any loadPrefs dispatch in the test setup.",
+      "Under TestProviders, t('to') returns the key 'to'. Verified from i18n.ts's fallbackLng: false plus the Balance.test.tsx precedent. If a locale file were ever present and translated, the literals would need the separator built from t('to') rather than hardcoded — but English is the natural-language source here, so it will not move."
+    ],
+    "confidence": 85,
+    "confidence_rationale": "The design is unchanged from v1 and I re-verified every load-bearing claim against the code myself rather than inheriting v2's assertions: the three clamp sites are byte-identical as described; ReportSummary has exactly one importer; custom-spreadsheet.test.ts really does contain exactly ten it( blocks, so IAC-5's 'unchanged' claim is concrete; _weekRange pushes weekFromDate(end) last, which makes recalculate's anchor swap safe; GraphButton does pass title through as aria-label, so the qa_script's selector is real; and the budgeted-path safety argument — the one belief that touches money — confirmed by reading fetchBudgetData's month keying and totalBudgeted's accumulation, so widening provably cannot move a budgeted figure. I also resolved the two environment questions v2 left open: useDateFormat() returns undefined under TestProviders because prefsSlice's initialState.synced is {}, and t('to') returns the key because i18n sets fallbackLng: false, with Balance.test.tsx as the working precedent for untranslated keys under these providers. Both were named unknowns in v2; both are now read off code.\n\nConfidence is above v2's 84 for two reasons: those two unknowns were the main soft spot in the new test file and are now settled, and the scope error that inflated the risk picture is corrected, which materially narrows the blast radius to display-only. It is not in the 90s because ReportSummary.test.tsx has still never been executed by anyone — its rendering path through PrivacyFilter and useFormat is the one thing I reasoned about and could not run — and because this round had no critique to test the plan against, so nothing has survived an adversarial peer pass. One green run of that file plus the month-list assertion would put this in the low 90s.",
+    "debate_summary": "There is no critique to arbitrate this round. plan/critique.json is `{}` — the critic step produced nothing — so what follows is my own verification of the proposal against the code, not a ruling on a disagreement between two agents. That is a real limitation of this round and the main reason confidence is 85 rather than higher: nothing here has survived an adversarial pass from a peer, and a council whose critic is silent is weaker than one whose critic was answered. I say so rather than presenting a tidy verdict.\n\nThe three objections recorded against v1 in plan/brief.md were all upheld, and all three were defects in v1's test and QA artifacts rather than in its design. v2 fixes each in place, and I re-verified each fix rather than taking v2's word for it:\n\n(1) The Monthly/Yearly assertion was arithmetically impossible. getIntervalFormat returns the interval's own format — \"MMM ''yy\" for Monthly, 'yyyy' for Yearly — for anything outside dayLevelIntervals (ReportOptions.ts), so only Daily takes the day-level pref. v1 stated '08/30/2026 to 09/27/2026' for all three intervals. v2 splits the case into three with per-interval expected strings, and strengthens the Yearly case into an exact-textContent assertion of '2026' with no separator — proving the collapse guard still fires now that endDate is a computed value. That is a stronger check than v1's, and it only became available once the impossible literal was removed. Confirmed.\n\n(2) The firstDayOfWeekIdx '1' case could not fail: 2026-09-27 is a Sunday and the terminating Sunday of a Monday-start week, so getWeekEnd('2026-09-27','1') returns the raw To and the clamp is a no-op — the header reads the same whether or not the pref was threaded through. v2 replaces it with the discriminating pair from custom-spreadsheet.test.ts:251: To 2026-09-28 with today pinned to 2026-10-09, asserting 10/04/2026 under '1' and 10/03/2026 under '0'. I re-derived both weekdays independently: 2026-09-28 is a Monday, so under a Monday-start week it ends Sunday 2026-10-04 and under a Sunday-start week it ends Saturday 2026-10-03. Only the pair discriminates; either alone would pass with the wiring removed. The same date discipline is applied to the reportRanges.test.ts cases so the helper test cannot inherit the same no-op. Confirmed.\n\n(3) The qa_script was not performable as written. viewSummary is a local pref defaulting to false, so <ReportSummary> does not render at all until it is enabled, and the block is additionally gated on !isNarrowWidth with the toolbar carrying the toggle gated the same way. v2 adds a step 2 that opens the window and clicks the toggle, and confirms a header is on screen before any reading happens. I checked the selector text rather than trusting it: GraphButton passes title straight through as aria-label and the title is t('Show Summary'). The second half of the objection is also correct — v1's step 4 asked the tester to confirm the summary total changed, but data[balanceTypeOp] was already summed over the widened query, so a correct implementation would have failed a criterion describing a number that never moved. Restated as a date-label check with the reason inline. Confirmed.\n\nOne correction I found on my own, in the critic's favour and against the earlier framing: v1's risk list claimed this slice 'changes the financial figures a user sees', inherited from the issue's own Risk paragraph. git log shows the widening landed in b593293 (#12), the commit this issue reviews. The helper consolidation is value-preserving and the only new behaviour is the header label. The blast radius is display-only.\n\nI also corrected one factual error in v2 that no critique raised: its evidence cites budgetDataQuery.ts as living in loot-core/src/server/, which it does not. The file is packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts. The argument itself holds — I read the function and the month-keying at line 231 is as described — but a reviewer following the path as written would find nothing.\n\nThe brief records no decisions, so no finding could contradict one. I dropped nothing from v1 that the three objections did not already require. The route is correct as assigned (plan → implement → review → qa): review is warranted for a helper extracted into a module several report factories import and for a change to a displayed financial date range, so no route_request is made. v2 correctly drops v1's request to insert plan, which is already on the route.",
+    "evidence": [
+      "custom-spreadsheet.ts:120-128 and grouped-spreadsheet.ts:55-61 compute weekEnd/today/effectiveEndDate from byte-identical three-line blocks differing only in the comment above them; recalculate.ts:94-105 states the same rule a third time in if/else form. Read and confirmed by the arbiter.",
+      "ReportSummary.tsx:76-81 formats the raw startDate/endDate. Grep for importers of ReportSummary returns CustomReport.tsx:50 only — the single-call-site claim holds. CustomReport.tsx:154-155 already resolves firstDayOfWeekIdx from useSyncedPref.",
+      "ReportOptions.ts: intervalOptions gives Monthly format \"MMM ''yy\" and Yearly 'yyyy'; dayLevelIntervals = new Set(['Daily','Weekly']); getIntervalFormat returns the interval's own format for anything outside that set. So Monthly renders \"Aug '26 to Sep '26\" and under Yearly both ends format to '2026', the format(startDate) !== format(endDate) guard is false, and the from-to segment is suppressed. v1's literal was wrong for two of three intervals.",
+      "2026-09-27 is a Sunday and the terminating Sunday of the Monday-start week 2026-09-21..2026-09-27, so getWeekEnd('2026-09-27','1') returns the raw To and the clamp is a no-op. 2026-09-28 is a Monday; under '1' its week ends 2026-10-04 and under '0' its week ends 2026-10-03 — a discriminating pair. This is the date custom-spreadsheet.test.ts:251 already uses.",
+      "CustomReport.tsx:159-160 reads useLocalPref('reportsViewSummary') defaulting to false; the summary block is gated on (viewLegend || viewSummary) && data && !isNarrowWidth (:1063); the toggle is the calculator GraphButton titled t('Show Summary') at ReportTopbar.tsx:181-189, and GraphButton passes title straight through as aria-label, so the qa_script's selector text is correct. ReportTopbar itself renders only under !isNarrowWidth (:930). isNarrowWidth is width < breakpoint_small = 512px.",
+      "custom-spreadsheet.ts sums totalAssets/totalDebts from rows returned by fetchSpreadsheetQueryData, which already received `endDate: effectiveEndDate` before this change, so data[balanceTypeOp] does not move when only the header widens.",
+      "git log shows b593293 '[AI] Fix weekly reports truncating the final week to one day (#12)' as the commit that introduced the widening at custom-spreadsheet.ts:120-128. The issue's own Risk paragraph ('changes the financial figures a user sees') describes #12, not this slice.",
+      "custom-spreadsheet.test.ts contains exactly ten it( blocks, all inside the weekly custom/grouped describes, and runCustom/runGrouped take no balanceTypeOp today — so additions can be parameterised without touching existing call sites.",
+      "_weekRange pushes weekFromDate(end) as its final element when inclusive (months.ts:299-308), so recalculate's getWeekEnd(intervalItem) equals getWeekEnd(endDate) for the last Weekly bucket. The existing test at custom-spreadsheet.test.ts:266 ('leaves Daily and Monthly on their existing end bounds') covers the branch where passing the wrong date would relabel.",
+      "CORRECTED BY THE ARBITER: the budgeted-path argument cites budgetDataQuery.ts. That is not in loot-core/src/server/ — the file is packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts. Read there: fetchBudgetData sets dateKey = interval === 'Yearly' ? month.slice(0, 4) : month (line 231) over rangeInclusive(getMonth(startDate), getMonth(endDate)) (line 210). A month string can never equal a week-start label, so every Weekly+Budgeted bucket is already 0 and widening only widens the fetch. totalBudgeted mirrors totalAssets+totalDebts (custom-spreadsheet.ts:350). The budgeted path calls send('envelope-budget-month', { month }), not query, so getQueryEndDates() cannot observe it.",
+      "vite.config.mts sets environment: 'jsdom', globals: true and setupFiles './src/setupTests.ts'; setupTests.ts sets global.IS_TESTING = true, which is what makes monthUtils.currentDay() return '2017-01-01' (months.ts:173-175) and therefore why pinToday must spy rather than fake timers. It also stubs ResizeObserver, so PrivacyFilter's useResponsive is safe under jsdom.",
+      "The new test file's two environment dependencies are resolved from code, not assumed. (a) useDateFormat() returns undefined under TestProviders: prefsSlice's initialState is `{ local: {}, global: {}, synced: {}, server: {} }` (prefsSlice.ts:30-36) and no test dispatches loadPrefs, so the useSyncedPref selector reads undefined and ReportSummary.tsx:42's 'MM/dd/yyyy' fallback supplies the day-level format. (b) t('to') returns the literal 'to': i18n self-initialises with lng 'en' and fallbackLng: false (i18n.ts:22-38), so an unloaded key falls through to the key itself, and the locale/ directory is gitignored (generated). Precedent: Balance.test.tsx asserts screen.getByText('Selected balance:') against a t('Selected balance:') call, so untranslated keys render as themselves under TestProviders. ReportSummary also renders <Trans> at line 121, which follows the same path.",
+      "Change.test.tsx and BudgetAnalysisGraph.test.tsx both render components that call useFormat under bare TestProviders with no extra stubbing — the precedent ReportSummary.test.tsx follows. TestProviders supplies only a redux store and a QueryClient; usePrivacyMode reads useSyncedPref('isPrivacyEnabled') and returns false when undefined, so PrivacyFilter renders children unblurred.",
+      "reportRanges.test.ts contains no vi.* usage and no module-level spy; its line-11 comment about currentMonth returning '2017-01' is prose.",
+      "upcoming-release-notes/8973.md confirms the `category: Bugfixes` + `authors:` front matter shape, and packages/ci-actions/src/release-notes/util.mjs lists categoryOrder = ['Features','Enhancements','Bugfixes','Maintenance'], so the category value is valid."
+    ],
+    "files": [
+      {
+        "action": "edit",
+        "change": "Export getEffectiveEndDate(endDate: string, interval: string, firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx']): string next to validateEnd (line 47). Body: return endDate unchanged unless interval === 'Weekly'; otherwise compare monthUtils.currentDay() against monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx) and return the smaller. Move custom-spreadsheet.ts:120-124's comment onto it, rewritten to describe the rule. SyncedPrefs is already imported at line 3, so no import change. Purely additive — no existing export is touched.",
+        "path": "packages/desktop-client/src/components/reports/reportRanges.ts",
+        "why": "IAC-4 requires the clamp to exist exactly once as a single exported helper here; the module already owns every other report range rule and imports only monthUtils, so a new import here creates no cycle."
+      },
+      {
+        "action": "edit",
+        "change": "Replace lines 120-128 (comment block plus weekEnd/today/effectiveEndDate) with one getEffectiveEndDate call, importing from ../reportRanges. monthUtils stays imported (week-start remap, weekRangeInclusive, subDays). Add a comment above the existing interval === 'Weekly' && balanceTypeOp !== 'totalBudgeted' guard at line 147 recording the deliberate budgeted-path choice and why the widening and the remap below it disagree.",
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.ts",
+        "why": "IAC-4 (first of three duplicate copies) and IAC-3, which asks the disagreement be legible at the guard itself."
+      },
+      {
+        "action": "edit",
+        "change": "Same replacement at lines 55-61, helper imported from ../reportRanges. Add the same deliberate-choice comment above the guard at line 80, word-for-word identical to the one in custom-spreadsheet.ts so the two factories cannot drift in documentation either.",
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/grouped-spreadsheet.ts",
+        "why": "IAC-4: second of the three copies, byte-identical to the first; the two guards are the same decision stated twice."
+      },
+      {
+        "action": "edit",
+        "change": "Collapse the if/else at lines 94-108 into: const intervalEndDate = index + 1 === intervals.length ? getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx) : monthUtils.subDays(intervals[index + 1], 1);. This site anchors its Weekly branch on the bucket's own start (intervalItem); passing endDate is equivalent because the last element of a weekRangeInclusive array is weekFromDate(end), and the non-Weekly branch is value-identical because the helper returns endDate unchanged. Keep the existing comment at 90-93 and add one line on why the argument differs from the bucket's own start.",
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/recalculate.ts",
+        "why": "IAC-4: the third statement of the rule, and the one call site whose behaviour depends on which date is passed."
+      },
+      {
+        "action": "edit",
+        "change": "Add firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx'] to ReportSummaryProps (lines 24-31); compute effectiveEndDate above the returned JSX and use it at lines 76-81, including inside the format comparison so the from-to separator still collapses when both ends format identically. Import getEffectiveEndDate from ./reportRanges and add the SyncedPrefs type import. Add a comment recording the deliberate resolution. Do not change the average computation — intervalsCount does not change.",
+        "path": "packages/desktop-client/src/components/reports/ReportSummary.tsx",
+        "why": "IAC-1 root cause: the component renders the raw picker value while the factories compute over a wider range."
+      },
+      {
+        "action": "edit",
+        "change": "Pass firstDayOfWeekIdx={firstDayOfWeekIdx} at the ReportSummary call site (lines 1072-1079), reusing the value already resolved at lines 154-155. No other change: startDate and endDate keep flowing into getGroupData/getGraphData and into setData unchanged.",
+        "path": "packages/desktop-client/src/components/reports/reports/CustomReport.tsx",
+        "why": "The one wiring change for IAC-1. Verified by grep: ReportSummary is imported at CustomReport.tsx:50 and nowhere else in the repo."
+      },
+      {
+        "action": "create",
+        "change": "New jsdom test rendering ReportSummary under TestProviders from #mocks (the pattern Change.test.tsx uses), with a local pinToday spy on monthUtils.currentDay and afterEach(vi.restoreAllMocks). currentDay() short-circuits to '2017-01-01' under global.IS_TESTING (months.ts:173-175), so it must be spied, not faked with timers. Assert Weekly/Daily with getByText('08/30/2026 to 10/02/2026'); assert Monthly with getByText(\"Aug '26 to Sep '26\"); assert Yearly by reading the header Text element's exact textContent === '2026' with no separator. Do not substring-match over the whole container for the Yearly case — the summary body renders other strings. This file is where v1's three rejected assertions are corrected.",
+        "path": "packages/desktop-client/src/components/reports/ReportSummary.test.tsx",
+        "why": "IAC-5: pins the new header behaviour at the component boundary, where IAC-1 lives. The spreadsheet tests never render the header."
+      },
+      {
+        "action": "edit",
+        "change": "Append a describe('getEffectiveEndDate') block: Weekly mid-week clamps to today; an elapsed week returns the week end; a past week returns that week's end; a future week returns today; firstDayOfWeekIdx '1' widens to the Monday-based week end; 'Daily', 'Monthly' and 'Yearly' each return endDate unchanged. Add vi to the existing import and scope restoreAllMocks to the new describe. The file has no vi.* usage today — its line-11 comment is prose, not a spy. Use the same discriminating dates as the header test (To 2026-09-28, today 2026-10-09) so the helper test cannot inherit the same no-op.",
+        "path": "packages/desktop-client/src/components/reports/reportRanges.test.ts",
+        "why": "IAC-4/IAC-5: pins the consolidated rule directly, including the interval pass-through IAC-2 depends on."
+      },
+      {
+        "action": "edit",
+        "change": "Additions only — no existing it() body is edited. Add balanceTypeOp as an optional parameter to runCustom/runGrouped defaulting to current behaviour, plus an optional budget-month recorder. New cases: (a) a totalBudgeted weekly custom run registering an envelope-budget-month handler and asserting the recorded months are exactly ['2026-08','2026-09','2026-10']; (b) the same for runGrouped; (c) figure-for-figure equality against the un-widened run. The budgeted path calls send('envelope-budget-month'), not query, so the existing getQueryEndDates() helper cannot observe it and a separate recorder is needed.",
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+        "why": "IAC-3 and IAC-5: whichever branch was taken must be pinned by a test. The month-list assertion is the load-bearing one."
+      },
+      {
+        "action": "create",
+        "change": "One-sentence note with `category: Bugfixes` front matter and an authors entry, matching the shape of upcoming-release-notes/8973.md. Use the PR author's GitHub handle — the machine-written `authors: [claude]` finding is #17 and out of scope for this ticket.",
+        "path": "upcoming-release-notes/weekly-report-header-full-week-range.md",
+        "why": "Repo convention: every user-visible change ships a release note."
+      }
+    ],
+    "issue": 20,
+    "kind": "bug",
+    "mode": "committed",
+    "out_of_scope": [
+      "Changing how weekly buckets are labelled, or how the From/To pickers offer dates for Weekly reports — explicitly out of scope per the issue.",
+      "Any change to Daily, Monthly or Yearly intervals beyond confirming their headers are unchanged.",
+      "Styling or summary copy beyond the date range the header names; the 'last bucket covers its full week' copy resolution was considered and not taken, so no new user-facing string is added.",
+      "Making setData's data.endDate the clamped value. The issue offers this as part of finding 1's resolution; excluded because data.endDate also feeds drilldown ranges and the report graphs, so widening it changes behaviour beyond the header. Flagged as a candidate for its own slice rather than silently dropped.",
+      "Changing any financial figure. The widening shipped in #12; this slice moves it into a helper and makes the header agree with it.",
+      "The `authors: [claude]` release-note front-matter finding, open as #17."
+    ],
+    "qa_script": [
+      "yarn workspace @actual-app/web run vitest --run src/components/reports/ReportSummary.test.tsx src/components/reports/reportRanges.test.ts src/components/reports/spreadsheets/custom-spreadsheet.test.ts — all green, and `git diff --stat` on custom-spreadsheet.test.ts shows additions only.",
+      "Open /reports/custom with \"View demo\" data. Widen the window to at least ~1024px wide — both the report toolbar and the summary block sit inside {!isNarrowWidth && ...} (CustomReport.tsx:930 and :1063, breakpoint 512px) — then click the calculator \"Show Summary\" toggle in the report toolbar (aria-label \"Show Summary\", ReportTopbar.tsx:181-189). Confirm a summary block with a date header appears. Without this step there is no header on the page: viewSummary is a local pref defaulting to false (CustomReport.tsx:159-160).",
+      "Set From to 2026-08-30 (a Sunday), To to 2026-09-27, interval Weekly, and note the header date range verbatim.",
+      "Confirm the header's end date equals the final bucket's period end and is today's date or the week's end — never the To date picked. This is the reported defect; it must now be gone. Do NOT check whether the summary total changed: data[balanceTypeOp] was already summed over the widened query before this change (the widening shipped in #12), so the total is unchanged by design and only the label moves.",
+      "Repeat steps 3-4 with interval Daily, Monthly and Yearly and confirm the headers are unchanged from the pre-change build — expect a full day-level range under Daily, a month-level range under Monthly, and a bare year with no from-to separator under Yearly. Then repeat with Weekly and a To date in a past week, confirming the header stops at that past week's end, and with a To date in a future week, confirming it stops at today.",
+      "Load a saved Weekly+Budgeted report via the dashboard card path (GetCardData.tsx passes report.interval through un-coerced) and confirm it renders without error and without a truncated final week.",
+      "grep -rn 'getWeekEnd' packages/desktop-client/src/components/reports — expect only reportRanges.ts (the helper and the getSpecificRange preset) and no clamp restatement in the three spreadsheet files."
+    ],
+    "reproduced": true,
+    "residual_risks": [
+      "ReportSummary.test.tsx has never actually been run. Its first execution is the thing to watch, not the implementation.",
+      "CustomReport.tsx's own useMemos (getGroupData/getGraphData) still receive the raw startDate/endDate. That is unchanged and correct — the clamp lives in the factories — but a future slice needing the clamped value there must call the helper rather than copy the rule back.",
+      "setData's data.endDate remains the raw picker value, so a totals-row drilldown still opens a range ending at the raw endDate while the bucket covers more. That mismatch predates this issue and is not one of its three findings, so it is filed in out_of_scope rather than folded in silently.",
+      "A future-To Weekly report now has its header clamped to today while its bucket labels run to the To week. The graph already used the widened end, so this is display-only, but it is the one place where the new header under-names relative to the buckets — the opposite direction from the defect being fixed.",
+      "The dashboard card path (GetCardData.tsx) can still deliver a saved Weekly+Budgeted report un-coerced. The robustness comment now sits at the guard, but nothing prevents such a report from being saved; that combination remains degenerate (every bucket 0) as it is today, and fixing it is not this slice."
+    ],
+    "risks": [
+      "ReportSummary.test.tsx has never been executed by anyone. Its environment dependencies are now read off code rather than assumed — useDateFormat() resolving to undefined via prefsSlice's `synced: {}`, and t('to') returning the key via i18n's fallbackLng: false — but they have not been confirmed by a green run. If a literal is wrong in practice the fix is to build the expected string with monthUtils.format, not to change the component.",
+      "In recalculate.ts the Weekly anchor changes from the bucket's own start (intervalItem) to the report's endDate. These are the same value for the final Weekly bucket because _weekRange pushes weekFromDate(end) last, and the non-Weekly branch is value-identical because the helper returns endDate unchanged there. This is the highest-risk line in the plan and is covered by the existing 'leaves Daily and Monthly on their existing end bounds' test (custom-spreadsheet.test.ts:266).",
+      "Widening the budgeted path is safe only because no month-keyed budget row can match a week-start bucket label, so every Weekly+Budgeted bucket is already 0. If that is ever wrong, widening would change real budgeted figures. The added test asserts the widened month list and figure-for-figure equality so the assumption is checked rather than trusted; if the equality assertion ever fails, the correct move is to switch to the guard branch, not to weaken the assertion.",
+      "The Yearly assertion depends on the header node being identifiable so its textContent can be read exactly. If the header turns out to be several nodes, assert on the containing Text element's textContent instead of a substring match over the whole summary.",
+      "Adding an optional prop to ReportSummary would be breaking for a future caller. It is optional and the component has exactly one importer today, so this is a non-issue in-tree but recorded."
+    ],
+    "root_cause": "Two independent causes. (1) The header renders the raw picker value while the spreadsheet factories compute over a wider range — nothing passes the clamped value to the display layer, so the label and the data are derived from two different rules. (2) The clamp is duplicated at three call sites, two of them byte-identical, so the rule can drift between the query bound and the bucket labels. (1) is what a user sees; (2) is why fixing (1) by copy would leave the drift in place.",
+    "tests": [
+      {
+        "action": "create",
+        "cases": [
+          "Weekly, today 2026-10-02, start 2026-08-30, To 2026-09-27, firstDayOfWeekIdx '0': header renders '08/30/2026 to 10/02/2026'",
+          "Weekly, same dates: the header does not contain a range ending 09/27/2026 — the reported defect itself",
+          "Weekly, today 2026-10-04, To 2026-09-27: header renders '08/30/2026 to 10/03/2026', the elapsed week's end, and never 10/04/2026 or later",
+          "Weekly, today 2026-10-02, To 2026-09-13: header renders '08/30/2026 to 09/19/2026', the past week's end, and never 10/02/2026",
+          "Weekly, today 2026-10-02, start 2026-09-06, To 2026-10-11 (a future week): header clamps to today and renders '09/06/2026 to 10/02/2026', never past today",
+          "Weekly, start 2026-09-28, To 2026-09-28, today 2026-10-09, firstDayOfWeekIdx '1': header renders '09/28/2026 to 10/04/2026' (the Monday-based week end), proving the pref reaches the header",
+          "Weekly, start 2026-09-28, To 2026-09-28, today 2026-10-09, firstDayOfWeekIdx '0': header renders '09/28/2026 to 10/03/2026' — only this pair discriminates, since a To that is itself a week's last day makes the Monday-start case a no-op",
+          "Daily, start 2026-08-30, To 2026-09-27: header renders '08/30/2026 to 09/27/2026', unchanged from today",
+          "Monthly, start 2026-08-01, end 2026-09-30: header renders \"Aug '26 to Sep '26\", unchanged from today — Monthly's format is \"MMM ''yy\", not the day-level pref",
+          "Yearly, start 2026-01-01, end 2026-12-31: the header Text element's textContent is exactly '2026' with no from-to separator, unchanged from today — Yearly's format is 'yyyy', so both ends collapse"
+        ],
+        "path": "packages/desktop-client/src/components/reports/ReportSummary.test.tsx"
+      },
+      {
+        "action": "edit",
+        "cases": [
+          "Weekly with today mid-week returns today, not the week end",
+          "Weekly with the week elapsed returns the week end",
+          "Weekly with a past-week end returns that week's end and never today",
+          "Weekly with a future week end returns today",
+          "Weekly honours firstDayOfWeekIdx '1': To 2026-09-28 with today 2026-10-09 returns 2026-10-04, while firstDayOfWeekIdx '0' on the same inputs returns 2026-10-03",
+          "'Daily', 'Monthly' and 'Yearly' each return endDate unchanged"
+        ],
+        "path": "packages/desktop-client/src/components/reports/reportRanges.test.ts"
+      },
+      {
+        "action": "edit",
+        "cases": [
+          "Weekly totalBudgeted custom report: the requested envelope-budget-month values are exactly ['2026-08','2026-09','2026-10'] (widened across the month boundary)",
+          "Weekly totalBudgeted grouped report: the same widened month list",
+          "Weekly totalBudgeted widened run produces identical per-bucket totals and intervalEndDate to the un-widened run",
+          "all ten pre-existing weekly custom-report cases still pass, with no edits to their bodies"
+        ],
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts"
+      }
+    ],
+    "understanding": "A Weekly custom report names one date range in its header and computes another in its buckets. CustomReport.tsx passes the raw component-state endDate (a week start, since the Weekly From/To pickers only offer week starts) to <ReportSummary>, while the query bound and the final bucket's intervalEndDate are widened to min(today, getWeekEnd(endDate)). With start 2026-08-30, To 2026-09-27, today 2026-10-02, the header reads '08/30/2026 to 09/27/2026' while the final bucket's intervalEndDate is 2026-10-02 — a label that understates by four days what the bucket and the summary total actually cover. The widening itself already shipped in #12 (b593293), so the total is already correct; only the label lags. This slice therefore changes no financial figure: it fixes the header, settles the budgeted-path guard question, and collapses the rule's triplication into one exported helper in reportRanges.ts. All three recorded objections to v1 were upheld and are fixed in v2; each was a defect in v1's test and QA artifacts, not in its design.",
+    "unknowns": [
+      "Whether ReportSummary renders cleanly under TestProviders with no further stubbing — the first run of ReportSummary.test.tsx is the thing to watch. If it fails on a missing provider rather than on an assertion, the fix is a provider stub, not a change to the component.",
+      "Whether the header is a single text node or several under jsdom. The Yearly assertion is written against the header Text element's exact textContent, which works either way as long as the node is identifiable; if not, assert on the containing element."
+    ],
+    "version": 1
+  },
   "touch_paths": [],
   "acceptance": [],
   "planned_route": [
@@ -89,483 +327,9 @@
   "validated_from": "plan",
   "validated_at": "2026-10-04T07:23:18.614Z",
   "validated_ac_changes": [],
-  "validated_work_order": {
-    "acceptance": [
-      {
-        "check": "A Weekly custom report with To set to the current week's start (today 2026-10-02, To: 2026-09-27) shows a header ending 2026-10-02 — the same value the final bucket's intervalEndDate carries — and never a header stopping at 2026-09-27.",
-        "how_to_verify": "Unit: ReportSummary.test.tsx cases 1 and 2. Browser: qa_script steps 2-4, where step 2 is what makes the header exist at all.",
-        "source": "IAC-1",
-        "id": "AC-1",
-        "verify": "test"
-      },
-      {
-        "check": "Daily, Monthly and Yearly report headers render exactly as they do today — '08/30/2026 to 09/27/2026' under Daily, \"Aug '26 to Sep '26\" under Monthly, and a bare '2026' with no separator under Yearly; a Weekly report whose To falls in a past week stops at that week's end; a Weekly report whose To falls in a future week stops at today. None projects into later days.",
-        "how_to_verify": "Unit: ReportSummary.test.tsx past-week and future-To cases plus the three separate Daily/Monthly/Yearly unchanged cases, each with its own expected string; reportRanges.test.ts pass-through cases. Browser: qa_script step 5.",
-        "source": "IAC-2",
-        "id": "AC-2",
-        "verify": "test"
-      },
-      {
-        "check": "A saved Weekly report with balance type Budgeted widens its end date the same way every other Weekly report does — no new guard — and a comment above the existing balanceTypeOp !== 'totalBudgeted' guard in both factories records why the widening and the week-start remap below it disagree.",
-        "how_to_verify": "Unit: the custom-spreadsheet.test.ts budgeted cases assert the widened month list ['2026-08','2026-09','2026-10'] and figure-for-figure equality with the un-widened run. Code read: the comment above both guards is word-for-word identical. Browser: qa_script step 6.",
-        "source": "IAC-3",
-        "id": "AC-3",
-        "verify": "test"
-      },
-      {
-        "check": "The end-date clamp exists once, as a single exported helper in reportRanges.ts beside validateEnd/boundedRange; custom-spreadsheet, grouped-spreadsheet and recalculate all call it, and no site restates the rule.",
-        "how_to_verify": "grep for getWeekEnd across packages/desktop-client/src/components/reports returns only reportRanges.ts (the new helper and the getSpecificRange preset, which is a different rule that stays) and no clamp restatement in the three spreadsheet files; grep for getEffectiveEndDate shows one definition and four call sites. Verified against today's tree: the only four hits are recalculate.ts:97, grouped-spreadsheet.ts:58, custom-spreadsheet.ts:125 and reportRanges.ts:196 (getSpecificRange).",
-        "source": "IAC-4",
-        "id": "AC-4",
-        "verify": "test"
-      },
-      {
-        "check": "The ten existing weekly-report tests in custom-spreadsheet.test.ts pass with their bodies unmodified, and new tests pin both the header behaviour and the budgeted-path choice.",
-        "how_to_verify": "git diff on custom-spreadsheet.test.ts shows additions only; yarn workspace @actual-app/web run vitest --run over the three test files is green. Verified the file contains exactly ten it( blocks today.",
-        "source": "IAC-5",
-        "id": "AC-5",
-        "verify": "test"
-      },
-      {
-        "check": "The header's end date and the final bucket's intervalEndDate come from the same function, so a future change to the week rule moves both together rather than letting them drift again.",
-        "how_to_verify": "Code read: ReportSummary.tsx and custom-spreadsheet.ts both call getEffectiveEndDate from reportRanges, and no formatting of a raw endDate remains in the header.",
-        "source": "IAC-1",
-        "id": "AC-6",
-        "verify": "test"
-      }
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Add copy to the summary saying the last bucket covers its full week (the issue's second IAC-1 resolution).",
-        "rejected_because": "Needs a new user-facing string and a layout change, and the issue puts summary copy beyond the date range it names out of scope. It also leaves the header and the buckets computed from two different rules, which is the drift this slice exists to remove."
-      },
-      {
-        "approach": "Make setData's data.endDate the clamped value so both the header and every downstream consumer read one value.",
-        "rejected_because": "data.endDate also feeds drilldown ranges and the report graphs, so widening it changes behaviour well beyond the header — a scope increase the issue does not ask for. Recorded in out_of_scope as its own candidate slice."
-      },
-      {
-        "approach": "Add the balanceTypeOp !== 'totalBudgeted' guard to the widening, so Weekly+Budgeted reports stay un-widened (the issue's second IAC-3 resolution).",
-        "rejected_because": "It would leave Weekly+Budgeted reports missing the final week, and it introduces a second divergence axis into the one rule this slice exists to make single — for no benefit, since the budgeted path provably cannot move a figure. The comment IAC-3 requires is still being added at the guard."
-      },
-      {
-        "approach": "Put the clamp in ReportSummary by widening only when interval === 'Weekly' inline, leaving the three spreadsheet copies alone.",
-        "rejected_because": "Fails IAC-4 outright and leaves the triplication the issue names as its third finding in place."
-      },
-      {
-        "approach": "Assert the Daily/Monthly/Yearly unchanged case as byte-identical output before and after the change, dropping the literals entirely.",
-        "rejected_because": "There is no 'before' to compare against in a unit test — the component under test is the changed one — so this reduces to asserting nothing. Naming the correct expected string per interval is both possible and stronger, and it is what makes the Yearly collapse guard assertable at all."
-      }
-    ],
-    "approach": "One helper, four callers, no figure changes.\n\n1. The shared rule (IAC-4). Export getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx?) from reportRanges.ts, declared next to validateEnd. Its body is a literal transcription of custom-spreadsheet.ts:120-128: return endDate unchanged unless interval === 'Weekly'; otherwise return currentDay() < getWeekEnd(endDate, firstDayOfWeekIdx) ? today : weekEnd. Carry the canonical comment onto the helper, rewritten to describe the rule rather than a call site. The helper takes the date as an argument because the two families of call site anchor differently (recalculate's non-Weekly branch must receive the report's endDate, not the bucket start).\n\n2. The three existing call sites (IAC-4). custom-spreadsheet.ts:120-128 and grouped-spreadsheet.ts:55-61 become one getEffectiveEndDate call each. recalculate.ts:94-108 collapses to a ternary. Verified safe: _weekRange pushes weekFromDate(end) last (months.ts:299-308), so for the final Weekly bucket getWeekEnd(intervalItem) === getWeekEnd(endDate); and for every non-Weekly interval the helper returns endDate unchanged, exactly what recalculate's else-branch assigns today.\n\n3. The header (IAC-1) — chosen resolution: pass the same clamped value, not new copy. ReportSummary gains an optional firstDayOfWeekIdx prop and renders getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx), including inside the format(startDate) !== format(endDate) collapse check so the separator still collapses correctly. CustomReport.tsx passes the pref it already holds (lines 154-155). Chosen over the copy alternative: no new i18n string, no layout change, and header and buckets stay derived from one function.\n\n4. The budgeted path (IAC-3) — chosen resolution: widen on all paths; no new guard. A word-for-word identical comment sits above the existing balanceTypeOp !== 'totalBudgeted' guard in both factories, recording that the widening applies to every balance type while the week-start remap below does not, because budget rows arrive keyed by month. Verified: fetchBudgetData keys date by month (spreadsheets/budgetDataQuery.ts:231) while Weekly bucket labels are week starts, so no budget row can match a bucket and every Weekly+Budgeted bucket is already 0 today — as is totalBudgeted, which mirrors totalAssets + totalDebts (custom-spreadsheet.ts:350) accumulated from those same buckets. Widening pulls one extra month of rows that are then discarded.\n\n5. Tests (IAC-5). All ten existing weekly cases pass unmodified. Added: ReportSummary.test.tsx pinning the header (one case per interval, with per-interval expected strings — v1's rejected literal, corrected); reportRanges.test.ts pinning the helper with the same discriminating dates; a totalBudgeted weekly case asserting both the widened month list and figure-for-figure equality; a release note.\n\nScope correction carried from v2: v1's risk list claimed this slice changes the financial figures a user sees, inherited from the issue's Risk paragraph. git log shows the widening landed in b593293 (#12), the commit this issue reviews. The consolidation is value-preserving and the only new behaviour is the header label.",
-    "assumptions": [
-      "getWeekEnd(endDate) equals getWeekEnd(intervalItem) for the final bucket of a Weekly report, because _weekRange pushes weekFromDate(end) last and weekFromDate(end) and end share a week by construction. Verified by reading months.ts:292-311; it holds for any endDate, not just week starts.",
-      "fetchBudgetData rows can never match a Weekly bucket, because it keys date by month (spreadsheets/budgetDataQuery.ts:231) while Weekly interval labels are week-start dates. Verified by reading the function; the added test pins the consequence rather than the premise.",
-      "Under TestProviders, useDateFormat() returns undefined so ReportSummary's 'MM/dd/yyyy' fallback supplies the day-level format for the Weekly/Daily literals. Verified from prefsSlice's `synced: {}` initial state and the absence of any loadPrefs dispatch in the test setup.",
-      "Under TestProviders, t('to') returns the key 'to'. Verified from i18n.ts's fallbackLng: false plus the Balance.test.tsx precedent. If a locale file were ever present and translated, the literals would need the separator built from t('to') rather than hardcoded — but English is the natural-language source here, so it will not move."
-    ],
-    "confidence": 85,
-    "confidence_rationale": "The design is unchanged from v1 and I re-verified every load-bearing claim against the code myself rather than inheriting v2's assertions: the three clamp sites are byte-identical as described; ReportSummary has exactly one importer; custom-spreadsheet.test.ts really does contain exactly ten it( blocks, so IAC-5's 'unchanged' claim is concrete; _weekRange pushes weekFromDate(end) last, which makes recalculate's anchor swap safe; GraphButton does pass title through as aria-label, so the qa_script's selector is real; and the budgeted-path safety argument — the one belief that touches money — confirmed by reading fetchBudgetData's month keying and totalBudgeted's accumulation, so widening provably cannot move a budgeted figure. I also resolved the two environment questions v2 left open: useDateFormat() returns undefined under TestProviders because prefsSlice's initialState.synced is {}, and t('to') returns the key because i18n sets fallbackLng: false, with Balance.test.tsx as the working precedent for untranslated keys under these providers. Both were named unknowns in v2; both are now read off code.\n\nConfidence is above v2's 84 for two reasons: those two unknowns were the main soft spot in the new test file and are now settled, and the scope error that inflated the risk picture is corrected, which materially narrows the blast radius to display-only. It is not in the 90s because ReportSummary.test.tsx has still never been executed by anyone — its rendering path through PrivacyFilter and useFormat is the one thing I reasoned about and could not run — and because this round had no critique to test the plan against, so nothing has survived an adversarial peer pass. One green run of that file plus the month-list assertion would put this in the low 90s.",
-    "debate_summary": "There is no critique to arbitrate this round. plan/critique.json is `{}` — the critic step produced nothing — so what follows is my own verification of the proposal against the code, not a ruling on a disagreement between two agents. That is a real limitation of this round and the main reason confidence is 85 rather than higher: nothing here has survived an adversarial pass from a peer, and a council whose critic is silent is weaker than one whose critic was answered. I say so rather than presenting a tidy verdict.\n\nThe three objections recorded against v1 in plan/brief.md were all upheld, and all three were defects in v1's test and QA artifacts rather than in its design. v2 fixes each in place, and I re-verified each fix rather than taking v2's word for it:\n\n(1) The Monthly/Yearly assertion was arithmetically impossible. getIntervalFormat returns the interval's own format — \"MMM ''yy\" for Monthly, 'yyyy' for Yearly — for anything outside dayLevelIntervals (ReportOptions.ts), so only Daily takes the day-level pref. v1 stated '08/30/2026 to 09/27/2026' for all three intervals. v2 splits the case into three with per-interval expected strings, and strengthens the Yearly case into an exact-textContent assertion of '2026' with no separator — proving the collapse guard still fires now that endDate is a computed value. That is a stronger check than v1's, and it only became available once the impossible literal was removed. Confirmed.\n\n(2) The firstDayOfWeekIdx '1' case could not fail: 2026-09-27 is a Sunday and the terminating Sunday of a Monday-start week, so getWeekEnd('2026-09-27','1') returns the raw To and the clamp is a no-op — the header reads the same whether or not the pref was threaded through. v2 replaces it with the discriminating pair from custom-spreadsheet.test.ts:251: To 2026-09-28 with today pinned to 2026-10-09, asserting 10/04/2026 under '1' and 10/03/2026 under '0'. I re-derived both weekdays independently: 2026-09-28 is a Monday, so under a Monday-start week it ends Sunday 2026-10-04 and under a Sunday-start week it ends Saturday 2026-10-03. Only the pair discriminates; either alone would pass with the wiring removed. The same date discipline is applied to the reportRanges.test.ts cases so the helper test cannot inherit the same no-op. Confirmed.\n\n(3) The qa_script was not performable as written. viewSummary is a local pref defaulting to false, so <ReportSummary> does not render at all until it is enabled, and the block is additionally gated on !isNarrowWidth with the toolbar carrying the toggle gated the same way. v2 adds a step 2 that opens the window and clicks the toggle, and confirms a header is on screen before any reading happens. I checked the selector text rather than trusting it: GraphButton passes title straight through as aria-label and the title is t('Show Summary'). The second half of the objection is also correct — v1's step 4 asked the tester to confirm the summary total changed, but data[balanceTypeOp] was already summed over the widened query, so a correct implementation would have failed a criterion describing a number that never moved. Restated as a date-label check with the reason inline. Confirmed.\n\nOne correction I found on my own, in the critic's favour and against the earlier framing: v1's risk list claimed this slice 'changes the financial figures a user sees', inherited from the issue's own Risk paragraph. git log shows the widening landed in b593293 (#12), the commit this issue reviews. The helper consolidation is value-preserving and the only new behaviour is the header label. The blast radius is display-only.\n\nI also corrected one factual error in v2 that no critique raised: its evidence cites budgetDataQuery.ts as living in loot-core/src/server/, which it does not. The file is packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts. The argument itself holds — I read the function and the month-keying at line 231 is as described — but a reviewer following the path as written would find nothing.\n\nThe brief records no decisions, so no finding could contradict one. I dropped nothing from v1 that the three objections did not already require. The route is correct as assigned (plan → implement → review → qa): review is warranted for a helper extracted into a module several report factories import and for a change to a displayed financial date range, so no route_request is made. v2 correctly drops v1's request to insert plan, which is already on the route.",
-    "evidence": [
-      "custom-spreadsheet.ts:120-128 and grouped-spreadsheet.ts:55-61 compute weekEnd/today/effectiveEndDate from byte-identical three-line blocks differing only in the comment above them; recalculate.ts:94-105 states the same rule a third time in if/else form. Read and confirmed by the arbiter.",
-      "ReportSummary.tsx:76-81 formats the raw startDate/endDate. Grep for importers of ReportSummary returns CustomReport.tsx:50 only — the single-call-site claim holds. CustomReport.tsx:154-155 already resolves firstDayOfWeekIdx from useSyncedPref.",
-      "ReportOptions.ts: intervalOptions gives Monthly format \"MMM ''yy\" and Yearly 'yyyy'; dayLevelIntervals = new Set(['Daily','Weekly']); getIntervalFormat returns the interval's own format for anything outside that set. So Monthly renders \"Aug '26 to Sep '26\" and under Yearly both ends format to '2026', the format(startDate) !== format(endDate) guard is false, and the from-to segment is suppressed. v1's literal was wrong for two of three intervals.",
-      "2026-09-27 is a Sunday and the terminating Sunday of the Monday-start week 2026-09-21..2026-09-27, so getWeekEnd('2026-09-27','1') returns the raw To and the clamp is a no-op. 2026-09-28 is a Monday; under '1' its week ends 2026-10-04 and under '0' its week ends 2026-10-03 — a discriminating pair. This is the date custom-spreadsheet.test.ts:251 already uses.",
-      "CustomReport.tsx:159-160 reads useLocalPref('reportsViewSummary') defaulting to false; the summary block is gated on (viewLegend || viewSummary) && data && !isNarrowWidth (:1063); the toggle is the calculator GraphButton titled t('Show Summary') at ReportTopbar.tsx:181-189, and GraphButton passes title straight through as aria-label, so the qa_script's selector text is correct. ReportTopbar itself renders only under !isNarrowWidth (:930). isNarrowWidth is width < breakpoint_small = 512px.",
-      "custom-spreadsheet.ts sums totalAssets/totalDebts from rows returned by fetchSpreadsheetQueryData, which already received `endDate: effectiveEndDate` before this change, so data[balanceTypeOp] does not move when only the header widens.",
-      "git log shows b593293 '[AI] Fix weekly reports truncating the final week to one day (#12)' as the commit that introduced the widening at custom-spreadsheet.ts:120-128. The issue's own Risk paragraph ('changes the financial figures a user sees') describes #12, not this slice.",
-      "custom-spreadsheet.test.ts contains exactly ten it( blocks, all inside the weekly custom/grouped describes, and runCustom/runGrouped take no balanceTypeOp today — so additions can be parameterised without touching existing call sites.",
-      "_weekRange pushes weekFromDate(end) as its final element when inclusive (months.ts:299-308), so recalculate's getWeekEnd(intervalItem) equals getWeekEnd(endDate) for the last Weekly bucket. The existing test at custom-spreadsheet.test.ts:266 ('leaves Daily and Monthly on their existing end bounds') covers the branch where passing the wrong date would relabel.",
-      "CORRECTED BY THE ARBITER: the budgeted-path argument cites budgetDataQuery.ts. That is not in loot-core/src/server/ — the file is packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts. Read there: fetchBudgetData sets dateKey = interval === 'Yearly' ? month.slice(0, 4) : month (line 231) over rangeInclusive(getMonth(startDate), getMonth(endDate)) (line 210). A month string can never equal a week-start label, so every Weekly+Budgeted bucket is already 0 and widening only widens the fetch. totalBudgeted mirrors totalAssets+totalDebts (custom-spreadsheet.ts:350). The budgeted path calls send('envelope-budget-month', { month }), not query, so getQueryEndDates() cannot observe it.",
-      "vite.config.mts sets environment: 'jsdom', globals: true and setupFiles './src/setupTests.ts'; setupTests.ts sets global.IS_TESTING = true, which is what makes monthUtils.currentDay() return '2017-01-01' (months.ts:173-175) and therefore why pinToday must spy rather than fake timers. It also stubs ResizeObserver, so PrivacyFilter's useResponsive is safe under jsdom.",
-      "The new test file's two environment dependencies are resolved from code, not assumed. (a) useDateFormat() returns undefined under TestProviders: prefsSlice's initialState is `{ local: {}, global: {}, synced: {}, server: {} }` (prefsSlice.ts:30-36) and no test dispatches loadPrefs, so the useSyncedPref selector reads undefined and ReportSummary.tsx:42's 'MM/dd/yyyy' fallback supplies the day-level format. (b) t('to') returns the literal 'to': i18n self-initialises with lng 'en' and fallbackLng: false (i18n.ts:22-38), so an unloaded key falls through to the key itself, and the locale/ directory is gitignored (generated). Precedent: Balance.test.tsx asserts screen.getByText('Selected balance:') against a t('Selected balance:') call, so untranslated keys render as themselves under TestProviders. ReportSummary also renders <Trans> at line 121, which follows the same path.",
-      "Change.test.tsx and BudgetAnalysisGraph.test.tsx both render components that call useFormat under bare TestProviders with no extra stubbing — the precedent ReportSummary.test.tsx follows. TestProviders supplies only a redux store and a QueryClient; usePrivacyMode reads useSyncedPref('isPrivacyEnabled') and returns false when undefined, so PrivacyFilter renders children unblurred.",
-      "reportRanges.test.ts contains no vi.* usage and no module-level spy; its line-11 comment about currentMonth returning '2017-01' is prose.",
-      "upcoming-release-notes/8973.md confirms the `category: Bugfixes` + `authors:` front matter shape, and packages/ci-actions/src/release-notes/util.mjs lists categoryOrder = ['Features','Enhancements','Bugfixes','Maintenance'], so the category value is valid."
-    ],
-    "files": [
-      {
-        "action": "edit",
-        "change": "Export getEffectiveEndDate(endDate: string, interval: string, firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx']): string next to validateEnd (line 47). Body: return endDate unchanged unless interval === 'Weekly'; otherwise compare monthUtils.currentDay() against monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx) and return the smaller. Move custom-spreadsheet.ts:120-124's comment onto it, rewritten to describe the rule. SyncedPrefs is already imported at line 3, so no import change. Purely additive — no existing export is touched.",
-        "path": "packages/desktop-client/src/components/reports/reportRanges.ts",
-        "why": "IAC-4 requires the clamp to exist exactly once as a single exported helper here; the module already owns every other report range rule and imports only monthUtils, so a new import here creates no cycle."
-      },
-      {
-        "action": "edit",
-        "change": "Replace lines 120-128 (comment block plus weekEnd/today/effectiveEndDate) with one getEffectiveEndDate call, importing from ../reportRanges. monthUtils stays imported (week-start remap, weekRangeInclusive, subDays). Add a comment above the existing interval === 'Weekly' && balanceTypeOp !== 'totalBudgeted' guard at line 147 recording the deliberate budgeted-path choice and why the widening and the remap below it disagree.",
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.ts",
-        "why": "IAC-4 (first of three duplicate copies) and IAC-3, which asks the disagreement be legible at the guard itself."
-      },
-      {
-        "action": "edit",
-        "change": "Same replacement at lines 55-61, helper imported from ../reportRanges. Add the same deliberate-choice comment above the guard at line 80, word-for-word identical to the one in custom-spreadsheet.ts so the two factories cannot drift in documentation either.",
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/grouped-spreadsheet.ts",
-        "why": "IAC-4: second of the three copies, byte-identical to the first; the two guards are the same decision stated twice."
-      },
-      {
-        "action": "edit",
-        "change": "Collapse the if/else at lines 94-108 into: const intervalEndDate = index + 1 === intervals.length ? getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx) : monthUtils.subDays(intervals[index + 1], 1);. This site anchors its Weekly branch on the bucket's own start (intervalItem); passing endDate is equivalent because the last element of a weekRangeInclusive array is weekFromDate(end), and the non-Weekly branch is value-identical because the helper returns endDate unchanged. Keep the existing comment at 90-93 and add one line on why the argument differs from the bucket's own start.",
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/recalculate.ts",
-        "why": "IAC-4: the third statement of the rule, and the one call site whose behaviour depends on which date is passed."
-      },
-      {
-        "action": "edit",
-        "change": "Add firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx'] to ReportSummaryProps (lines 24-31); compute effectiveEndDate above the returned JSX and use it at lines 76-81, including inside the format comparison so the from-to separator still collapses when both ends format identically. Import getEffectiveEndDate from ./reportRanges and add the SyncedPrefs type import. Add a comment recording the deliberate resolution. Do not change the average computation — intervalsCount does not change.",
-        "path": "packages/desktop-client/src/components/reports/ReportSummary.tsx",
-        "why": "IAC-1 root cause: the component renders the raw picker value while the factories compute over a wider range."
-      },
-      {
-        "action": "edit",
-        "change": "Pass firstDayOfWeekIdx={firstDayOfWeekIdx} at the ReportSummary call site (lines 1072-1079), reusing the value already resolved at lines 154-155. No other change: startDate and endDate keep flowing into getGroupData/getGraphData and into setData unchanged.",
-        "path": "packages/desktop-client/src/components/reports/reports/CustomReport.tsx",
-        "why": "The one wiring change for IAC-1. Verified by grep: ReportSummary is imported at CustomReport.tsx:50 and nowhere else in the repo."
-      },
-      {
-        "action": "create",
-        "change": "New jsdom test rendering ReportSummary under TestProviders from #mocks (the pattern Change.test.tsx uses), with a local pinToday spy on monthUtils.currentDay and afterEach(vi.restoreAllMocks). currentDay() short-circuits to '2017-01-01' under global.IS_TESTING (months.ts:173-175), so it must be spied, not faked with timers. Assert Weekly/Daily with getByText('08/30/2026 to 10/02/2026'); assert Monthly with getByText(\"Aug '26 to Sep '26\"); assert Yearly by reading the header Text element's exact textContent === '2026' with no separator. Do not substring-match over the whole container for the Yearly case — the summary body renders other strings. This file is where v1's three rejected assertions are corrected.",
-        "path": "packages/desktop-client/src/components/reports/ReportSummary.test.tsx",
-        "why": "IAC-5: pins the new header behaviour at the component boundary, where IAC-1 lives. The spreadsheet tests never render the header."
-      },
-      {
-        "action": "edit",
-        "change": "Append a describe('getEffectiveEndDate') block: Weekly mid-week clamps to today; an elapsed week returns the week end; a past week returns that week's end; a future week returns today; firstDayOfWeekIdx '1' widens to the Monday-based week end; 'Daily', 'Monthly' and 'Yearly' each return endDate unchanged. Add vi to the existing import and scope restoreAllMocks to the new describe. The file has no vi.* usage today — its line-11 comment is prose, not a spy. Use the same discriminating dates as the header test (To 2026-09-28, today 2026-10-09) so the helper test cannot inherit the same no-op.",
-        "path": "packages/desktop-client/src/components/reports/reportRanges.test.ts",
-        "why": "IAC-4/IAC-5: pins the consolidated rule directly, including the interval pass-through IAC-2 depends on."
-      },
-      {
-        "action": "edit",
-        "change": "Additions only — no existing it() body is edited. Add balanceTypeOp as an optional parameter to runCustom/runGrouped defaulting to current behaviour, plus an optional budget-month recorder. New cases: (a) a totalBudgeted weekly custom run registering an envelope-budget-month handler and asserting the recorded months are exactly ['2026-08','2026-09','2026-10']; (b) the same for runGrouped; (c) figure-for-figure equality against the un-widened run. The budgeted path calls send('envelope-budget-month'), not query, so the existing getQueryEndDates() helper cannot observe it and a separate recorder is needed.",
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
-        "why": "IAC-3 and IAC-5: whichever branch was taken must be pinned by a test. The month-list assertion is the load-bearing one."
-      },
-      {
-        "action": "create",
-        "change": "One-sentence note with `category: Bugfixes` front matter and an authors entry, matching the shape of upcoming-release-notes/8973.md. Use the PR author's GitHub handle — the machine-written `authors: [claude]` finding is #17 and out of scope for this ticket.",
-        "path": "upcoming-release-notes/weekly-report-header-full-week-range.md",
-        "why": "Repo convention: every user-visible change ships a release note."
-      }
-    ],
-    "issue": 20,
-    "kind": "bug",
-    "mode": "proposal",
-    "out_of_scope": [
-      "Changing how weekly buckets are labelled, or how the From/To pickers offer dates for Weekly reports — explicitly out of scope per the issue.",
-      "Any change to Daily, Monthly or Yearly intervals beyond confirming their headers are unchanged.",
-      "Styling or summary copy beyond the date range the header names; the 'last bucket covers its full week' copy resolution was considered and not taken, so no new user-facing string is added.",
-      "Making setData's data.endDate the clamped value. The issue offers this as part of finding 1's resolution; excluded because data.endDate also feeds drilldown ranges and the report graphs, so widening it changes behaviour beyond the header. Flagged as a candidate for its own slice rather than silently dropped.",
-      "Changing any financial figure. The widening shipped in #12; this slice moves it into a helper and makes the header agree with it.",
-      "The `authors: [claude]` release-note front-matter finding, open as #17."
-    ],
-    "qa_script": [
-      "yarn workspace @actual-app/web run vitest --run src/components/reports/ReportSummary.test.tsx src/components/reports/reportRanges.test.ts src/components/reports/spreadsheets/custom-spreadsheet.test.ts — all green, and `git diff --stat` on custom-spreadsheet.test.ts shows additions only.",
-      "Open /reports/custom with \"View demo\" data. Widen the window to at least ~1024px wide — both the report toolbar and the summary block sit inside {!isNarrowWidth && ...} (CustomReport.tsx:930 and :1063, breakpoint 512px) — then click the calculator \"Show Summary\" toggle in the report toolbar (aria-label \"Show Summary\", ReportTopbar.tsx:181-189). Confirm a summary block with a date header appears. Without this step there is no header on the page: viewSummary is a local pref defaulting to false (CustomReport.tsx:159-160).",
-      "Set From to 2026-08-30 (a Sunday), To to 2026-09-27, interval Weekly, and note the header date range verbatim.",
-      "Confirm the header's end date equals the final bucket's period end and is today's date or the week's end — never the To date picked. This is the reported defect; it must now be gone. Do NOT check whether the summary total changed: data[balanceTypeOp] was already summed over the widened query before this change (the widening shipped in #12), so the total is unchanged by design and only the label moves.",
-      "Repeat steps 3-4 with interval Daily, Monthly and Yearly and confirm the headers are unchanged from the pre-change build — expect a full day-level range under Daily, a month-level range under Monthly, and a bare year with no from-to separator under Yearly. Then repeat with Weekly and a To date in a past week, confirming the header stops at that past week's end, and with a To date in a future week, confirming it stops at today.",
-      "Load a saved Weekly+Budgeted report via the dashboard card path (GetCardData.tsx passes report.interval through un-coerced) and confirm it renders without error and without a truncated final week.",
-      "grep -rn 'getWeekEnd' packages/desktop-client/src/components/reports — expect only reportRanges.ts (the helper and the getSpecificRange preset) and no clamp restatement in the three spreadsheet files."
-    ],
-    "reproduced": true,
-    "residual_risks": [
-      "ReportSummary.test.tsx has never actually been run. Its first execution is the thing to watch, not the implementation.",
-      "CustomReport.tsx's own useMemos (getGroupData/getGraphData) still receive the raw startDate/endDate. That is unchanged and correct — the clamp lives in the factories — but a future slice needing the clamped value there must call the helper rather than copy the rule back.",
-      "setData's data.endDate remains the raw picker value, so a totals-row drilldown still opens a range ending at the raw endDate while the bucket covers more. That mismatch predates this issue and is not one of its three findings, so it is filed in out_of_scope rather than folded in silently.",
-      "A future-To Weekly report now has its header clamped to today while its bucket labels run to the To week. The graph already used the widened end, so this is display-only, but it is the one place where the new header under-names relative to the buckets — the opposite direction from the defect being fixed.",
-      "The dashboard card path (GetCardData.tsx) can still deliver a saved Weekly+Budgeted report un-coerced. The robustness comment now sits at the guard, but nothing prevents such a report from being saved; that combination remains degenerate (every bucket 0) as it is today, and fixing it is not this slice."
-    ],
-    "risks": [
-      "ReportSummary.test.tsx has never been executed by anyone. Its environment dependencies are now read off code rather than assumed — useDateFormat() resolving to undefined via prefsSlice's `synced: {}`, and t('to') returning the key via i18n's fallbackLng: false — but they have not been confirmed by a green run. If a literal is wrong in practice the fix is to build the expected string with monthUtils.format, not to change the component.",
-      "In recalculate.ts the Weekly anchor changes from the bucket's own start (intervalItem) to the report's endDate. These are the same value for the final Weekly bucket because _weekRange pushes weekFromDate(end) last, and the non-Weekly branch is value-identical because the helper returns endDate unchanged there. This is the highest-risk line in the plan and is covered by the existing 'leaves Daily and Monthly on their existing end bounds' test (custom-spreadsheet.test.ts:266).",
-      "Widening the budgeted path is safe only because no month-keyed budget row can match a week-start bucket label, so every Weekly+Budgeted bucket is already 0. If that is ever wrong, widening would change real budgeted figures. The added test asserts the widened month list and figure-for-figure equality so the assumption is checked rather than trusted; if the equality assertion ever fails, the correct move is to switch to the guard branch, not to weaken the assertion.",
-      "The Yearly assertion depends on the header node being identifiable so its textContent can be read exactly. If the header turns out to be several nodes, assert on the containing Text element's textContent instead of a substring match over the whole summary.",
-      "Adding an optional prop to ReportSummary would be breaking for a future caller. It is optional and the component has exactly one importer today, so this is a non-issue in-tree but recorded."
-    ],
-    "root_cause": "Two independent causes. (1) The header renders the raw picker value while the spreadsheet factories compute over a wider range — nothing passes the clamped value to the display layer, so the label and the data are derived from two different rules. (2) The clamp is duplicated at three call sites, two of them byte-identical, so the rule can drift between the query bound and the bucket labels. (1) is what a user sees; (2) is why fixing (1) by copy would leave the drift in place.",
-    "tests": [
-      {
-        "action": "create",
-        "cases": [
-          "Weekly, today 2026-10-02, start 2026-08-30, To 2026-09-27, firstDayOfWeekIdx '0': header renders '08/30/2026 to 10/02/2026'",
-          "Weekly, same dates: the header does not contain a range ending 09/27/2026 — the reported defect itself",
-          "Weekly, today 2026-10-04, To 2026-09-27: header renders '08/30/2026 to 10/03/2026', the elapsed week's end, and never 10/04/2026 or later",
-          "Weekly, today 2026-10-02, To 2026-09-13: header renders '08/30/2026 to 09/19/2026', the past week's end, and never 10/02/2026",
-          "Weekly, today 2026-10-02, start 2026-09-06, To 2026-10-11 (a future week): header clamps to today and renders '09/06/2026 to 10/02/2026', never past today",
-          "Weekly, start 2026-09-28, To 2026-09-28, today 2026-10-09, firstDayOfWeekIdx '1': header renders '09/28/2026 to 10/04/2026' (the Monday-based week end), proving the pref reaches the header",
-          "Weekly, start 2026-09-28, To 2026-09-28, today 2026-10-09, firstDayOfWeekIdx '0': header renders '09/28/2026 to 10/03/2026' — only this pair discriminates, since a To that is itself a week's last day makes the Monday-start case a no-op",
-          "Daily, start 2026-08-30, To 2026-09-27: header renders '08/30/2026 to 09/27/2026', unchanged from today",
-          "Monthly, start 2026-08-01, end 2026-09-30: header renders \"Aug '26 to Sep '26\", unchanged from today — Monthly's format is \"MMM ''yy\", not the day-level pref",
-          "Yearly, start 2026-01-01, end 2026-12-31: the header Text element's textContent is exactly '2026' with no from-to separator, unchanged from today — Yearly's format is 'yyyy', so both ends collapse"
-        ],
-        "path": "packages/desktop-client/src/components/reports/ReportSummary.test.tsx"
-      },
-      {
-        "action": "edit",
-        "cases": [
-          "Weekly with today mid-week returns today, not the week end",
-          "Weekly with the week elapsed returns the week end",
-          "Weekly with a past-week end returns that week's end and never today",
-          "Weekly with a future week end returns today",
-          "Weekly honours firstDayOfWeekIdx '1': To 2026-09-28 with today 2026-10-09 returns 2026-10-04, while firstDayOfWeekIdx '0' on the same inputs returns 2026-10-03",
-          "'Daily', 'Monthly' and 'Yearly' each return endDate unchanged"
-        ],
-        "path": "packages/desktop-client/src/components/reports/reportRanges.test.ts"
-      },
-      {
-        "action": "edit",
-        "cases": [
-          "Weekly totalBudgeted custom report: the requested envelope-budget-month values are exactly ['2026-08','2026-09','2026-10'] (widened across the month boundary)",
-          "Weekly totalBudgeted grouped report: the same widened month list",
-          "Weekly totalBudgeted widened run produces identical per-bucket totals and intervalEndDate to the un-widened run",
-          "all ten pre-existing weekly custom-report cases still pass, with no edits to their bodies"
-        ],
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts"
-      }
-    ],
-    "understanding": "A Weekly custom report names one date range in its header and computes another in its buckets. CustomReport.tsx passes the raw component-state endDate (a week start, since the Weekly From/To pickers only offer week starts) to <ReportSummary>, while the query bound and the final bucket's intervalEndDate are widened to min(today, getWeekEnd(endDate)). With start 2026-08-30, To 2026-09-27, today 2026-10-02, the header reads '08/30/2026 to 09/27/2026' while the final bucket's intervalEndDate is 2026-10-02 — a label that understates by four days what the bucket and the summary total actually cover. The widening itself already shipped in #12 (b593293), so the total is already correct; only the label lags. This slice therefore changes no financial figure: it fixes the header, settles the budgeted-path guard question, and collapses the rule's triplication into one exported helper in reportRanges.ts. All three recorded objections to v1 were upheld and are fixed in v2; each was a defect in v1's test and QA artifacts, not in its design.",
-    "unknowns": [
-      "Whether ReportSummary renders cleanly under TestProviders with no further stubbing — the first run of ReportSummary.test.tsx is the thing to watch. If it fails on a missing provider rather than on an assertion, the fix is a provider stub, not a change to the component.",
-      "Whether the header is a single text node or several under jsdom. The Yearly assertion is written against the header Text element's exact textContent, which works either way as long as the node is identifiable; if not, assert on the containing element."
-    ],
-    "version": 2
-  },
-  "approved_work_order": {
-    "acceptance": [
-      {
-        "check": "A Weekly custom report with To set to the current week's start (today 2026-10-02, To: 2026-09-27) shows a header ending 2026-10-02 — the same value the final bucket's intervalEndDate carries — and never a header stopping at 2026-09-27.",
-        "how_to_verify": "Unit: ReportSummary.test.tsx cases 1 and 2. Browser: qa_script steps 2-4, where step 2 is what makes the header exist at all.",
-        "source": "IAC-1",
-        "id": "AC-1",
-        "verify": "test"
-      },
-      {
-        "check": "Daily, Monthly and Yearly report headers render exactly as they do today — '08/30/2026 to 09/27/2026' under Daily, \"Aug '26 to Sep '26\" under Monthly, and a bare '2026' with no separator under Yearly; a Weekly report whose To falls in a past week stops at that week's end; a Weekly report whose To falls in a future week stops at today. None projects into later days.",
-        "how_to_verify": "Unit: ReportSummary.test.tsx past-week and future-To cases plus the three separate Daily/Monthly/Yearly unchanged cases, each with its own expected string; reportRanges.test.ts pass-through cases. Browser: qa_script step 5.",
-        "source": "IAC-2",
-        "id": "AC-2",
-        "verify": "test"
-      },
-      {
-        "check": "A saved Weekly report with balance type Budgeted widens its end date the same way every other Weekly report does — no new guard — and a comment above the existing balanceTypeOp !== 'totalBudgeted' guard in both factories records why the widening and the week-start remap below it disagree.",
-        "how_to_verify": "Unit: the custom-spreadsheet.test.ts budgeted cases assert the widened month list ['2026-08','2026-09','2026-10'] and figure-for-figure equality with the un-widened run. Code read: the comment above both guards is word-for-word identical. Browser: qa_script step 6.",
-        "source": "IAC-3",
-        "id": "AC-3",
-        "verify": "test"
-      },
-      {
-        "check": "The end-date clamp exists once, as a single exported helper in reportRanges.ts beside validateEnd/boundedRange; custom-spreadsheet, grouped-spreadsheet and recalculate all call it, and no site restates the rule.",
-        "how_to_verify": "grep for getWeekEnd across packages/desktop-client/src/components/reports returns only reportRanges.ts (the new helper and the getSpecificRange preset, which is a different rule that stays) and no clamp restatement in the three spreadsheet files; grep for getEffectiveEndDate shows one definition and four call sites. Verified against today's tree: the only four hits are recalculate.ts:97, grouped-spreadsheet.ts:58, custom-spreadsheet.ts:125 and reportRanges.ts:196 (getSpecificRange).",
-        "source": "IAC-4",
-        "id": "AC-4",
-        "verify": "test"
-      },
-      {
-        "check": "The ten existing weekly-report tests in custom-spreadsheet.test.ts pass with their bodies unmodified, and new tests pin both the header behaviour and the budgeted-path choice.",
-        "how_to_verify": "git diff on custom-spreadsheet.test.ts shows additions only; yarn workspace @actual-app/web run vitest --run over the three test files is green. Verified the file contains exactly ten it( blocks today.",
-        "source": "IAC-5",
-        "id": "AC-5",
-        "verify": "test"
-      },
-      {
-        "check": "The header's end date and the final bucket's intervalEndDate come from the same function, so a future change to the week rule moves both together rather than letting them drift again.",
-        "how_to_verify": "Code read: ReportSummary.tsx and custom-spreadsheet.ts both call getEffectiveEndDate from reportRanges, and no formatting of a raw endDate remains in the header.",
-        "source": "IAC-1",
-        "id": "AC-6",
-        "verify": "test"
-      }
-    ],
-    "alternatives_considered": [
-      {
-        "approach": "Add copy to the summary saying the last bucket covers its full week (the issue's second IAC-1 resolution).",
-        "rejected_because": "Needs a new user-facing string and a layout change, and the issue puts summary copy beyond the date range it names out of scope. It also leaves the header and the buckets computed from two different rules, which is the drift this slice exists to remove."
-      },
-      {
-        "approach": "Make setData's data.endDate the clamped value so both the header and every downstream consumer read one value.",
-        "rejected_because": "data.endDate also feeds drilldown ranges and the report graphs, so widening it changes behaviour well beyond the header — a scope increase the issue does not ask for. Recorded in out_of_scope as its own candidate slice."
-      },
-      {
-        "approach": "Add the balanceTypeOp !== 'totalBudgeted' guard to the widening, so Weekly+Budgeted reports stay un-widened (the issue's second IAC-3 resolution).",
-        "rejected_because": "It would leave Weekly+Budgeted reports missing the final week, and it introduces a second divergence axis into the one rule this slice exists to make single — for no benefit, since the budgeted path provably cannot move a figure. The comment IAC-3 requires is still being added at the guard."
-      },
-      {
-        "approach": "Put the clamp in ReportSummary by widening only when interval === 'Weekly' inline, leaving the three spreadsheet copies alone.",
-        "rejected_because": "Fails IAC-4 outright and leaves the triplication the issue names as its third finding in place."
-      },
-      {
-        "approach": "Assert the Daily/Monthly/Yearly unchanged case as byte-identical output before and after the change, dropping the literals entirely.",
-        "rejected_because": "There is no 'before' to compare against in a unit test — the component under test is the changed one — so this reduces to asserting nothing. Naming the correct expected string per interval is both possible and stronger, and it is what makes the Yearly collapse guard assertable at all."
-      }
-    ],
-    "approach": "One helper, four callers, no figure changes.\n\n1. The shared rule (IAC-4). Export getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx?) from reportRanges.ts, declared next to validateEnd. Its body is a literal transcription of custom-spreadsheet.ts:120-128: return endDate unchanged unless interval === 'Weekly'; otherwise return currentDay() < getWeekEnd(endDate, firstDayOfWeekIdx) ? today : weekEnd. Carry the canonical comment onto the helper, rewritten to describe the rule rather than a call site. The helper takes the date as an argument because the two families of call site anchor differently (recalculate's non-Weekly branch must receive the report's endDate, not the bucket start).\n\n2. The three existing call sites (IAC-4). custom-spreadsheet.ts:120-128 and grouped-spreadsheet.ts:55-61 become one getEffectiveEndDate call each. recalculate.ts:94-108 collapses to a ternary. Verified safe: _weekRange pushes weekFromDate(end) last (months.ts:299-308), so for the final Weekly bucket getWeekEnd(intervalItem) === getWeekEnd(endDate); and for every non-Weekly interval the helper returns endDate unchanged, exactly what recalculate's else-branch assigns today.\n\n3. The header (IAC-1) — chosen resolution: pass the same clamped value, not new copy. ReportSummary gains an optional firstDayOfWeekIdx prop and renders getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx), including inside the format(startDate) !== format(endDate) collapse check so the separator still collapses correctly. CustomReport.tsx passes the pref it already holds (lines 154-155). Chosen over the copy alternative: no new i18n string, no layout change, and header and buckets stay derived from one function.\n\n4. The budgeted path (IAC-3) — chosen resolution: widen on all paths; no new guard. A word-for-word identical comment sits above the existing balanceTypeOp !== 'totalBudgeted' guard in both factories, recording that the widening applies to every balance type while the week-start remap below does not, because budget rows arrive keyed by month. Verified: fetchBudgetData keys date by month (spreadsheets/budgetDataQuery.ts:231) while Weekly bucket labels are week starts, so no budget row can match a bucket and every Weekly+Budgeted bucket is already 0 today — as is totalBudgeted, which mirrors totalAssets + totalDebts (custom-spreadsheet.ts:350) accumulated from those same buckets. Widening pulls one extra month of rows that are then discarded.\n\n5. Tests (IAC-5). All ten existing weekly cases pass unmodified. Added: ReportSummary.test.tsx pinning the header (one case per interval, with per-interval expected strings — v1's rejected literal, corrected); reportRanges.test.ts pinning the helper with the same discriminating dates; a totalBudgeted weekly case asserting both the widened month list and figure-for-figure equality; a release note.\n\nScope correction carried from v2: v1's risk list claimed this slice changes the financial figures a user sees, inherited from the issue's Risk paragraph. git log shows the widening landed in b593293 (#12), the commit this issue reviews. The consolidation is value-preserving and the only new behaviour is the header label.",
-    "assumptions": [
-      "getWeekEnd(endDate) equals getWeekEnd(intervalItem) for the final bucket of a Weekly report, because _weekRange pushes weekFromDate(end) last and weekFromDate(end) and end share a week by construction. Verified by reading months.ts:292-311; it holds for any endDate, not just week starts.",
-      "fetchBudgetData rows can never match a Weekly bucket, because it keys date by month (spreadsheets/budgetDataQuery.ts:231) while Weekly interval labels are week-start dates. Verified by reading the function; the added test pins the consequence rather than the premise.",
-      "Under TestProviders, useDateFormat() returns undefined so ReportSummary's 'MM/dd/yyyy' fallback supplies the day-level format for the Weekly/Daily literals. Verified from prefsSlice's `synced: {}` initial state and the absence of any loadPrefs dispatch in the test setup.",
-      "Under TestProviders, t('to') returns the key 'to'. Verified from i18n.ts's fallbackLng: false plus the Balance.test.tsx precedent. If a locale file were ever present and translated, the literals would need the separator built from t('to') rather than hardcoded — but English is the natural-language source here, so it will not move."
-    ],
-    "confidence": 85,
-    "confidence_rationale": "The design is unchanged from v1 and I re-verified every load-bearing claim against the code myself rather than inheriting v2's assertions: the three clamp sites are byte-identical as described; ReportSummary has exactly one importer; custom-spreadsheet.test.ts really does contain exactly ten it( blocks, so IAC-5's 'unchanged' claim is concrete; _weekRange pushes weekFromDate(end) last, which makes recalculate's anchor swap safe; GraphButton does pass title through as aria-label, so the qa_script's selector is real; and the budgeted-path safety argument — the one belief that touches money — confirmed by reading fetchBudgetData's month keying and totalBudgeted's accumulation, so widening provably cannot move a budgeted figure. I also resolved the two environment questions v2 left open: useDateFormat() returns undefined under TestProviders because prefsSlice's initialState.synced is {}, and t('to') returns the key because i18n sets fallbackLng: false, with Balance.test.tsx as the working precedent for untranslated keys under these providers. Both were named unknowns in v2; both are now read off code.\n\nConfidence is above v2's 84 for two reasons: those two unknowns were the main soft spot in the new test file and are now settled, and the scope error that inflated the risk picture is corrected, which materially narrows the blast radius to display-only. It is not in the 90s because ReportSummary.test.tsx has still never been executed by anyone — its rendering path through PrivacyFilter and useFormat is the one thing I reasoned about and could not run — and because this round had no critique to test the plan against, so nothing has survived an adversarial peer pass. One green run of that file plus the month-list assertion would put this in the low 90s.",
-    "debate_summary": "There is no critique to arbitrate this round. plan/critique.json is `{}` — the critic step produced nothing — so what follows is my own verification of the proposal against the code, not a ruling on a disagreement between two agents. That is a real limitation of this round and the main reason confidence is 85 rather than higher: nothing here has survived an adversarial pass from a peer, and a council whose critic is silent is weaker than one whose critic was answered. I say so rather than presenting a tidy verdict.\n\nThe three objections recorded against v1 in plan/brief.md were all upheld, and all three were defects in v1's test and QA artifacts rather than in its design. v2 fixes each in place, and I re-verified each fix rather than taking v2's word for it:\n\n(1) The Monthly/Yearly assertion was arithmetically impossible. getIntervalFormat returns the interval's own format — \"MMM ''yy\" for Monthly, 'yyyy' for Yearly — for anything outside dayLevelIntervals (ReportOptions.ts), so only Daily takes the day-level pref. v1 stated '08/30/2026 to 09/27/2026' for all three intervals. v2 splits the case into three with per-interval expected strings, and strengthens the Yearly case into an exact-textContent assertion of '2026' with no separator — proving the collapse guard still fires now that endDate is a computed value. That is a stronger check than v1's, and it only became available once the impossible literal was removed. Confirmed.\n\n(2) The firstDayOfWeekIdx '1' case could not fail: 2026-09-27 is a Sunday and the terminating Sunday of a Monday-start week, so getWeekEnd('2026-09-27','1') returns the raw To and the clamp is a no-op — the header reads the same whether or not the pref was threaded through. v2 replaces it with the discriminating pair from custom-spreadsheet.test.ts:251: To 2026-09-28 with today pinned to 2026-10-09, asserting 10/04/2026 under '1' and 10/03/2026 under '0'. I re-derived both weekdays independently: 2026-09-28 is a Monday, so under a Monday-start week it ends Sunday 2026-10-04 and under a Sunday-start week it ends Saturday 2026-10-03. Only the pair discriminates; either alone would pass with the wiring removed. The same date discipline is applied to the reportRanges.test.ts cases so the helper test cannot inherit the same no-op. Confirmed.\n\n(3) The qa_script was not performable as written. viewSummary is a local pref defaulting to false, so <ReportSummary> does not render at all until it is enabled, and the block is additionally gated on !isNarrowWidth with the toolbar carrying the toggle gated the same way. v2 adds a step 2 that opens the window and clicks the toggle, and confirms a header is on screen before any reading happens. I checked the selector text rather than trusting it: GraphButton passes title straight through as aria-label and the title is t('Show Summary'). The second half of the objection is also correct — v1's step 4 asked the tester to confirm the summary total changed, but data[balanceTypeOp] was already summed over the widened query, so a correct implementation would have failed a criterion describing a number that never moved. Restated as a date-label check with the reason inline. Confirmed.\n\nOne correction I found on my own, in the critic's favour and against the earlier framing: v1's risk list claimed this slice 'changes the financial figures a user sees', inherited from the issue's own Risk paragraph. git log shows the widening landed in b593293 (#12), the commit this issue reviews. The helper consolidation is value-preserving and the only new behaviour is the header label. The blast radius is display-only.\n\nI also corrected one factual error in v2 that no critique raised: its evidence cites budgetDataQuery.ts as living in loot-core/src/server/, which it does not. The file is packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts. The argument itself holds — I read the function and the month-keying at line 231 is as described — but a reviewer following the path as written would find nothing.\n\nThe brief records no decisions, so no finding could contradict one. I dropped nothing from v1 that the three objections did not already require. The route is correct as assigned (plan → implement → review → qa): review is warranted for a helper extracted into a module several report factories import and for a change to a displayed financial date range, so no route_request is made. v2 correctly drops v1's request to insert plan, which is already on the route.",
-    "evidence": [
-      "custom-spreadsheet.ts:120-128 and grouped-spreadsheet.ts:55-61 compute weekEnd/today/effectiveEndDate from byte-identical three-line blocks differing only in the comment above them; recalculate.ts:94-105 states the same rule a third time in if/else form. Read and confirmed by the arbiter.",
-      "ReportSummary.tsx:76-81 formats the raw startDate/endDate. Grep for importers of ReportSummary returns CustomReport.tsx:50 only — the single-call-site claim holds. CustomReport.tsx:154-155 already resolves firstDayOfWeekIdx from useSyncedPref.",
-      "ReportOptions.ts: intervalOptions gives Monthly format \"MMM ''yy\" and Yearly 'yyyy'; dayLevelIntervals = new Set(['Daily','Weekly']); getIntervalFormat returns the interval's own format for anything outside that set. So Monthly renders \"Aug '26 to Sep '26\" and under Yearly both ends format to '2026', the format(startDate) !== format(endDate) guard is false, and the from-to segment is suppressed. v1's literal was wrong for two of three intervals.",
-      "2026-09-27 is a Sunday and the terminating Sunday of the Monday-start week 2026-09-21..2026-09-27, so getWeekEnd('2026-09-27','1') returns the raw To and the clamp is a no-op. 2026-09-28 is a Monday; under '1' its week ends 2026-10-04 and under '0' its week ends 2026-10-03 — a discriminating pair. This is the date custom-spreadsheet.test.ts:251 already uses.",
-      "CustomReport.tsx:159-160 reads useLocalPref('reportsViewSummary') defaulting to false; the summary block is gated on (viewLegend || viewSummary) && data && !isNarrowWidth (:1063); the toggle is the calculator GraphButton titled t('Show Summary') at ReportTopbar.tsx:181-189, and GraphButton passes title straight through as aria-label, so the qa_script's selector text is correct. ReportTopbar itself renders only under !isNarrowWidth (:930). isNarrowWidth is width < breakpoint_small = 512px.",
-      "custom-spreadsheet.ts sums totalAssets/totalDebts from rows returned by fetchSpreadsheetQueryData, which already received `endDate: effectiveEndDate` before this change, so data[balanceTypeOp] does not move when only the header widens.",
-      "git log shows b593293 '[AI] Fix weekly reports truncating the final week to one day (#12)' as the commit that introduced the widening at custom-spreadsheet.ts:120-128. The issue's own Risk paragraph ('changes the financial figures a user sees') describes #12, not this slice.",
-      "custom-spreadsheet.test.ts contains exactly ten it( blocks, all inside the weekly custom/grouped describes, and runCustom/runGrouped take no balanceTypeOp today — so additions can be parameterised without touching existing call sites.",
-      "_weekRange pushes weekFromDate(end) as its final element when inclusive (months.ts:299-308), so recalculate's getWeekEnd(intervalItem) equals getWeekEnd(endDate) for the last Weekly bucket. The existing test at custom-spreadsheet.test.ts:266 ('leaves Daily and Monthly on their existing end bounds') covers the branch where passing the wrong date would relabel.",
-      "CORRECTED BY THE ARBITER: the budgeted-path argument cites budgetDataQuery.ts. That is not in loot-core/src/server/ — the file is packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts. Read there: fetchBudgetData sets dateKey = interval === 'Yearly' ? month.slice(0, 4) : month (line 231) over rangeInclusive(getMonth(startDate), getMonth(endDate)) (line 210). A month string can never equal a week-start label, so every Weekly+Budgeted bucket is already 0 and widening only widens the fetch. totalBudgeted mirrors totalAssets+totalDebts (custom-spreadsheet.ts:350). The budgeted path calls send('envelope-budget-month', { month }), not query, so getQueryEndDates() cannot observe it.",
-      "vite.config.mts sets environment: 'jsdom', globals: true and setupFiles './src/setupTests.ts'; setupTests.ts sets global.IS_TESTING = true, which is what makes monthUtils.currentDay() return '2017-01-01' (months.ts:173-175) and therefore why pinToday must spy rather than fake timers. It also stubs ResizeObserver, so PrivacyFilter's useResponsive is safe under jsdom.",
-      "The new test file's two environment dependencies are resolved from code, not assumed. (a) useDateFormat() returns undefined under TestProviders: prefsSlice's initialState is `{ local: {}, global: {}, synced: {}, server: {} }` (prefsSlice.ts:30-36) and no test dispatches loadPrefs, so the useSyncedPref selector reads undefined and ReportSummary.tsx:42's 'MM/dd/yyyy' fallback supplies the day-level format. (b) t('to') returns the literal 'to': i18n self-initialises with lng 'en' and fallbackLng: false (i18n.ts:22-38), so an unloaded key falls through to the key itself, and the locale/ directory is gitignored (generated). Precedent: Balance.test.tsx asserts screen.getByText('Selected balance:') against a t('Selected balance:') call, so untranslated keys render as themselves under TestProviders. ReportSummary also renders <Trans> at line 121, which follows the same path.",
-      "Change.test.tsx and BudgetAnalysisGraph.test.tsx both render components that call useFormat under bare TestProviders with no extra stubbing — the precedent ReportSummary.test.tsx follows. TestProviders supplies only a redux store and a QueryClient; usePrivacyMode reads useSyncedPref('isPrivacyEnabled') and returns false when undefined, so PrivacyFilter renders children unblurred.",
-      "reportRanges.test.ts contains no vi.* usage and no module-level spy; its line-11 comment about currentMonth returning '2017-01' is prose.",
-      "upcoming-release-notes/8973.md confirms the `category: Bugfixes` + `authors:` front matter shape, and packages/ci-actions/src/release-notes/util.mjs lists categoryOrder = ['Features','Enhancements','Bugfixes','Maintenance'], so the category value is valid."
-    ],
-    "files": [
-      {
-        "action": "edit",
-        "change": "Export getEffectiveEndDate(endDate: string, interval: string, firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx']): string next to validateEnd (line 47). Body: return endDate unchanged unless interval === 'Weekly'; otherwise compare monthUtils.currentDay() against monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx) and return the smaller. Move custom-spreadsheet.ts:120-124's comment onto it, rewritten to describe the rule. SyncedPrefs is already imported at line 3, so no import change. Purely additive — no existing export is touched.",
-        "path": "packages/desktop-client/src/components/reports/reportRanges.ts",
-        "why": "IAC-4 requires the clamp to exist exactly once as a single exported helper here; the module already owns every other report range rule and imports only monthUtils, so a new import here creates no cycle."
-      },
-      {
-        "action": "edit",
-        "change": "Replace lines 120-128 (comment block plus weekEnd/today/effectiveEndDate) with one getEffectiveEndDate call, importing from ../reportRanges. monthUtils stays imported (week-start remap, weekRangeInclusive, subDays). Add a comment above the existing interval === 'Weekly' && balanceTypeOp !== 'totalBudgeted' guard at line 147 recording the deliberate budgeted-path choice and why the widening and the remap below it disagree.",
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.ts",
-        "why": "IAC-4 (first of three duplicate copies) and IAC-3, which asks the disagreement be legible at the guard itself."
-      },
-      {
-        "action": "edit",
-        "change": "Same replacement at lines 55-61, helper imported from ../reportRanges. Add the same deliberate-choice comment above the guard at line 80, word-for-word identical to the one in custom-spreadsheet.ts so the two factories cannot drift in documentation either.",
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/grouped-spreadsheet.ts",
-        "why": "IAC-4: second of the three copies, byte-identical to the first; the two guards are the same decision stated twice."
-      },
-      {
-        "action": "edit",
-        "change": "Collapse the if/else at lines 94-108 into: const intervalEndDate = index + 1 === intervals.length ? getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx) : monthUtils.subDays(intervals[index + 1], 1);. This site anchors its Weekly branch on the bucket's own start (intervalItem); passing endDate is equivalent because the last element of a weekRangeInclusive array is weekFromDate(end), and the non-Weekly branch is value-identical because the helper returns endDate unchanged. Keep the existing comment at 90-93 and add one line on why the argument differs from the bucket's own start.",
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/recalculate.ts",
-        "why": "IAC-4: the third statement of the rule, and the one call site whose behaviour depends on which date is passed."
-      },
-      {
-        "action": "edit",
-        "change": "Add firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx'] to ReportSummaryProps (lines 24-31); compute effectiveEndDate above the returned JSX and use it at lines 76-81, including inside the format comparison so the from-to separator still collapses when both ends format identically. Import getEffectiveEndDate from ./reportRanges and add the SyncedPrefs type import. Add a comment recording the deliberate resolution. Do not change the average computation — intervalsCount does not change.",
-        "path": "packages/desktop-client/src/components/reports/ReportSummary.tsx",
-        "why": "IAC-1 root cause: the component renders the raw picker value while the factories compute over a wider range."
-      },
-      {
-        "action": "edit",
-        "change": "Pass firstDayOfWeekIdx={firstDayOfWeekIdx} at the ReportSummary call site (lines 1072-1079), reusing the value already resolved at lines 154-155. No other change: startDate and endDate keep flowing into getGroupData/getGraphData and into setData unchanged.",
-        "path": "packages/desktop-client/src/components/reports/reports/CustomReport.tsx",
-        "why": "The one wiring change for IAC-1. Verified by grep: ReportSummary is imported at CustomReport.tsx:50 and nowhere else in the repo."
-      },
-      {
-        "action": "create",
-        "change": "New jsdom test rendering ReportSummary under TestProviders from #mocks (the pattern Change.test.tsx uses), with a local pinToday spy on monthUtils.currentDay and afterEach(vi.restoreAllMocks). currentDay() short-circuits to '2017-01-01' under global.IS_TESTING (months.ts:173-175), so it must be spied, not faked with timers. Assert Weekly/Daily with getByText('08/30/2026 to 10/02/2026'); assert Monthly with getByText(\"Aug '26 to Sep '26\"); assert Yearly by reading the header Text element's exact textContent === '2026' with no separator. Do not substring-match over the whole container for the Yearly case — the summary body renders other strings. This file is where v1's three rejected assertions are corrected.",
-        "path": "packages/desktop-client/src/components/reports/ReportSummary.test.tsx",
-        "why": "IAC-5: pins the new header behaviour at the component boundary, where IAC-1 lives. The spreadsheet tests never render the header."
-      },
-      {
-        "action": "edit",
-        "change": "Append a describe('getEffectiveEndDate') block: Weekly mid-week clamps to today; an elapsed week returns the week end; a past week returns that week's end; a future week returns today; firstDayOfWeekIdx '1' widens to the Monday-based week end; 'Daily', 'Monthly' and 'Yearly' each return endDate unchanged. Add vi to the existing import and scope restoreAllMocks to the new describe. The file has no vi.* usage today — its line-11 comment is prose, not a spy. Use the same discriminating dates as the header test (To 2026-09-28, today 2026-10-09) so the helper test cannot inherit the same no-op.",
-        "path": "packages/desktop-client/src/components/reports/reportRanges.test.ts",
-        "why": "IAC-4/IAC-5: pins the consolidated rule directly, including the interval pass-through IAC-2 depends on."
-      },
-      {
-        "action": "edit",
-        "change": "Additions only — no existing it() body is edited. Add balanceTypeOp as an optional parameter to runCustom/runGrouped defaulting to current behaviour, plus an optional budget-month recorder. New cases: (a) a totalBudgeted weekly custom run registering an envelope-budget-month handler and asserting the recorded months are exactly ['2026-08','2026-09','2026-10']; (b) the same for runGrouped; (c) figure-for-figure equality against the un-widened run. The budgeted path calls send('envelope-budget-month'), not query, so the existing getQueryEndDates() helper cannot observe it and a separate recorder is needed.",
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
-        "why": "IAC-3 and IAC-5: whichever branch was taken must be pinned by a test. The month-list assertion is the load-bearing one."
-      },
-      {
-        "action": "create",
-        "change": "One-sentence note with `category: Bugfixes` front matter and an authors entry, matching the shape of upcoming-release-notes/8973.md. Use the PR author's GitHub handle — the machine-written `authors: [claude]` finding is #17 and out of scope for this ticket.",
-        "path": "upcoming-release-notes/weekly-report-header-full-week-range.md",
-        "why": "Repo convention: every user-visible change ships a release note."
-      }
-    ],
-    "issue": 20,
-    "kind": "bug",
-    "mode": "proposal",
-    "out_of_scope": [
-      "Changing how weekly buckets are labelled, or how the From/To pickers offer dates for Weekly reports — explicitly out of scope per the issue.",
-      "Any change to Daily, Monthly or Yearly intervals beyond confirming their headers are unchanged.",
-      "Styling or summary copy beyond the date range the header names; the 'last bucket covers its full week' copy resolution was considered and not taken, so no new user-facing string is added.",
-      "Making setData's data.endDate the clamped value. The issue offers this as part of finding 1's resolution; excluded because data.endDate also feeds drilldown ranges and the report graphs, so widening it changes behaviour beyond the header. Flagged as a candidate for its own slice rather than silently dropped.",
-      "Changing any financial figure. The widening shipped in #12; this slice moves it into a helper and makes the header agree with it.",
-      "The `authors: [claude]` release-note front-matter finding, open as #17."
-    ],
-    "qa_script": [
-      "yarn workspace @actual-app/web run vitest --run src/components/reports/ReportSummary.test.tsx src/components/reports/reportRanges.test.ts src/components/reports/spreadsheets/custom-spreadsheet.test.ts — all green, and `git diff --stat` on custom-spreadsheet.test.ts shows additions only.",
-      "Open /reports/custom with \"View demo\" data. Widen the window to at least ~1024px wide — both the report toolbar and the summary block sit inside {!isNarrowWidth && ...} (CustomReport.tsx:930 and :1063, breakpoint 512px) — then click the calculator \"Show Summary\" toggle in the report toolbar (aria-label \"Show Summary\", ReportTopbar.tsx:181-189). Confirm a summary block with a date header appears. Without this step there is no header on the page: viewSummary is a local pref defaulting to false (CustomReport.tsx:159-160).",
-      "Set From to 2026-08-30 (a Sunday), To to 2026-09-27, interval Weekly, and note the header date range verbatim.",
-      "Confirm the header's end date equals the final bucket's period end and is today's date or the week's end — never the To date picked. This is the reported defect; it must now be gone. Do NOT check whether the summary total changed: data[balanceTypeOp] was already summed over the widened query before this change (the widening shipped in #12), so the total is unchanged by design and only the label moves.",
-      "Repeat steps 3-4 with interval Daily, Monthly and Yearly and confirm the headers are unchanged from the pre-change build — expect a full day-level range under Daily, a month-level range under Monthly, and a bare year with no from-to separator under Yearly. Then repeat with Weekly and a To date in a past week, confirming the header stops at that past week's end, and with a To date in a future week, confirming it stops at today.",
-      "Load a saved Weekly+Budgeted report via the dashboard card path (GetCardData.tsx passes report.interval through un-coerced) and confirm it renders without error and without a truncated final week.",
-      "grep -rn 'getWeekEnd' packages/desktop-client/src/components/reports — expect only reportRanges.ts (the helper and the getSpecificRange preset) and no clamp restatement in the three spreadsheet files."
-    ],
-    "reproduced": true,
-    "residual_risks": [
-      "ReportSummary.test.tsx has never actually been run. Its first execution is the thing to watch, not the implementation.",
-      "CustomReport.tsx's own useMemos (getGroupData/getGraphData) still receive the raw startDate/endDate. That is unchanged and correct — the clamp lives in the factories — but a future slice needing the clamped value there must call the helper rather than copy the rule back.",
-      "setData's data.endDate remains the raw picker value, so a totals-row drilldown still opens a range ending at the raw endDate while the bucket covers more. That mismatch predates this issue and is not one of its three findings, so it is filed in out_of_scope rather than folded in silently.",
-      "A future-To Weekly report now has its header clamped to today while its bucket labels run to the To week. The graph already used the widened end, so this is display-only, but it is the one place where the new header under-names relative to the buckets — the opposite direction from the defect being fixed.",
-      "The dashboard card path (GetCardData.tsx) can still deliver a saved Weekly+Budgeted report un-coerced. The robustness comment now sits at the guard, but nothing prevents such a report from being saved; that combination remains degenerate (every bucket 0) as it is today, and fixing it is not this slice."
-    ],
-    "risks": [
-      "ReportSummary.test.tsx has never been executed by anyone. Its environment dependencies are now read off code rather than assumed — useDateFormat() resolving to undefined via prefsSlice's `synced: {}`, and t('to') returning the key via i18n's fallbackLng: false — but they have not been confirmed by a green run. If a literal is wrong in practice the fix is to build the expected string with monthUtils.format, not to change the component.",
-      "In recalculate.ts the Weekly anchor changes from the bucket's own start (intervalItem) to the report's endDate. These are the same value for the final Weekly bucket because _weekRange pushes weekFromDate(end) last, and the non-Weekly branch is value-identical because the helper returns endDate unchanged there. This is the highest-risk line in the plan and is covered by the existing 'leaves Daily and Monthly on their existing end bounds' test (custom-spreadsheet.test.ts:266).",
-      "Widening the budgeted path is safe only because no month-keyed budget row can match a week-start bucket label, so every Weekly+Budgeted bucket is already 0. If that is ever wrong, widening would change real budgeted figures. The added test asserts the widened month list and figure-for-figure equality so the assumption is checked rather than trusted; if the equality assertion ever fails, the correct move is to switch to the guard branch, not to weaken the assertion.",
-      "The Yearly assertion depends on the header node being identifiable so its textContent can be read exactly. If the header turns out to be several nodes, assert on the containing Text element's textContent instead of a substring match over the whole summary.",
-      "Adding an optional prop to ReportSummary would be breaking for a future caller. It is optional and the component has exactly one importer today, so this is a non-issue in-tree but recorded."
-    ],
-    "root_cause": "Two independent causes. (1) The header renders the raw picker value while the spreadsheet factories compute over a wider range — nothing passes the clamped value to the display layer, so the label and the data are derived from two different rules. (2) The clamp is duplicated at three call sites, two of them byte-identical, so the rule can drift between the query bound and the bucket labels. (1) is what a user sees; (2) is why fixing (1) by copy would leave the drift in place.",
-    "tests": [
-      {
-        "action": "create",
-        "cases": [
-          "Weekly, today 2026-10-02, start 2026-08-30, To 2026-09-27, firstDayOfWeekIdx '0': header renders '08/30/2026 to 10/02/2026'",
-          "Weekly, same dates: the header does not contain a range ending 09/27/2026 — the reported defect itself",
-          "Weekly, today 2026-10-04, To 2026-09-27: header renders '08/30/2026 to 10/03/2026', the elapsed week's end, and never 10/04/2026 or later",
-          "Weekly, today 2026-10-02, To 2026-09-13: header renders '08/30/2026 to 09/19/2026', the past week's end, and never 10/02/2026",
-          "Weekly, today 2026-10-02, start 2026-09-06, To 2026-10-11 (a future week): header clamps to today and renders '09/06/2026 to 10/02/2026', never past today",
-          "Weekly, start 2026-09-28, To 2026-09-28, today 2026-10-09, firstDayOfWeekIdx '1': header renders '09/28/2026 to 10/04/2026' (the Monday-based week end), proving the pref reaches the header",
-          "Weekly, start 2026-09-28, To 2026-09-28, today 2026-10-09, firstDayOfWeekIdx '0': header renders '09/28/2026 to 10/03/2026' — only this pair discriminates, since a To that is itself a week's last day makes the Monday-start case a no-op",
-          "Daily, start 2026-08-30, To 2026-09-27: header renders '08/30/2026 to 09/27/2026', unchanged from today",
-          "Monthly, start 2026-08-01, end 2026-09-30: header renders \"Aug '26 to Sep '26\", unchanged from today — Monthly's format is \"MMM ''yy\", not the day-level pref",
-          "Yearly, start 2026-01-01, end 2026-12-31: the header Text element's textContent is exactly '2026' with no from-to separator, unchanged from today — Yearly's format is 'yyyy', so both ends collapse"
-        ],
-        "path": "packages/desktop-client/src/components/reports/ReportSummary.test.tsx"
-      },
-      {
-        "action": "edit",
-        "cases": [
-          "Weekly with today mid-week returns today, not the week end",
-          "Weekly with the week elapsed returns the week end",
-          "Weekly with a past-week end returns that week's end and never today",
-          "Weekly with a future week end returns today",
-          "Weekly honours firstDayOfWeekIdx '1': To 2026-09-28 with today 2026-10-09 returns 2026-10-04, while firstDayOfWeekIdx '0' on the same inputs returns 2026-10-03",
-          "'Daily', 'Monthly' and 'Yearly' each return endDate unchanged"
-        ],
-        "path": "packages/desktop-client/src/components/reports/reportRanges.test.ts"
-      },
-      {
-        "action": "edit",
-        "cases": [
-          "Weekly totalBudgeted custom report: the requested envelope-budget-month values are exactly ['2026-08','2026-09','2026-10'] (widened across the month boundary)",
-          "Weekly totalBudgeted grouped report: the same widened month list",
-          "Weekly totalBudgeted widened run produces identical per-bucket totals and intervalEndDate to the un-widened run",
-          "all ten pre-existing weekly custom-report cases still pass, with no edits to their bodies"
-        ],
-        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts"
-      }
-    ],
-    "understanding": "A Weekly custom report names one date range in its header and computes another in its buckets. CustomReport.tsx passes the raw component-state endDate (a week start, since the Weekly From/To pickers only offer week starts) to <ReportSummary>, while the query bound and the final bucket's intervalEndDate are widened to min(today, getWeekEnd(endDate)). With start 2026-08-30, To 2026-09-27, today 2026-10-02, the header reads '08/30/2026 to 09/27/2026' while the final bucket's intervalEndDate is 2026-10-02 — a label that understates by four days what the bucket and the summary total actually cover. The widening itself already shipped in #12 (b593293), so the total is already correct; only the label lags. This slice therefore changes no financial figure: it fixes the header, settles the budgeted-path guard question, and collapses the rule's triplication into one exported helper in reportRanges.ts. All three recorded objections to v1 were upheld and are fixed in v2; each was a defect in v1's test and QA artifacts, not in its design.",
-    "unknowns": [
-      "Whether ReportSummary renders cleanly under TestProviders with no further stubbing — the first run of ReportSummary.test.tsx is the thing to watch. If it fails on a missing provider rather than on an assertion, the fix is a provider stub, not a change to the component.",
-      "Whether the header is a single text node or several under jsdom. The Yearly assertion is written against the header Text element's exact textContent, which works either way as long as the node is identifiable; if not, assert on the containing element."
-    ],
-    "version": 2
-  },
-  "approved_too_high": false
+  "approved_too_high": false,
+  "work_order_version": 1,
+  "work_order_posted_at": "2026-10-04T08:24:25.323Z",
+  "work_order_from": "plan",
+  "work_order_comment": "5978082038"
 }
