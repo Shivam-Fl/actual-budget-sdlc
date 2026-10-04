@@ -1703,7 +1703,7 @@ describe('schedule app', () => {
 
     // Read through the raw column rather than AQL: this asserts what is
     // actually persisted, which is the part no purely visual check can see.
-    async function getRecordedSkips(id: string): Promise<string[] | null> {
+    async function getRecordedSkips(id: string): Promise<string | null> {
       const nd = await db.first<{ skipped_occurrences: string | null }>(
         'SELECT skipped_occurrences FROM schedules_next_date WHERE schedule_id = ?',
         [id],
@@ -1857,7 +1857,7 @@ describe('schedule app', () => {
       // occurrence is what puts that occurrence on the candidate path at all —
       // without it the loop is never reached and the test proves nothing.
       async function skipThenSetNextDate(
-        args: Parameters<typeof setNextDate>[0],
+        args: Omit<Parameters<typeof setNextDate>[0], 'id'>,
       ) {
         const id = await createWeeklySchedule();
 
