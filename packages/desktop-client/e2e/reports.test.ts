@@ -213,6 +213,454 @@ test.describe('Reports', () => {
       });
     });
 
+    test('Rows follow the category selection when "show empty rows" is on', async () => {
+      await customReportPage.selectMode('total');
+      await customReportPage.selectViz('Data Table');
+
+      const rows = page.locator('#list');
+
+      // `Unselect All` then the Bills group checkbox leaves exactly the five
+      // Bills categories selected. Clicking by checkbox id rather than by label
+      // text: two elements are labelled "Income".
+      await page.getByRole('button', { name: 'Unselect All' }).click();
+      await page
+        .locator(
+          `input#${await page.getByText('Bills', { exact: true }).first().getAttribute('for')}`,
+        )
+        .check();
+
+      await expect(
+        page.getByRole('button', {
+          name: 'category one of [Cell, Internet, Mortgage, 2 more items...]',
+        }),
+      ).toBeVisible();
+
+      // Control: with "show empty rows" off, only the selected categories
+      // render. The fix must not change this default.
+      await expect(rows).toContainText('Cell');
+      await expect(rows).not.toContainText('Food');
+      await expect(rows).not.toContainText('Income');
+
+      await page.getByRole('button', { name: 'Options', exact: true }).click();
+      await page
+        .getByRole('button', { name: 'Show empty rows', exact: true })
+        .click();
+      await page.keyboard.press('Escape');
+
+      // "Show empty rows" must not resurrect the unselected categories as 0.00
+      // rows. These all rendered before the category selection reached the row
+      // axis.
+      await expect(rows).toContainText('Cell');
+      for (const unselected of [
+        'Usual Expenses',
+        'Food',
+        'Restaurants',
+        'Entertainment',
+        'Clothing',
+        'General',
+        'Gift',
+        'Medical',
+        'Savings',
+        'Income',
+        'Starting Balances',
+        'Misc',
+      ]) {
+        await expect(rows).not.toContainText(unselected);
+      }
+
+      // The synthetic block has no sidebar checkbox and is appended after the
+      // narrowing, so it must still render.
+      await expect(rows).toContainText('Uncategorized & Off budget');
+      await expect(rows).toContainText('Uncategorized');
+    });
+
+    test.describe("'any of' keeps every row the query fetched", () => {
+      // With 'any of', the query side unions every disjunct but the row axis
+      // was narrowed as though the category condition were the only one. Rows
+      // the query fetched were then deleted from the axis, taking their
+      // amounts out of every total with nothing on screen to show for it.
+      //
+      // The demo budget's amounts are generated per run, so nothing here pins
+      // a figure. What is stable is the set relation the fix guarantees, plus
+      // 'Food' - a hard-coded demo category, and the guard that the notes
+      // disjunct really does pull in spending outside the Bills selection.
+      let notesOnlyRows: string[];
+      let billsOnlyRows: string[];
+
+      const applyNotesFilter = async () => {
+        await customReportPage.openConditionsMenu();
+        await page
+          .getByTestId('filters-select-tooltip')
+          .getByRole('button', { name: 'Notes' })
+          .click();
+
+        const editor = page.getByTestId('filters-menu-tooltip');
+        await editor
+          .getByRole('button', { name: 'contains', exact: true })
+          .click();
+        await page.keyboard.type('e');
+        await editor.getByRole('button', { name: 'Apply' }).click();
+
+        await expect(
+          customReportPage.pageContent.getByRole('button', {
+            name: 'notes contains e',
+          }),
+        ).toBeVisible();
+      };
+
+      const selectOnlyBillsGroup = async () => {
+        await page.getByRole('button', { name: 'Unselect All' }).click();
+
+        // Clicking by checkbox id rather than by label text: two elements are
+        // labelled "Income".
+        await page
+          .locator(
+            `input#${await page
+              .getByText('Bills', { exact: true })
+              .first()
+              .getAttribute('for')}`,
+          )
+          .check();
+
+        await expect(
+          customReportPage.pageContent.getByRole('button', {
+            name: /category one of \[Cell, Internet/,
+          }),
+        ).toBeVisible();
+      };
+
+      /** Wait until the table has re-rendered carrying all of these rows. */
+      const waitForRows = async (...names: string[]) => {
+        await expect
+          .poll(async () => {
+            const rows = await customReportPage.rowNames();
+            return names.every(name => rows.includes(name));
+          })
+          .toBe(true);
+      };
+
+      /** Flip the operator toggle from 'all of' to 'any of'. */
+      const switchToAnyOf = async () => {
+        // The toggle only renders once two or more conditions exist, and its
+        // options live in a menu that opens on click.
+        const toggle = customReportPage.pageContent.getByTestId('field-select');
+        await expect(toggle).toContainText('all');
+        await toggle.click();
+
+        await page.getByRole('button', { name: 'any', exact: true }).click();
+      };
+
+      test.beforeEach(async () => {
+        await customReportPage.selectMode('total');
+        await customReportPage.selectViz('Data Table');
+        await customReportPage.showSummaryButton.click();
+
+        await applyNotesFilter();
+        await waitForRows('Food', 'Cell');
+        notesOnlyRows = await customReportPage.rowNames();
+
+        // Guard: without a row outside Bills in the notes-only run, the
+        // 'any of' case below has nothing to discriminate and would pass
+        // whatever the axis did.
+        expect(notesOnlyRows).toContain('Food');
+        expect(notesOnlyRows).toContain('Cell');
+
+        await selectOnlyBillsGroup();
+        await waitForRows('Cell');
+        billsOnlyRows = await customReportPage.rowNames();
+      });
+
+      test('renders the union of both branches, by row set and by name', async () => {
+        await switchToAnyOf();
+
+        // 'Food' is outside the Bills selection and the notes disjunct
+        // populates it, so it must survive the switch; 'Cell' is the Bills
+        // branch. Both present means the axis is the union of the two.
+        await waitForRows('Food', 'Cell');
+        const anyOfRows = await customReportPage.rowNames();
+
+        // The relation the fix guarantees: 'any of' matches a superset of each
+        // branch, so its rows must contain both branches' rows.
+        expect(notesOnlyRows.every(row => anyOfRows.includes(row))).toBe(true);
+        expect(billsOnlyRows.every(row => anyOfRows.includes(row))).toBe(true);
+
+        // 'Food' is outside the Bills selection and the notes disjunct
+        // populates it, so it must survive the switch.
+        expect(anyOfRows).toContain('Food');
+      });
+
+      test("'any of' does not report the 'all of' total", async () => {
+        // Settle first: reading the summary mid-re-render can return nothing.
+        await expect
+          .poll(() => customReportPage.totalSpending())
+          .not.toBeNull();
+        const allOfTotal = await customReportPage.totalSpending();
+
+        await switchToAnyOf();
+
+        // Settle on a real reading first: mid-re-render the summary can be
+        // absent, and "absent" would satisfy a bare inequality.
+        await expect
+          .poll(() => customReportPage.totalSpending())
+          .not.toBeNull();
+
+        // Equality, not magnitude: 'any of' must not collapse onto 'all of'.
+        // The demo budget's amounts differ per run, so the comparison is
+        // between two readings taken inside this one run.
+        expect(await customReportPage.totalSpending()).not.toBe(allOfTotal);
+      });
+
+      test("Split=Group keeps the notes-populated group under 'any of'", async () => {
+        // The Split control is a Select: clicking its trigger opens the menu,
+        // and the option lives in the menu's portal rather than in the
+        // sidebar the trigger sits in.
+        await customReportPage.pageContent
+          .getByRole('button', { name: 'Category', exact: true })
+          .click();
+        await page.getByRole('button', { name: 'Group', exact: true }).click();
+
+        await switchToAnyOf();
+
+        // The Group split's axis comes from the same grouped half as the
+        // table view, so the notes-populated group must be there too.
+        await waitForRows('Usual Expenses', 'Bills');
+      });
+
+      test("'all of' with a category selection still hides the unchecked rows", async () => {
+        // Negative control: the assertions above must not be satisfiable by
+        // narrowing having been switched off entirely.
+        await page
+          .getByRole('button', { name: 'Options', exact: true })
+          .click();
+        await page
+          .getByRole('button', { name: 'Show empty rows', exact: true })
+          .click();
+        await page.keyboard.press('Escape');
+
+        await expect(customReportPage.rows).toContainText('Cell');
+        for (const unselected of ['Food', 'Restaurants', 'Entertainment']) {
+          await expect(customReportPage.rows).not.toContainText(unselected);
+        }
+      });
+    });
+
+    // `contains` reaches the data side as a LIKE PATTERN ('%' + value + '%'),
+    // where '%' and '?' are wildcards. Read as a literal substring instead, the
+    // report's row axis ends up narrower than the set of rows the query
+    // fetched, and a category with no row has nowhere to render the spending
+    // that was fetched for it: it leaves every total with nothing on screen
+    // saying so. A value of '%' alone is the sharpest case, because on the
+    // data side it matches every category name and so should change nothing at
+    // all.
+    test.describe('wildcard values in a category text filter', () => {
+      /** Add a `Category contains <value>` filter and apply it. */
+      const applyCategoryContains = async (value: string) => {
+        await customReportPage.openConditionsMenu();
+        await page
+          .getByTestId('filters-select-tooltip')
+          .getByRole('button', { name: 'Category', exact: true })
+          .click();
+
+        const editor = page.getByTestId('filters-menu-tooltip');
+        await editor
+          .getByRole('button', { name: 'contains', exact: true })
+          .click();
+        await page.keyboard.type(value);
+        await editor.getByRole('button', { name: 'Apply' }).click();
+
+        await expect(
+          customReportPage.pageContent.getByRole('button', {
+            name: `category contains ${value}`,
+          }),
+        ).toBeVisible();
+      };
+
+      /** Tick only the Bills group, as QA's T-9 does. */
+      const selectOnlyBillsGroup = async () => {
+        await page.getByRole('button', { name: 'Unselect All' }).click();
+
+        // Clicking by checkbox id rather than by label text: two elements are
+        // labelled "Income".
+        await page
+          .locator(
+            `input#${await page
+              .getByText('Bills', { exact: true })
+              .first()
+              .getAttribute('for')}`,
+          )
+          .check();
+
+        await expect(
+          customReportPage.pageContent.getByRole('button', {
+            name: /category one of \[Cell, Internet/,
+          }),
+        ).toBeVisible();
+      };
+
+      /** Flip the operator toggle from 'all of' to 'any of'. */
+      const switchToAnyOf = async () => {
+        const toggle = customReportPage.pageContent.getByTestId('field-select');
+        await expect(toggle).toContainText('all');
+        await toggle.click();
+        await page.getByRole('button', { name: 'any', exact: true }).click();
+      };
+
+      test('a bare % leaves the report exactly as an unfiltered one', async () => {
+        await customReportPage.selectMode('total');
+        await customReportPage.selectViz('Data Table');
+        await customReportPage.showSummaryButton.click();
+
+        await expect
+          .poll(() => customReportPage.totalSpending())
+          .not.toBeNull();
+        const baselineTotal = await customReportPage.totalSpending();
+        const baselineRows = await customReportPage.rowNames();
+
+        // Guard: the demo budget's amounts are generated per run, so nothing
+        // here can pin a figure - but the row names are hard-coded, and without
+        // them the comparison below has nothing to discriminate.
+        expect(baselineRows.length).toBeGreaterThan(0);
+        expect(baselineRows).toContain('Food');
+
+        await applyCategoryContains('%');
+
+        // A bare '%' compiles to '%%%', which matches every category name on
+        // the data side, so the filter is a no-op and the report must be
+        // indistinguishable from the unfiltered one.
+        await expect
+          .poll(() => customReportPage.rowNames())
+          .toEqual(baselineRows);
+        expect(await customReportPage.totalSpending()).toBe(baselineTotal);
+
+        // Control, from QA's T-8: Split=Payee builds its axis from payees and
+        // never narrows it by category, so it runs the same query with the same
+        // filter and must still report the full baseline. Any disagreement
+        // localises the loss to the category axis.
+        await customReportPage.pageContent
+          .getByRole('button', { name: 'Category', exact: true })
+          .click();
+        await page.getByRole('button', { name: 'Payee', exact: true }).click();
+
+        await expect
+          .poll(() => customReportPage.totalSpending())
+          .toBe(baselineTotal);
+      });
+
+      test("'any of' with a bare % keeps the spending outside the selection", async () => {
+        await customReportPage.selectMode('total');
+        await customReportPage.selectViz('Data Table');
+        await customReportPage.showSummaryButton.click();
+
+        await expect
+          .poll(() => customReportPage.totalSpending())
+          .not.toBeNull();
+        const baselineTotal = await customReportPage.totalSpending();
+        const baselineRows = await customReportPage.rowNames();
+        expect(baselineRows).toContain('Food');
+
+        await selectOnlyBillsGroup();
+        await applyCategoryContains('%');
+        await switchToAnyOf();
+
+        // The '%' disjunct matches every category name, so the union matches
+        // everything: 'Food' is outside the Bills selection and must survive,
+        // and the total must be the whole baseline rather than Bills alone.
+        await expect.poll(() => customReportPage.rowNames()).toContain('Food');
+        await expect
+          .poll(() => customReportPage.totalSpending())
+          .toBe(baselineTotal);
+      });
+
+      // The demo budget's amounts are generated per run, so nothing here pins a
+      // figure - but the values read inside one run can be compared with each
+      // other, and 'o' and 'o%' are the SAME query on the data side: both
+      // compile to a pattern matching any name containing an 'o'. A criterion
+      // demanding that an embedded wildcard behave like an unfiltered report
+      // would be asserting a divergence rather than this fix, so this compares
+      // the two against each other instead.
+      let plainORows: string[];
+      let plainOTotal: string | null;
+
+      test('records what a plain "o" filter renders', async () => {
+        await customReportPage.selectMode('total');
+        await customReportPage.selectViz('Data Table');
+        await customReportPage.showSummaryButton.click();
+
+        await applyCategoryContains('o');
+
+        await expect.poll(() => customReportPage.rowNames()).toContain('Food');
+        plainORows = await customReportPage.rowNames();
+
+        await expect
+          .poll(() => customReportPage.totalSpending())
+          .not.toBeNull();
+        plainOTotal = await customReportPage.totalSpending();
+
+        // Guard: an empty reading would make the comparison below vacuous.
+        expect(plainORows.length).toBeGreaterThan(0);
+        expect(plainOTotal).not.toBeNull();
+      });
+
+      test('an embedded wildcard renders exactly what the plain value renders', async () => {
+        await customReportPage.selectMode('total');
+        await customReportPage.selectViz('Data Table');
+        await customReportPage.showSummaryButton.click();
+
+        await applyCategoryContains('o%');
+
+        // On the data side 'o%' narrows - it is an ordinary pattern - so it is
+        // NOT required to render every category. It IS required to agree with
+        // the query, and the query is identical to the one 'o' builds.
+        await expect
+          .poll(() => customReportPage.rowNames())
+          .toEqual(plainORows);
+        await expect
+          .poll(() => customReportPage.totalSpending())
+          .toBe(plainOTotal);
+      });
+
+      test("'all of' with an embedded wildcard still narrows the axis", async () => {
+        // The negative control, aimed at the over-correction: a fix that made
+        // every text condition a no-op would pass the two money cases above and
+        // fail this one. "Show empty rows" is on, so every category the axis
+        // keeps renders whether or not it has spending - which makes the set
+        // exactly checkable against the names in the demo budget.
+        await customReportPage.selectMode('total');
+        await customReportPage.selectViz('Data Table');
+
+        await page
+          .getByRole('button', { name: 'Options', exact: true })
+          .click();
+        await page
+          .getByRole('button', { name: 'Show empty rows', exact: true })
+          .click();
+        await page.keyboard.press('Escape');
+
+        await applyCategoryContains('o');
+
+        // The demo budget's category NAMES are hard-coded, so the exact kept
+        // set is checkable: with "show empty rows" on, every category the axis
+        // keeps renders whether or not it has spending.
+        for (const kept of ['Food', 'Clothing', 'Mortgage', 'Power']) {
+          await expect(customReportPage.rows).toContainText(kept);
+        }
+        // 'Restaurants', 'Entertainment', 'Savings', 'Gift', 'General' and
+        // 'Medical' are in the demo budget and none of them contains an 'o'.
+        for (const dropped of [
+          'Restaurants',
+          'Entertainment',
+          'Savings',
+          'Gift',
+          'General',
+          'Medical',
+          'Cell',
+          'Internet',
+        ]) {
+          await expect(customReportPage.rows).not.toContainText(dropped);
+        }
+      });
+    });
+
     test('Validates that "show summary" button shows the summary', async () => {
       await customReportPage.selectViz('Bar Graph');
       await customReportPage.showSummaryButton.click();
