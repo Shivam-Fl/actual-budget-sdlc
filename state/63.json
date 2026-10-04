@@ -317,5 +317,27 @@
       }
     ],
     "pr": "64"
-  }
+  },
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 1,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6"
+    ],
+    "sha": "b46d7745684fe8d472c50a10fd418e1a95234de3",
+    "run_id": "37168677681",
+    "work_order_version": 1,
+    "at": "2026-10-04T02:15:07.612Z"
+  },
+  "qa_open_bugs": [
+    {
+      "id": "BUG-1",
+      "title": "PR #64's title lacks the mandatory [AI] prefix its own work order claims it carries"
+    }
+  ]
 }
