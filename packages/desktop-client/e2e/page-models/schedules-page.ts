@@ -65,12 +65,45 @@ export class SchedulesPage {
     await this._performNthAction(index, 'Complete');
   }
 
+  /**
+   * Does the nth-schedule's actions menu offer an item with this name?
+   */
+  async nthScheduleMenuHasItem(index: number, name: string | RegExp) {
+    const menu = await this._openNthScheduleMenu(index);
+    const has = await menu.getByRole('button', { name }).count();
+
+    await this.page.keyboard.press('Escape');
+
+    return has > 0;
+  }
+
+  /**
+   * The names of every item in the nth-schedule's actions menu.
+   */
+  async nthScheduleMenuItemNames(index: number) {
+    const menu = await this._openNthScheduleMenu(index);
+    const names = await menu.getByRole('button').allTextContents();
+
+    await this.page.keyboard.press('Escape');
+
+    return names;
+  }
+
   async _performNthAction(index: number, actionName: string | RegExp) {
-    const row = this.getNthScheduleRow(index);
-    const actions = row.getByTestId('actions');
+    const menu = await this._openNthScheduleMenu(index);
+    await menu.getByRole('button', { name: actionName }).click();
+  }
+
+  /**
+   * Open the nth-schedule's actions menu and return the menu itself, so callers
+   * read items off it rather than off the row.
+   */
+  async _openNthScheduleMenu(index: number) {
+    const actions = this.getNthScheduleRow(index).getByTestId('actions');
 
     await actions.getByRole('button').click();
-    await this.page.getByRole('button', { name: actionName }).click();
+
+    return this.page.getByRole('menu');
   }
 
   async rightClickNthSchedule(index: number) {

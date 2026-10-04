@@ -5,6 +5,47 @@ import { ConfigurationPage } from './page-models/configuration-page';
 import { Navigation } from './page-models/navigation';
 import type { SchedulesPage } from './page-models/schedules-page';
 
+/**
+ * A schedule's stored next date as a timestamp, rather than its rendered one:
+ * the table formats dates for the current locale, so only the stored value
+ * compares as a date. Throws when the schedule has no next date, which would
+ * otherwise read as "not later" rather than as a broken fixture.
+ */
+async function readScheduleNextDate(page: Page, name: string) {
+  const nextDate = await page.evaluate(async name => {
+    const $send = (
+      window as unknown as {
+        $send: <T>(type: string, args?: unknown) => Promise<T>;
+      }
+    ).$send;
+
+    const {
+      data: [schedule],
+    } = await $send<{ data: [{ next_date: string }] }>('query', {
+      table: 'schedules',
+      tableOptions: {},
+      filterExpressions: [{ name }],
+      selectExpressions: ['next_date'],
+      groupExpressions: [],
+      orderExpressions: [],
+      calculation: false,
+      rawMode: false,
+      withDead: false,
+      validateRefs: true,
+      limit: null,
+      offset: null,
+    });
+
+    return schedule?.next_date ?? null;
+  }, name);
+
+  if (nextDate === null) {
+    throw new Error(`Schedule "${name}" has no next date`);
+  }
+
+  return Date.parse(nextDate);
+}
+
 test.describe('Schedules', () => {
   let page: Page;
   let navigation: Navigation;
@@ -271,5 +312,74 @@ test.describe('Schedules', () => {
     const menu = page.getByRole('menu');
     await expect(menu).toBeVisible();
     await expect(menu.getByRole('button', { name: 'Complete' })).toBeVisible();
+  });
+
+  test('hides skip on a one-off schedule and offers it on a recurring one', async () => {
+    // A one-off has no next occurrence, so skipping it moved the date nowhere.
+    const oneOffModal = await schedulesPage.addNewSchedule();
+    await oneOffModal.fill({
+      scheduleName: 'Home Depot once',
+      payee: 'Home Depot',
+      account: 'HSBC',
+      amount: 25,
+    });
+    await oneOffModal.uncheckRepeats();
+    await oneOffModal.add();
+
+    const recurringModal = await schedulesPage.addNewSchedule();
+    await recurringModal.fill({
+      scheduleName: 'Apple monthly',
+      payee: 'Apple',
+      account: 'HSBC',
+      amount: 5,
+    });
+    await recurringModal.add();
+
+    // Located by payee rather than by index, so neither assertion can drift onto
+    // the wrong row if the fixture's schedule count changes.
+    const oneOffRow = schedulesPage.schedulesTableRow.filter({
+      hasText: 'Home Depot',
+    });
+    const recurringRow = schedulesPage.schedulesTableRow.filter({
+      hasText: 'Apple',
+    });
+    await expect(oneOffRow).toHaveCount(1);
+    await expect(recurringRow).toHaveCount(1);
+
+    await oneOffRow.getByTestId('actions').getByRole('button').click();
+    await expect(
+      page
+        .getByRole('menu')
+        .getByRole('button', { name: 'Skip next scheduled date' }),
+    ).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    // The rest of its menu is untouched: a one-off is handled by completing it,
+    // not by the item that silently does nothing. Asserted by name rather than
+    // by counting the menu, which a due recurring row legitimately fills to five.
+    expect(await schedulesPage.nthScheduleMenuItemNames(2)).toEqual([
+      'Post transaction',
+      'Post transaction today',
+      'Complete',
+      'Delete',
+    ]);
+
+    // The recurring schedule still offers it: index 3 is the second added.
+    expect(
+      await schedulesPage.nthScheduleMenuHasItem(3, 'Skip next scheduled date'),
+    ).toBe(true);
+
+    const nextDateBefore = await readScheduleNextDate(page, 'Apple monthly');
+    await recurringRow.getByTestId('actions').getByRole('button').click();
+    await page
+      .getByRole('menu')
+      .getByRole('button', { name: 'Skip next scheduled date' })
+      .click();
+
+    // "Later", never a fixed date: a monthly rule started on the 31st lands on
+    // a different day depending on when the suite runs.
+    await expect
+      .poll(() => readScheduleNextDate(page, 'Apple monthly'))
+      .toBeGreaterThan(nextDateBefore);
   });
 });
