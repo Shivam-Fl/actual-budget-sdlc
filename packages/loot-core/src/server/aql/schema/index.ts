@@ -117,6 +117,7 @@ export const schema = {
     name: f('string'),
     rule: f('id', { ref: 'rules', required: true }),
     next_date: f('date'),
+    skipped_occurrences: f('json'),
     completed: f('boolean'),
     posts_transaction: f('boolean'),
     custom_upcoming_length: f('string'),
@@ -348,6 +349,7 @@ export const schemaConfig: SchemaConfig = {
               ELSE _nd.base_next_date
             END
           `,
+          skipped_occurrences: '_nd.skipped_occurrences',
           _payee: `pm.targetId`,
           _account: `json_extract(_rules.conditions, _paths.account || '.value')`,
           _amount: `json_extract(_rules.conditions, _paths.amount || '.value')`,

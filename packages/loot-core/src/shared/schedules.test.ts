@@ -279,6 +279,120 @@ describe('schedules', () => {
       // Should not crash; schedule with past end date produces its next_date entry only
       expect(result).toBeDefined();
     });
+
+    // A skipped occurrence writes no transaction, so the occurrence stamp
+    // cannot see it. The skip list is the only record that the date will not
+    // happen, and this is the only place that decides what the register lists.
+    describe('skipped occurrences', () => {
+      function makeWeeklySchedule(
+        skipped_occurrences?: string[] | null,
+      ): ScheduleEntity {
+        return {
+          id: 'sched-1',
+          rule: 'rule-1',
+          completed: false,
+          posts_transaction: false,
+          tombstone: false,
+          _payee: 'payee-1',
+          _account: 'acct-1',
+          _amount: -10000,
+          _amountOp: 'is',
+          _date: '2017-01-02',
+          _actions: [],
+          next_date: '2017-01-02',
+          skipped_occurrences,
+          _conditions: [
+            {
+              field: 'date',
+              op: 'isapprox',
+              value: { start: '2017-01-02', frequency: 'weekly' },
+            },
+          ],
+        };
+      }
+
+      const UPCOMING_DATES = [
+        '2017-01-02',
+        '2017-01-09',
+        '2017-01-16',
+        '2017-01-23',
+        '2017-01-30',
+      ];
+
+      function preview(schedule: ScheduleEntity) {
+        const statuses: ScheduleStatuses = new Map([['sched-1', 'upcoming']]);
+        return computeSchedulePreviewTransactions(
+          [schedule],
+          statuses,
+          '30-day',
+        )
+          .map(({ date }) => date)
+          .sort();
+      }
+
+      it('omits a skipped date and keeps every other occurrence', () => {
+        const result = preview(makeWeeklySchedule(['2017-01-16']));
+
+        expect(result).toEqual(
+          UPCOMING_DATES.filter(date => date !== '2017-01-16'),
+        );
+      });
+
+      it('previews exactly as before when nothing is skipped', () => {
+        // Guards the filter against the failure mode it shares with the
+        // forecast's: reading a field that is absent everywhere and quietly
+        // dropping everything.
+        expect(preview(makeWeeklySchedule())).toEqual(UPCOMING_DATES);
+        expect(preview(makeWeeklySchedule(null))).toEqual(UPCOMING_DATES);
+        expect(preview(makeWeeklySchedule([]))).toEqual(UPCOMING_DATES);
+      });
+
+      it('skips the third of five weekly occurrences and keeps the other four', () => {
+        const result = preview(makeWeeklySchedule(['2017-01-16']));
+
+        expect(result).toHaveLength(4);
+        expect(result).not.toContain('2017-01-16');
+        expect(result).toContain('2017-01-09');
+        expect(result).toContain('2017-01-30');
+      });
+
+      it('skips several occurrences at once', () => {
+        const result = preview(
+          makeWeeklySchedule(['2017-01-09', '2017-01-23']),
+        );
+
+        expect(result).toEqual(['2017-01-02', '2017-01-16', '2017-01-30']);
+      });
+
+      it('does not disturb the `paid` shift', () => {
+        // `status` describes `next_date` only, and a skip never moves
+        // `next_date`, so the shift consumes the head and a skipped date is
+        // still honoured independently of it.
+        const schedule = makeWeeklySchedule(['2017-01-16']);
+        const statuses: ScheduleStatuses = new Map([['sched-1', 'paid']]);
+        const result = computeSchedulePreviewTransactions(
+          [schedule],
+          statuses,
+          '30-day',
+        )
+          .map(({ date }) => date)
+          .sort();
+
+        expect(result).toEqual(['2017-01-09', '2017-01-23', '2017-01-30']);
+        // The head was shifted off, and the skip took one more out — neither
+        // swallowed the other.
+        expect(result).not.toContain('2017-01-02');
+        expect(result).not.toContain('2017-01-16');
+      });
+
+      it('ignores a skipped date that is not an occurrence of the recurrence', () => {
+        // A stale id from a stale register row records a date nothing matches;
+        // it must not remove a real occurrence.
+        const result = preview(makeWeeklySchedule(['2017-01-17']));
+
+        expect(result).toEqual(UPCOMING_DATES);
+      });
+    });
   });
 
   describe('getHasTransactionsQuery', () => {

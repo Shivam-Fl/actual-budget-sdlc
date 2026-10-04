@@ -29,6 +29,7 @@ type ScheduleDataBase = {
   id: string;
   name: string | null;
   next_date: string;
+  skipped_occurrences: string[];
   rule?: string | null;
   posts_transaction: boolean;
   _conditions: RuleConditionEntity[];
@@ -45,6 +46,7 @@ type RawScheduleData = {
   id: string;
   name: string | null;
   next_date: string;
+  skipped_occurrences?: string[] | null;
   rule?: string | null;
   posts_transaction?: boolean;
   _payee?: string | null;
@@ -98,6 +100,7 @@ export function normalizeSchedule(
     id: schedule.id,
     name: schedule.name,
     next_date: schedule.next_date,
+    skipped_occurrences: schedule.skipped_occurrences ?? [],
     rule: schedule.rule,
     posts_transaction: schedule.posts_transaction ?? false,
     _conditions: schedule._conditions ?? [],
@@ -203,6 +206,15 @@ export async function buildFutureScheduleOccurrences(
     const scheduleName = schedule.name ?? 'Unknown';
 
     for (const date of getFutureOccurrenceDates(schedule, endDateObj)) {
+      // An occurrence the user skipped is not going to happen, so it must not
+      // be projected into the balance either. Skipping records the date on the
+      // schedule and leaves `next_date` alone, so this list is the only place
+      // that knows — without it the register and the projected balance disagree
+      // about money the user said they are not spending. (#43)
+      if (schedule.skipped_occurrences.includes(date)) {
+        continue;
+      }
+
       if (
         isScheduleOccurrencePosted({
           schedule,

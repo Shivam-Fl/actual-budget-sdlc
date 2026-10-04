@@ -388,7 +388,7 @@ export function getNextDate(
   return null;
 }
 
-const MAX_ADVANCE_ATTEMPTS = 7;
+export const MAX_ADVANCE_ATTEMPTS = 7;
 
 export function getNextDateAfter(dateCond, afterDate: string): string | null {
   let start = d.subDays(monthUtils.parseDate(afterDate), 1);
@@ -593,8 +593,14 @@ export function computeSchedulePreviewTransactions(
       // filter subsumes the other.
       const postedTransactions =
         postedTransactionsBySchedule.get(schedule.id) ?? [];
+      // A skipped occurrence leaves no transaction behind, so the stamp above
+      // cannot see it — `schedule.skipped_occurrences` is the only record that
+      // it will not happen. Skipping never moves `next_date`, so the
+      // `status === 'paid'` shift above cannot consume a skipped occurrence.
+      const skippedDates = schedule.skipped_occurrences ?? [];
       const unpaidDates = dates.filter(
         date =>
+          !skippedDates.includes(date) &&
           !isScheduleOccurrencePosted({
             schedule,
             scheduleId: schedule.id,
