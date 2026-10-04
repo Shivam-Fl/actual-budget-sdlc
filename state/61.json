@@ -443,7 +443,33 @@
         "detail": "getByRole('menu') is unscoped, and the new `await expect(menu).toBeVisible()` is the first strict-mode assertion on it in this file's page model — the two consumers that read it (count(), allTextContents()) tolerate many matches, so the added wait is strictly narrower than the lazy locator it replaced.\n\n`packages/desktop-client/e2e/page-models/schedules-page.ts:115`\n\nEvidence: schedules-page.ts:114-115 returns this.page.getByRole('menu') after await expect(menu).toBeVisible(). Playwright's toBeVisible() resolves in strict mode and throws on multi-match; menu.getByRole('button', { name }).count() (:75) and allTextContents() (:85) do not. I checked for an existing convention and there is none to borrow: page.getByRole('menu') appears unscoped in accounts.test.ts:77/90, budget.test.ts:71/78/85, payees.test.ts:64, rules.test.ts:144, reports.test.ts:58 and schedules.test.ts:373 — every existing use is equally unscoped, so this change matches the codebase rather than departing from it.\n\nFix: Leave as is for consistency with the six other unscoped uses — the wait is still strictly better than the lazy locator it replaces. If you do scope it, scope it repo-wide in one pass rather than only here."
       }
     ],
-    "pr": "68"
+    "pr": "68",
+    "qa": [
+      {
+        "id": "BUG-1",
+        "severity": "minor",
+        "area": "Schedules page, row click handler",
+        "title": "Double-clicking a Schedules row stacks two edit modals, so one Cancel does not return the user to the list",
+        "expected": "A double-click on one Schedules row opens one schedule-edit modal, and pressing Cancel once returns to the list.",
+        "actual": "The double-click opens two stacked schedule-edit modals — two live copies of the same form for the same schedule. Pressing Cancel dismisses only the top one, leaving the second on screen, so the user must press Cancel twice.",
+        "repro": [
+          "Open a budget and go to the Schedules page",
+          "Create any schedule so a row exists",
+          "Double-click the row body",
+          "Observe two copies of the schedule edit form, each with its own Schedule Name field",
+          "Press Cancel once — a second copy of the form is still on screen"
+        ],
+        "suspected_cause": "SchedulesTable.tsx:225 puts onClick={() => onSelect(schedule.id)} on the whole row body, and Schedules/index.tsx:120 wires onSelect={onEdit}, which dispatches pushModal({modal: {name: 'schedule-edit', options: {id}}}). The pushModal reducer (modals/modalsSlice.ts:755) appends unconditionally — it special-cases only 'keyboard-shortcuts' — so the second click of the double-click pushes a second identical modal onto modalStack. Confirmed pre-existing: `git diff origin/main...HEAD -- packages/desktop-client/src/components/schedules/index.tsx` is empty for this PR, so neither the row handler nor the wiring changed here.",
+        "evidence": [
+          "qa-evidence/test-results/exploratory-T-15-double-cl-5e28c-wo-copies-of-the-edit-modal-chromium/test-failed-1.png",
+          "qa-evidence/test-results/exploratory-T-15-double-cl-5e28c-wo-copies-of-the-edit-modal-chromium/trace.zip",
+          "qa-evidence/test-results/exploratory-T-15-double-cl-5e28c-wo-copies-of-the-edit-modal-chromium/video.webm",
+          "qa-evidence/BUG-1-t15-double-click-stacks-edit-modals.md"
+        ],
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "pass",
