@@ -622,7 +622,7 @@
   "stopped_at": null,
   "dispatched_stage": "root-cause",
   "validated_from": "root-cause",
-  "validated_at": "2026-10-04T13:03:17.091Z",
+  "validated_at": "2026-10-04T15:28:36.155Z",
   "validated_ac_changes": [
     {
       "id": "AC-1",
@@ -634,9 +634,9 @@
         "verify": "test"
       },
       "now": {
-        "id": "AC-1",
         "check": "On a weekly schedule with 1 month of upcoming length, choosing Skip next scheduled date from a later Upcoming row removes that row from the register and leaves the earlier occurrences listed and still payable",
-        "how_to_verify": "Unchanged from the prior round and passing. app.test.ts: the registered handler is called with a later occurrence; next_date is unchanged, the preview loses exactly that date, and the two earlier occurrences are still present. Browser: QA T-1, T-10, T-13.",
+        "how_to_verify": "app.test.ts: the registered handler is called with a later occurrence; next_date is unchanged, the preview loses exactly that date, and the two earlier occurrences are still present. Browser equivalent in QA steps 6-7. QA confirmed pass on PR #71 (T-1, T-10, T-13).",
+        "id": "AC-1",
         "source": "IAC-1",
         "verify": "test"
       }
@@ -651,9 +651,9 @@
         "verify": "test"
       },
       "now": {
-        "id": "AC-2",
         "check": "The same skip is recorded per occurrence rather than by moving the schedule's anchor, and the record is durable",
-        "how_to_verify": "Unchanged. app.test.ts plus a browser reload (QA T-2, T-11). The browser reload is the only part no purely visual check replaces — do not skip it.",
+        "how_to_verify": "app.test.ts: next_date unchanged after skipping a later occurrence, the preview loses exactly that date, the skip survives a subsequent setNextDate that advances next_date, and the occurrence stays out across a re-read. Browser: reload the page and confirm it stays gone. QA confirmed pass on PR #71 (T-2, T-11).",
+        "id": "AC-2",
         "source": "IAC-1",
         "verify": "test"
       }
@@ -668,9 +668,9 @@
         "verify": "test"
       },
       "now": {
-        "id": "AC-3",
         "check": "On the same schedule, choosing Post transaction today from a later Upcoming row creates exactly one transaction dated today, consumes that occurrence, and leaves the earlier occurrence listed as still payable",
-        "how_to_verify": "Unchanged. app.test.ts, and browser QA T-3.",
+        "how_to_verify": "app.test.ts: posting today with a date stamps that date, the transaction's own date is today, next_date is unmoved, and the preview loses the posted occurrence but keeps the earlier one. QA confirmed pass on PR #71 (T-3).",
+        "id": "AC-3",
         "source": "IAC-2",
         "verify": "test"
       }
@@ -685,9 +685,9 @@
         "verify": "test"
       },
       "now": {
-        "id": "AC-4",
         "check": "The transaction written by Post transaction today is stamped with the occurrence that was clicked, not with the schedule's next_date, and the same occurrence posted twice writes one transaction",
-        "how_to_verify": "Unchanged. app.test.ts asserts the schedule_occurrence stamp and the single-write guard; browser QA T-6 double-dispatches the action.",
+        "how_to_verify": "app.test.ts: schedule_occurrence equals the date passed with today: true, date equals currentDay(), next_date unmoved, and a second identical call writes nothing new. QA confirmed pass on PR #71 (T-6).",
+        "id": "AC-4",
         "source": "IAC-2",
         "verify": "test"
       }
@@ -702,9 +702,9 @@
         "verify": "test"
       },
       "now": {
-        "id": "AC-5",
         "check": "Both actions still behave exactly as today when the selected row IS next_date — skip advances one step, post-today writes a transaction dated today and discharges next_date",
-        "how_to_verify": "Unchanged and passing (QA T-4, T-5). Now also covered on the display side by the new component test's head-occurrence case, since the modal header for that row must still read next_date's own date.",
+        "how_to_verify": "app.test.ts keeps the existing skipNextDate cases green and adds today-without-date. QA confirmed pass on PR #71 (T-4, T-5).",
+        "id": "AC-5",
         "source": "IAC-3",
         "verify": "test"
       }
@@ -719,9 +719,9 @@
         "verify": "test"
       },
       "now": {
-        "id": "AC-6",
         "check": "The existing tests for the post-transaction branch, for schedule preview computation, for migrations and for the forecast still pass",
-        "how_to_verify": "Run yarn workspace @actual-app/core run test in full, plus the new desktop-client modal test. This round adds no loot-core change, so the loot-core baseline should be untouched rather than newly-green. I ran yarn typecheck with the fix applied and it was clean.",
+        "how_to_verify": "yarn test from the repository root. QA confirmed pass on PR #71 (ci).",
+        "id": "AC-6",
         "source": "IAC-4",
         "verify": "test"
       }
@@ -736,9 +736,9 @@
         "verify": "test"
       },
       "now": {
-        "id": "AC-7",
         "check": "Callers that name no occurrence are unaffected: the Schedules page's Post transaction today and Skip next scheduled date, and advanceSchedulesService's auto-post, still act on next_date",
-        "how_to_verify": "Unchanged (QA T-8, T-9). The new modal fallback also has to hold for a bare schedule id, which is the same class of caller, and the new component test covers it directly.",
+        "how_to_verify": "app.test.ts: posting with no date and the pre-existing skipNextDate tests that send a bare id, unchanged and green. QA confirmed pass on PR #71 (T-8, T-9).",
+        "id": "AC-7",
         "source": "IAC-3",
         "verify": "test"
       }
@@ -753,9 +753,9 @@
         "verify": "browser"
       },
       "now": {
-        "id": "AC-8",
         "check": "The same two actions on the mobile register's scheduled-transaction menu act on the occurrence that was tapped, in all four account filters",
-        "how_to_verify": "Unchanged and passing across all four filters (QA T-14 through T-18). This criterion covers the ACTION; the modal's labelling of that occurrence is AC-11 and did not exist when this criterion was written.",
+        "how_to_verify": "At a mobile viewport open a preview row's menu and skip a later occurrence in the on-budget, off-budget and all-accounts filters; confirm the same one-occurrence change each time. QA confirmed pass on PR #71 (T-14 through T-18).",
+        "id": "AC-8",
         "source": "IAC-1",
         "verify": "browser"
       }
@@ -770,9 +770,9 @@
         "verify": "test"
       },
       "now": {
-        "id": "AC-9",
         "check": "A skipped occurrence is never auto-posted by advanceSchedulesService, whatever next-date arithmetic runs afterwards",
-        "how_to_verify": "Unchanged. app.test.ts exercises setNextDate through all three of its call shapes; browser QA T-7 and T-12.",
+        "how_to_verify": "app.test.ts: record a skip, exercise setNextDate through each of its three call shapes (advance, reset, and the bare form advanceSchedulesService's paid branch uses) and assert next_date is never the skipped date. QA confirmed pass on PR #71 (T-7, T-12).",
+        "id": "AC-9",
         "source": "IAC-1",
         "verify": "test"
       }
@@ -787,9 +787,9 @@
         "verify": "test"
       },
       "now": {
-        "id": "AC-10",
         "check": "An occurrence skipped in the register is also gone from the schedule's forecast, and a schedule with no skips forecasts exactly as before",
-        "how_to_verify": "Unchanged, proven by forecast/app.test.ts. QA recorded a coverage gap worth carrying forward rather than re-litigating: this build's account register has no forecast bar, so the browser half of this criterion is not reachable at that URL; the unit test is the authority.",
+        "how_to_verify": "forecast/app.test.ts: with a recorded skip the forecast's scheduled transactions omit that date; with none recorded the same schedule forecasts the same dates as before.",
+        "id": "AC-10",
         "source": "IAC-1",
         "verify": "test"
       }
@@ -910,5 +910,207 @@
       "run": "37204263332",
       "at": "2026-10-04T15:00:41.249Z"
     }
+  },
+  "validated_work_order": {
+    "acceptance": [
+      {
+        "check": "On a weekly schedule with 1 month of upcoming length, choosing Skip next scheduled date from a later Upcoming row removes that row from the register and leaves the earlier occurrences listed and still payable",
+        "how_to_verify": "app.test.ts: the registered handler is called with a later occurrence; next_date is unchanged, the preview loses exactly that date, and the two earlier occurrences are still present. Browser equivalent in QA steps 6-7. QA confirmed pass on PR #71 (T-1, T-10, T-13).",
+        "id": "AC-1",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "check": "The same skip is recorded per occurrence rather than by moving the schedule's anchor, and the record is durable",
+        "how_to_verify": "app.test.ts: next_date unchanged after skipping a later occurrence, the preview loses exactly that date, the skip survives a subsequent setNextDate that advances next_date, and the occurrence stays out across a re-read. Browser: reload the page and confirm it stays gone. QA confirmed pass on PR #71 (T-2, T-11).",
+        "id": "AC-2",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "check": "On the same schedule, choosing Post transaction today from a later Upcoming row creates exactly one transaction dated today, consumes that occurrence, and leaves the earlier occurrence listed as still payable",
+        "how_to_verify": "app.test.ts: posting today with a date stamps that date, the transaction's own date is today, next_date is unmoved, and the preview loses the posted occurrence but keeps the earlier one. QA confirmed pass on PR #71 (T-3).",
+        "id": "AC-3",
+        "source": "IAC-2",
+        "verify": "test"
+      },
+      {
+        "check": "The transaction written by Post transaction today is stamped with the occurrence that was clicked, not with the schedule's next_date, and the same occurrence posted twice writes one transaction",
+        "how_to_verify": "app.test.ts: schedule_occurrence equals the date passed with today: true, date equals currentDay(), next_date unmoved, and a second identical call writes nothing new. QA confirmed pass on PR #71 (T-6).",
+        "id": "AC-4",
+        "source": "IAC-2",
+        "verify": "test"
+      },
+      {
+        "check": "Both actions still behave exactly as today when the selected row IS next_date — skip advances one step, post-today writes a transaction dated today and discharges next_date",
+        "how_to_verify": "app.test.ts keeps the existing skipNextDate cases green and adds today-without-date. QA confirmed pass on PR #71 (T-4, T-5).",
+        "id": "AC-5",
+        "source": "IAC-3",
+        "verify": "test"
+      },
+      {
+        "check": "The existing tests for the post-transaction branch, for schedule preview computation, for migrations and for the forecast still pass",
+        "how_to_verify": "yarn test from the repository root. QA confirmed pass on PR #71 (ci).",
+        "id": "AC-6",
+        "source": "IAC-4",
+        "verify": "test"
+      },
+      {
+        "check": "Callers that name no occurrence are unaffected: the Schedules page's Post transaction today and Skip next scheduled date, and advanceSchedulesService's auto-post, still act on next_date",
+        "how_to_verify": "app.test.ts: posting with no date and the pre-existing skipNextDate tests that send a bare id, unchanged and green. QA confirmed pass on PR #71 (T-8, T-9).",
+        "id": "AC-7",
+        "source": "IAC-3",
+        "verify": "test"
+      },
+      {
+        "check": "The same two actions on the mobile register's scheduled-transaction menu act on the occurrence that was tapped, in all four account filters",
+        "how_to_verify": "At a mobile viewport open a preview row's menu and skip a later occurrence in the on-budget, off-budget and all-accounts filters; confirm the same one-occurrence change each time. QA confirmed pass on PR #71 (T-14 through T-18).",
+        "id": "AC-8",
+        "source": "IAC-1",
+        "verify": "browser"
+      },
+      {
+        "check": "A skipped occurrence is never auto-posted by advanceSchedulesService, whatever next-date arithmetic runs afterwards",
+        "how_to_verify": "app.test.ts: record a skip, exercise setNextDate through each of its three call shapes (advance, reset, and the bare form advanceSchedulesService's paid branch uses) and assert next_date is never the skipped date. QA confirmed pass on PR #71 (T-7, T-12).",
+        "id": "AC-9",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "check": "An occurrence skipped in the register is also gone from the schedule's forecast, and a schedule with no skips forecasts exactly as before",
+        "how_to_verify": "forecast/app.test.ts: with a recorded skip the forecast's scheduled transactions omit that date; with none recorded the same schedule forecasts the same dates as before.",
+        "id": "AC-10",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "check": "On the mobile register, opening the scheduled-transaction menu on an Upcoming row shows that row's own date in the 'Scheduled date' line — not the schedule's next date — so the date on screen is the date the action will use. Tapping the occurrence under an 'October 18, 2026' heading shows October 18, 2026 even when the schedule's next date is October 04, 2026, and choosing Post transaction today or Skip next scheduled date then affects October 18.",
+        "how_to_verify": "At a 350x700 viewport open an account register holding a weekly schedule with several Upcoming occurrences. Tap an occurrence that is NOT the schedule's next date and read the 'Scheduled date' line before choosing anything. Repeat for the head row and confirm the two differ, which is the case that was broken. QA's T-19 is exactly this check and it failed on PR #71 with 'Expected October 18, 2026, received October 04, 2026'. Unit coverage in ScheduledTransactionMenuModal.test.tsx.",
+        "id": "AC-11",
+        "verify": "browser"
+      },
+      {
+        "check": "A one-time (non-recurring) schedule's mobile menu still shows its date and still offers Mark as completed; marking it completed completes the schedule rather than any single occurrence.",
+        "how_to_verify": "Open a one-time schedule's Upcoming row at a mobile viewport. The 'Scheduled date' line shows the schedule's date, the Skip item is absent, and Mark as completed closes the schedule as a whole. This is the branch QA listed as an untested coverage gap on PR #71, and it is the case that guards the schedule-id parse this PR changes.",
+        "id": "AC-12",
+        "verify": "browser"
+      }
+    ],
+    "approach": "Resolve the displayed occurrence from the id the modal was opened with, using the helper this PR already standardised on, and keep next_date only as the fallback for the bare-id case.\n\nIn ScheduledTransactionMenuModal.tsx, import parsePreviewId from @actual-app/core/shared/transactions (the same specifier the four mobile components use), replace the hand-rolled split at line 46 with it, and derive the header date as `parsePreviewId(transactionId).date ?? schedule?.next_date`. Pass that to the existing `format(..., 'MMMM dd, yyyy', locale)` call unchanged — the preview id's date is 'YYYY-MM-DD', which `format` (shared/months.ts:442, via `_parse`) handles identically to next_date, so the rendering needs no other change. The `??` fallback matters: the modal's prop type is TransactionEntity['id'], and parsePreviewId returns no date for a bare schedule id, so a caller that ever opens this modal without an occurrence must still see next_date rather than an empty string.\n\nExtract that resolution as a small module-level exported pure function in the same file so it can be unit-tested without mounting a react-aria Dialog. Keep the component reading the function's result, so the test covers the resolver and the wiring is a single obvious call.\n\nThree things deliberately NOT changed, each because I checked and the change would be wrong:\n\n- `canBeSkipped`. It stays `scheduleIsSkippable(dateCond, schedule.next_date)`. The plausible-looking alternative — gate on the tapped occurrence's successor instead of next_date's — is unreachable in practice: preview rows only exist for occurrences that exist, so a tapped later occurrence implies next_date has a successor, and when next_date has no successor there is no later row to tap. The existing gate is correct in every state reachable from the UI.\n\n- The four mobile `onComplete` handlers, which still do `transactionId.split('/')` and send `schedule/update {completed: true}`. Marking a schedule completed is a whole-schedule action with no per-occurrence meaning, and `parts[1]` already yields the right schedule id. It is stylistically inconsistent with the line above it and that is all. QA listed it as an untested branch, not as a defect.\n\n- The server handlers and the migration. Nothing here needs a server change; the occurrence is already arriving.\n\nOn the branch's apparent revert of `scheduleIsSkippable` back to `scheduleIsRecurring` in three files: that is staleness, not a regression this PR introduced. PR #68 (fd50869) landed on main after this branch's merge commit was cut, so `git merge-base --is-ancestor fd50869 93d336b` is false. Rebasing onto current main restores it. Do not hand-edit those three files to 'fix' it, and do not let the rebase be resolved by keeping the branch's older line.",
+    "assumptions": [
+      "The modal's transactionId is a preview id at every call site today — all four mobile components push it from inside an isPreviewId branch. The bare-id fallback is therefore defensive, and is specified because the prop type permits it rather than because a caller exercises it.",
+      "The occurrence date in a preview id is 'YYYY-MM-DD', the same shape as next_date, so the existing format() call renders it identically. This is what lets the fix be one line with no change to the formatting expression.",
+      "The rebase onto current main will restore scheduleIsSkippable in the three files where this branch shows scheduleIsRecurring, resolving it in main's favour."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Pass the occurrence date into the modal as a separate option from the four mobile call sites, rather than parsing it inside the component.",
+        "rejected_because": "Duplicates a value the component already has. transactionId IS the preview id and already carries the date, and the plan deliberately standardised on parsePreviewId at every call site; adding a second channel for the same fact is how the two drifted apart in the first place. Four call sites would each need the new field and could each get it wrong."
+      },
+      {
+        "approach": "Revert the PR's change to the four mobile onSkip handlers so the modal's next_date label stays truthful.",
+        "rejected_because": "Restores the original defect to fix a label. Skipping a later occurrence would again advance next_date and take the occurrences in between with it — the exact harm issue #43 exists to remove. QA confirmed those four handlers behave correctly today (T-14 through T-18 all pass)."
+      },
+      {
+        "approach": "Add the occurrence's date to the mobile register row so the user can tell the rows apart without opening the menu.",
+        "rejected_because": "Answers a problem QA reported that the page snapshot contradicts — rows are already grouped under date headings. The modal contradicting the heading directly above the tapped row is the actual defect, and this change would leave it in place while widening the diff into the transaction list."
+      },
+      {
+        "approach": "Gate canBeSkipped on the tapped occurrence's successor instead of next_date's, now that skip acts on the tapped occurrence.",
+        "rejected_because": "Unreachable in practice. Preview rows exist only for occurrences the recurrence produces, so a tapped later occurrence implies next_date has a successor; and when next_date has no successor there is no later row to tap. The existing gate is correct in every state the UI can reach, so the change would be motion without effect."
+      },
+      {
+        "approach": "Hand the branch's scheduleIsRecurring lines in ScheduledTransactionMenuModal, SelectedTransactionsButton and useTransactionRowContextActions back to scheduleIsSkippable as part of this fix.",
+        "rejected_because": "That is PR #68's change and it arrives by rebasing onto main, which already has it — fd50869 is simply not an ancestor of this branch's merge commit. Editing the files by hand would put this PR in conflict with #68's own release note and risk resolving the rebase the wrong way."
+      }
+    ],
+    "confidence": 84,
+    "confidence_rationale": "High on the fix itself: I read the exact line QA identified, confirmed the occurrence is already available to that component through a helper this PR standardised on, and swept every other next_date read in desktop-client/src to establish the modal is the only display site — eleven others are schedule-level surfaces that act on bare ids and are correct. The residual uncertainty is test plumbing, not diagnosis: ScheduledTransactionMenuModal renders inside a react-aria Dialog and calls useModalState (redux) and useHotkeysContext (react-hotkeys-hook), and no existing test in the repo mounts a react-aria Dialog. If the render case cannot mount, the exported pure resolver still gives a regression test that fails against current code, and the browser criterion AC-11 covers the wiring independently. I could not execute anything to confirm either path, since this checkout has no node_modules.",
+    "debate_summary": "The previous plan's diagnosis held up: QA passed all ten original criteria, so the server/transport fix worked. What failed was the file sweep, which enumerated every site that sends an occurrence and omitted the one that displays one. New plan keeps the working fix, adds the omitted file, and adds two browser criteria (AC-11 for the label, AC-12 for the one-time-schedule branch QA never exercised).",
+    "evidence": [
+      "Read, not run: ScheduledTransactionMenuModal.tsx:84 formats `schedule?.next_date` into the 'Scheduled date' Text, while onPost (AccountTransactions.tsx:196-204) sends `date` from parsePreviewId(transactionId) to schedule/post-transaction and onSkip sends the same to schedule/skip-next-date. The header and the action read different sources.",
+      "Read: ScheduledTransactionMenuModal.tsx:46 hand-parses `transactionId?.split('/')?.[1]`, which returns undefined for a bare schedule id — the same pattern this PR removed from the four mobile components.",
+      "Read: parsePreviewId (loot-core/src/shared/transactions.ts:26-38) returns {scheduleId, date} for 'preview/<id>/<date>' and {scheduleId} with no date for a bare id; its behaviour is already covered by four cases in shared/transactions.test.ts:38-70, so the fallback behaviour this fix relies on is tested.",
+      "Read: format (loot-core/src/shared/months.ts:442) delegates to date-fns format via _parse, which splits 'YYYY-MM-DD' into year/month/day and builds the Date at hour 12 — so a preview id's date renders through the existing expression unchanged.",
+      "Read: grep for next_date across packages/desktop-client/src returns eleven rendered reads other than the modal — SchedulesTable:178/252/347, SchedulesListItem:117/123, MobileSchedulesPage:68, RuleEditor:434, useCategoryScheduleGoalTemplateIndicator:59-130, useCategoryPreviewTransactions:38, util/schedule.ts:215/217, useSchedules.ts. All are schedule-level surfaces reached with a bare schedule id, so none names an occurrence and none can disagree with an action.",
+      "Read: git diff main 93d336b shows the modal file changed by this PR only in its canBeSkipped line — the 'Scheduled date' render at line 84 is untouched by the PR, which is why the header survived the fix.",
+      "QA evidence, not mine: T-19 failed with 'Expected substring: October 18, 2026 / Received string: October 04, 2026' after tapping preview id '.../2026-10-18' on a schedule whose next_date is 2026-10-04; T-19-modal-says-head.png shows the modal reading 'Scheduled date October 04, 2026'.",
+      "QA evidence, not mine: the Playwright page snapshot in error-context.md shows the mobile register grouping rows under date headings ('group \"October 25, 2026\"'), which corrects QA's statement that the row prints no date and nothing on screen distinguishes the occurrences.",
+      "Read: git merge-base --is-ancestor fd50869 93d336b is false, so this branch's use of scheduleIsRecurring in place of scheduleIsSkippable is staleness against PR #68 rather than a regression this PR introduced.",
+      "Read: the ledger on sdlc-state for issue #43 records work_order_version 1 and implemented_version 1, so bump-version will set this work order to 2; work-order.json is written without a version key, as instructed.",
+      "Read: `node .sdlc/bin/check-forbidden.mjs --file work-order.json` reports 'no forbidden paths (6 checked)' and `check-split-criteria.mjs` reports 'issue #43: every split criterion is answered or deferred'; loading the work order through .sdlc/bin/lib/artifact.js returns ok with no errors and no repairs once `version` is present. preflight's only complaint is the absent `version`, which .sdlc/bin/bump-version.mjs sets from the ledger."
+    ],
+    "files": [
+      {
+        "action": "edit",
+        "change": "Import parsePreviewId from '@actual-app/core/shared/transactions'. Add an exported module-level function that takes the modal's transactionId and the schedule's next_date and returns parsePreviewId(transactionId).date ?? next_date. Use parsePreviewId(transactionId).scheduleId in place of the `transactionId?.split('/')?.[1]` at line 46, and render the new function's result in the 'Scheduled date' Text at line 84. Everything else — the Menu, canBeSkipped, canBeCompleted, the three callbacks — is untouched.",
+        "path": "packages/desktop-client/src/components/modals/ScheduledTransactionMenuModal.tsx",
+        "why": "BUG-1. The only display site in the codebase that names an occurrence, and the one file the previous plan's file sweep omitted."
+      },
+      {
+        "action": "create",
+        "change": "New unit test. One case reproduces BUG-1 exactly: given transactionId 'preview/schedule-abc/2026-10-18' and next_date '2026-10-04', the displayed date is October 18, 2026, not October 04, 2026 — this fails against the current code, which returns next_date. Cases for the two neighbours: a bare schedule id with no occurrence falls back to next_date, and a preview id whose occurrence IS next_date returns that same date unchanged. A render case asserting the modal's header text is included if the Dialog mounts in jsdom; see risks.",
+        "path": "packages/desktop-client/src/components/modals/ScheduledTransactionMenuModal.test.tsx"
+      },
+      {
+        "action": "edit",
+        "change": "Extend the existing note with one clause: the mobile menu's 'Scheduled date' line now names the occurrence you tapped rather than the schedule's next date. Same file, same category and authors — no new note.",
+        "path": "upcoming-release-notes/schedule-actions-affect-the-occurrence-you-clicked.md"
+      }
+    ],
+    "issue": 43,
+    "kind": "bug",
+    "mode": "committed",
+    "out_of_scope": [
+      "Undo of a recorded skip. skip-next-date is wrapped in undoable() and QA exercised double-dispatch (T-6, T-11) but never pressed undo on PR #71.",
+      "The four mobile onComplete handlers' hand-rolled split('/'). Marking a schedule completed has no per-occurrence meaning and parts[1] already yields the right schedule id; QA recorded this as an untested branch, not a defect.",
+      "Restoring scheduleIsSkippable in the three files where this branch shows scheduleIsRecurring — that is PR #68's change and arrives with the rebase onto main."
+    ],
+    "qa_script": [
+      "Create a weekly $100 schedule 'QA Paycheck' on an on-budget account with a 1 month upcoming length, so the register previews 10/04, 10/11, 10/18, 10/25 and 11/01 and next_date is 10/04.",
+      "At a 350x700 viewport open that account's register and tap the row grouped under 'October 18, 2026'. Read the 'Scheduled date' line: it must read October 18, 2026. Close the menu without choosing anything.",
+      "Repeat on the row grouped under 'October 11, 2026': the line must read October 11, 2026. This is AC-11 — the two rows are indistinguishable in the register body, so reading the modal twice is what proves the label tracks the tap.",
+      "Tap the head row (the Due occurrence, 10/04) and confirm the line reads October 04, 2026 — unchanged from before this PR.",
+      "From the October 18 row choose Skip next scheduled date. Confirm October 18 leaves the register and 10/04, 10/11, 10/25 and 11/01 remain, with 10/04 still Due.",
+      "Open the menu on a one-time schedule's row and confirm the date renders, Skip is absent and Mark as completed is present. Mark it completed and confirm the whole schedule closes. This is AC-12."
+    ],
+    "reproduced": false,
+    "residual_risks": [
+      "skipped_occurrences lives on schedules_next_date, a synced table, and no sync server runs in the QA environment. Concurrent edits to one schedule from two devices — the shape most likely to lose a skip — is still untested, as it was on PR #71. This fix does not touch it.",
+      "Existing budgets upgraded by the new migration are untested end to end: every QA fixture began from a freshly created demo budget, so skipped_occurrences was always its NULL default. The ALTER TABLE path is covered by migrations.test.ts and additive-migrations.test.ts in CI, but no fixture has read a skip back off a schedule that pre-dates the migration.",
+      "The e2e mobile register has no existing coverage of the scheduled-transaction menu, so the browser half of AC-11 rests on QA's own script rather than on a committed Playwright test.",
+      "AC-12's Mark-as-completed path is unchanged code that QA flagged as untested rather than broken; if it fails, that is a pre-existing defect surfaced by a new criterion, not a regression from this work order."
+    ],
+    "risks": [
+      "The test's render case depends on ScheduledTransactionMenuModal mounting under jsdom, which is unverified: it renders a react-aria-components Dialog and calls useModalState and useHotkeysContext, and no test in this repo mounts a react-aria Dialog. The pure-resolver test is the named floor so this cannot stall the attempt.",
+      "AC-12's Mark-as-completed path is unchanged code that QA flagged as untested rather than broken; if it fails, that is a pre-existing defect surfaced by a new criterion, not a regression from this work order."
+    ],
+    "root_cause": "ScheduledTransactionMenuModal.tsx:84 formats `schedule?.next_date` into the modal's 'Scheduled date' header, while the same component's onPost/onSkip callbacks dispatch the occurrence parsed from `transactionId` (`preview/<scheduleId>/<occurrence>`) to schedule/post-transaction and schedule/skip-next-date. This PR moved the dispatch off next_date and left the header on it, so the modal names the schedule's earliest unpaid occurrence while acting on the tapped one. The occurrence was available to the component — parsePreviewId(transactionId).date — and was never read there. Line 46 compounds it by hand-parsing `transactionId?.split('/')?.[1]` for the schedule id instead of using the same helper, which yields undefined for a bare schedule id.",
+    "tests": [
+      {
+        "action": "create",
+        "cases": [
+          "the Scheduled date line names the tapped occurrence, not next_date — preview id 'preview/schedule-abc/2026-10-18' with next_date '2026-10-04' displays October 18, 2026; this is the QA failure, reproduced, and it fails against the current code",
+          "the schedule id is read with parsePreviewId, so a bare 'schedule-abc' yields the schedule itself rather than the undefined that split('/')[1] returns",
+          "a bare schedule id with no occurrence falls back to next_date, so a caller opening the modal without an occurrence still sees the schedule's next date",
+          "a preview id whose occurrence is next_date returns that date unchanged — the head-row case must render exactly as it does today",
+          "render the component and assert the header reads the tapped occurrence's date, proving the resolver is wired into the component and not merely correct in isolation"
+        ],
+        "path": "packages/desktop-client/src/components/modals/ScheduledTransactionMenuModal.test.tsx"
+      },
+      {
+        "action": "edit",
+        "cases": [
+          "no new cases required — parsePreviewId's existing suite already covers the preview id, the bare id and the date-less preview id this fix relies on; re-run it unchanged"
+        ],
+        "path": "packages/loot-core/src/shared/transactions.test.ts"
+      }
+    ],
+    "understanding": "The previous plan's root_cause was CORRECT and its fix worked: QA passed all ten acceptance criteria, and the mechanism it described (onScheduleAction dropping `date`, and the two server handlers ignoring it) is exactly what was wrong. What it got wrong was the sweep. Its `files[]` listed every site that SENDS an occurrence — Account.tsx and the four mobile onSkip handlers — and omitted the one site that DISPLAYS one. ScheduledTransactionMenuModal.tsx was never on the list, so the PR moved the action off next_date and left the label on next_date. That is the whole of BUG-1, and it is an omission in the file inventory rather than a wrong premise, so the fix is a correction to a correct plan and not a re-roll of a wrong one.\n\nThe defect is at ScheduledTransactionMenuModal.tsx:84, which formats `schedule?.next_date` into the modal's 'Scheduled date' line while the modal's own callbacks fire `schedule/post-transaction` and `schedule/skip-next-date` with the occurrence parsed out of `transactionId`. The occurrence was in that component's hands the whole time: `transactionId` is the preview id `preview/<scheduleId>/<occurrence>`, and `parsePreviewId` — already imported by the four sibling components this PR edited, and already unit-tested in shared/transactions.test.ts — returns both halves. Before this PR the label and the action agreed by coincidence, because both read next_date. The PR broke the coincidence on the write side only.\n\nI swept every `next_date` read in desktop-client/src that feeds rendered output. The other eleven are all schedule-level surfaces that legitimately mean next_date — SchedulesTable, SchedulesListItem, MobileSchedulesPage, RuleEditor, the category-goal indicator, util/schedule.ts — and all of them act on a bare schedule id, so they are correct. The mobile context menus in SelectedTransactionsButton and useTransactionRowContextActions render no date at all. The modal is the only display site in the codebase, so this is a one-site fix and the sweep does not need repeating.\n\nOne correction to QA's account of the symptom, because it changes how the criterion should be phrased: the mobile register row does not print a date, but rows are grouped under date headers — the row the test tapped sits under an 'October 18, 2026' group heading. So the user is not left with no way to tell the occurrences apart; the modal actively contradicts the heading directly above the row they tapped. The defect is a false statement in the confirmation surface, not an absence of information. That is why the criterion is about the modal naming the right occurrence, not about adding a date to the row.\n\nI did not reproduce this in a browser. There are no node_modules in this checkout and no preview server, so I confirmed the defect by reading the code at the line QA identified and by reading its screenshot and page snapshot; every observation in `evidence` is labelled with which of those it rests on.",
+    "unknowns": [
+      "Whether ScheduledTransactionMenuModal mounts under jsdom. It renders a react-aria-components Dialog and calls useModalState (needs a redux store, available via TestProviders) and useHotkeysContext (react-hotkeys-hook, which no existing test exercises outside a provider). No test in the repo currently mounts a react-aria Dialog. The work order names the pure-resolver test as the floor and the render test as the addition, so an implementer who cannot mount the Dialog delivers the former rather than stalling.",
+      "Whether 'Mark as completed' on a one-time schedule behaves correctly in the browser. QA explicitly did not test this branch on PR #71 and recorded it as a coverage gap; AC-12 now asks for it. The code path is unchanged by this PR, so it is expected to pass, but it is unverified."
+    ],
+    "version": 2
   }
 }
