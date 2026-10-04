@@ -277,7 +277,7 @@
     "decided_at": "2026-10-03T21:40:12.984Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "implement",
+  "dispatched_stage": "review",
   "failure_packet": {
     "issue": 58,
     "head": null,
