@@ -119,6 +119,221 @@
   "stopped_at": null,
   "dispatched_stage": "plan",
   "validated_from": "plan",
-  "validated_at": "2026-10-04T11:02:43.849Z",
-  "validated_ac_changes": []
+  "validated_at": "2026-10-04T12:00:49.369Z",
+  "validated_ac_changes": [],
+  "validated_work_order": {
+    "issue": 74,
+    "version": 4,
+    "mode": "committed",
+    "kind": "chore",
+    "confidence": 88,
+    "confidence_rationale": "Every claim checked against the source at a named line; the objection that sank the last plan was verified as correct rather than argued with (trigger renders the `value` prop, onSave/Apply is the only write-back). Independently confirmed the demo budget has no exhausted recurrence, that getRecurringDescription emits 'once' at endOccurrences === 1, and that the pre-#68 fixture shape differs. The single product change is a one-token reducer swap with an existing reducer and a single caller. Residual risk concentrates in the e2e fixture.",
+    "understanding": "Issue #74 collects eight leftovers from PR #68 (for #61): seven non-blocking review findings plus one QA finding. Seven of the eight are test and test-helper work; one is a product defect.\n\nThe seven review findings are one thing seen from seven sides — a hole in the coverage of #61's fix. Hiding Skip on an exhausted recurrence shipped with a test that cannot fail without it: the reviewer reverted all four scheduleIsSkippable call sites to scheduleIsRecurring and `playwright test schedules.test.ts -g \"hides skip\"` still passed (1 passed, 23.4s). Neither e2e fixture is the discriminating input. The one-off fixture's date condition is a plain date, so scheduleIsRecurring was already false for it (that was #59's fix); the recurring fixture is a plain never-ending monthly, for which getNextDateAfter returns a date under both predicates. The only input where the two disagree is a recurrence whose endMode is after_n_occurrences and whose count is already reached. Around that hole the review found ~50 lines of test that assert a regex still matches literals declared beside it, a console assertion covering only the add path, three method names that describe half their contract, and one fixture hoisted out of the describe block that owned it.\n\nThe QA finding is separate and pre-existing. SchedulesTable.tsx:225 puts onClick={() => onSelect(schedule.id)} on the whole row body, Schedules/index.tsx:28-35 wires onSelect={onEdit}, and onEdit dispatches pushModal. pushModal (modalsSlice.ts:755) appends unconditionally — it special-cases only 'keyboard-shortcuts' — while replaceModal (:769) sets modalStack = [modal]. So the second click of a double-click pushes a second identical schedule-edit onto the stack. Modals.tsx:268 renders one ScheduleEditModal per stack entry, so two live copies mount and one Cancel pops only one.\n\nNo decision from a person is outstanding: plan/brief.md records none, and the repo already ships both halves of the fix (the two predicates, and a replaceModal reducer for exactly this stacking problem).\n\nON THE PRE/POST-APPLY SPLIT, which the last review rejected the plan over. I verified the objection against the source and it is correct. RecurringSchedulePicker.tsx:632 renders `{value ? recurringDescription : t('No recurring date')}`, where recurringDescription is memoised on [locale, value, dateFormat] (:612-615). `value` is fields.date (ScheduleEditForm.tsx:261) and is updated only through the picker's onChange, which is called from exactly one place — onSave (:607-609), wired to Apply at :579. Everything before Apply is local to the tooltip: updateField/change-field mutate the tooltip's own reducer (:405-407), the re-seed effect reads the same unchanged currentConfig (:396-401), and the get-upcoming-dates preview only sets previewDates (:410-421). So while the popover is open the trigger still renders the PRE-change value. This plan therefore asserts the 'once' description AFTER Apply, and, separately, asserts the pre-Apply state as its own case: the trigger still reads 'Every month on the 4th' with no ', once' suffix while the popover is open. The singular 'occurrence' label at :461 is a different control, rendered only while the popover is open, and is not what the trigger ever shows.",
+    "root_cause": "Two independent causes. (1) Coverage, not code: the e2e fixtures are not the input where scheduleIsSkippable and scheduleIsRecurring disagree, and the unit tests call the predicate directly so they pass whatever the call sites do. (2) Stack discipline: the row's onSelect is a modal opener and uses the appending reducer (pushModal) where the replacing one (replaceModal) belongs; onEdit is the only schedule-edit push on the page, so the two were indistinguishable until a user clicked twice.",
+    "approach": "Seven edits in dependency order. (1) Add data-testid=\"recurrence-description\" to the picker's trigger Button (RecurringSchedulePicker.tsx:627-633) — the only handle a test has on the end-mode popover. (2) Add setRecurrenceEndAfterOccurrences(occurrences?) to the schedule-edit-modal page model: open the trigger by testid, pick 'for' in #repeat_end_dropdown, and assert #end_occurrences reads '1' rather than typing into it, because the field is uncontrolled and typing would deliver the string '1' that the popover's singular label accidentally depends on. It does not click Apply — the caller applies, because the post-Apply trigger assertion is the caller's. (3) Extend the 'hides skip' e2e test with a third schedule built through the UI: Repeats, end mode 'for' occurrences 1, Apply, Add — seeded to start today, so it is Due and exhausted, which is the only discriminating input. Assert its menu is ['Post transaction', 'Post transaction today', 'Complete', 'Delete'] with no Skip, while the never-ending monthly keeps Skip; locate rows by payee, not index. Restart is excluded from the contrast (SchedulesTable.tsx:196 hides it for every non-completed row). (3a) Two trigger-text assertions, in order, for a stated reason: BEFORE Apply the trigger still reads 'Every month on the 4th' with no ', once' (pins the write-back boundary); AFTER Apply it reads 'Every month on the 4th, once'. The second cannot be asserted before Apply — the trigger renders the `value` prop and Apply is the only write-back. Never assert 'occurrence' on the trigger; that label is the popover's own. (4) Delete REACT_INPUT_WARNING_PROBES, the alternatives loop and the trailing page.evaluate; keep reactInputWarning, CONSOLE_SETTLE_MS, watchReactInputWarnings, the drain and the assertion — that guard is load-bearing. (5) Drive the edit path inside the watched window so the `fields.name ?? null` seed at useScheduleEdit.ts:119 is exercised. (6) Add the double-click test: two clicks, exactly one schedule-edit-modal, Cancel once, table visible. (7) Rename only the three page-model methods that widened to `number | Locator`; leave the six that still take an index alone. Add editSchedule(row). Leave getByRole('menu') unscoped, matching the seven other unscoped uses. (8) Restore weeklyOnSaturday verbatim inside describe('getNextDateAfter') and give describe('scheduleIsSkippable') its own RuleConditionEntity factory. (9) onEdit dispatches replaceModal; onAdd/onDiscover/onChangeUpcomingLength and ScheduleEditModal's edit-rule push keep pushModal. (10) A release note for the one user-visible change.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/schedules/index.tsx",
+        "action": "edit",
+        "change": "In the onEdit callback (:28-35), dispatch replaceModal({ modal: { name: 'schedule-edit', options: { id } } }) instead of pushModal, and add replaceModal to the existing modalsSlice import. onAdd (:38), onDiscover (:42) and onChangeUpcomingLength (:46) keep pushModal. ScheduleEditModal's own onEditRule push stays put.",
+        "why": "The QA defect in one line: pushModal appends unconditionally and replaceModal sets modalStack = [modal]. onEdit is reached from the row-wide onClick, so a double-click pushes the same modal twice and Cancel removes only one."
+      },
+      {
+        "path": "packages/desktop-client/src/components/select/RecurringSchedulePicker.tsx",
+        "action": "edit",
+        "change": "Add data-testid=\"recurrence-description\" to the trigger Button at :627-633, the one rendering `value ? recurringDescription : t('No recurring date')`. Nothing else changes — no text, no class, no behaviour, no id.",
+        "why": "The end-mode controls live in a popover reachable only from this button, and an anonymous Button gives a test no stable handle."
+      },
+      {
+        "path": "packages/desktop-client/e2e/page-models/schedule-edit-modal.ts",
+        "action": "edit",
+        "change": "Add setRecurrenceEndAfterOccurrences(occurrences?: number): click getByTestId('recurrence-description'), click #repeat_end_dropdown, click the option whose exact name is 'for' inside the menu that opens, then when occurrences is given fill #end_occurrences and otherwise expect it to have value '1'. Do NOT click Apply. The existing fill() needs no change — it already skips an absent scheduleName.",
+        "why": "Leaving the seeded 1 untouched keeps the fixture off the uncontrolled-field path, where onChangeValue would deliver the string '1' that the popover's singular label currently depends on by accident."
+      },
+      {
+        "path": "packages/desktop-client/e2e/page-models/schedules-page.ts",
+        "action": "edit",
+        "change": "Rename nthScheduleMenuHasItem → scheduleMenuHasItem, nthScheduleMenuItemNames → scheduleMenuItemNames, _openNthScheduleMenu → openScheduleMenu, updating their internal uses and the two external call sites (schedules.test.ts:415, :425, both already passing Locators). Leave getNthScheduleRow, getNthSchedule, postNthSchedule, completeNthSchedule, rightClickNthSchedule and _performNthAction as they are. Add editSchedule(row: number | Locator) returning a ScheduleEditModal. Leave getByRole('menu') unscoped.",
+        "why": "Only the three widened methods have names describing half their contract; the other six still take an index. Finding 7 asks for consistency with the seven other unscoped menu uses, or a repo-wide pass."
+      },
+      {
+        "path": "packages/desktop-client/e2e/schedules.test.ts",
+        "action": "edit",
+        "change": "(a) Extend 'hides skip...': register the watcher; create the one-off, the never-ending monthly, then a third through the UI with a distinct payee and no name. WHILE the popover is open assert the trigger still reads 'Every month on the 4th' with no ', once'; AFTER Apply assert it reads 'Every month on the 4th, once'. Never assert 'occurrence' on the trigger. Locate rows by payee; assert the exhausted row's menu lacks Skip and the monthly's has it. (b) Open the nameless schedule for editing via editSchedule, assert the modal, cancel — inside the watched window. (c) Delete REACT_INPUT_WARNING_PROBES, the alternatives loop and the page.evaluate probe; keep the regex, settle constant, watcher, drain and assertion. (d) Add a test double-clicking a row body, asserting exactly one schedule-edit-modal, Cancel once, table visible.",
+        "why": "(a) is the coverage the reviewer demonstrated the test lacks. The two trigger assertions are separated because the pre-Apply one cannot hold the post-Apply string — the trigger renders the `value` prop and only onSave writes it back. (c) is ~50 lines proving a regex matches literals declared beside it. (d) is QA's finding, now checkable."
+      },
+      {
+        "path": "packages/loot-core/src/shared/schedules.test.ts",
+        "action": "edit",
+        "change": "Move weeklyOnSaturday and its calendar comment back inside describe('getNextDateAfter') (:961), restoring the pre-#68 shape exactly: no return-type annotation, no field key, inferred object literal. Give describe('scheduleIsSkippable') its own local factory annotated RuleConditionEntity, carrying field: 'date' because scheduleIsSkippable's parameter type requires it. Behaviour and every existing assertion unchanged.",
+        "why": "Finding 5: #68 mutated a shared fixture in a ticket that did not ask for it. getNextDateAfter's parameter is untyped and reads only .op and .value, so a wrong key would have gone unnoticed — which is the reason to restore rather than keep."
+      },
+      {
+        "path": "upcoming-release-notes/double-click-schedules-row-opens-one-modal.md",
+        "action": "create",
+        "change": "A short Bugfixes note with `category: Bugfixes` and `authors: [Shivam-Fl]` front matter: double-clicking a Schedules row opened two stacked copies of the edit form, so one Cancel left the second on screen; the row now replaces any modal it opens.",
+        "why": "The modal fix is the only user-visible change in this ticket; the test and page-model work ships no behaviour."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/e2e/schedules.test.ts",
+        "action": "edit",
+        "cases": [
+          "an exhausted recurrence (Repeats, end mode 'for', occurrences 1, seeded to start today) offers no Skip in its actions menu, while a never-ending monthly schedule still offers it",
+          "while the picker's popover is open and before Apply, the trigger still reads 'Every month on the 4th' with no ', once' suffix",
+          "after Apply, the trigger reads 'Every month on the 4th, once' — never the singular 'occurrence' label, which only the open popover renders",
+          "opening the exhausted schedule for editing and cancelling again adds no React uncontrolled/controlled input warning",
+          "no React input warning of either shape is logged while the add and edit paths are driven, with the probe constants and the page.evaluate self-check removed",
+          "double-clicking a Schedules row body leaves exactly one schedule-edit-modal visible, and one Cancel returns to the schedules table"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/shared/schedules.test.ts",
+        "action": "edit",
+        "cases": [
+          "every existing getNextDateAfter case runs against the restored, unannotated weeklyOnSaturday with no field key",
+          "the scheduleIsSkippable block uses its own RuleConditionEntity factory and keeps its existing expectations for a one-occurrence rule, a two-occurrence rule and a null nextDate"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "A schedule whose recurrence has ended — Repeats checked, end mode 'for' with occurrences 1, starting today — offers no Skip in its actions menu, while a schedule that repeats indefinitely still offers Skip.",
+        "verify": "browser",
+        "source": "TR-1",
+        "how_to_verify": "Boot the app (yarn start), open http://localhost:3001, load the demo budget, go to Schedules. The demo budget already contains one never-ending monthly schedule; keep it as the Skip-present half. CREATE the subject — it has no exhausted recurrence, so do not go looking for one: 'Add new schedule', Payee 'QA exhausted', pick an account, Amount 1, tick 'Repeats'. Click the recurring-date button (reads 'Every month on the 4th'). While the popover is open, confirm the button still reads 'Every month on the 4th' with no ', once'. Set the end dropdown to 'for'; occurrences already shows 1 and the label beside it reads 'occurrences' (the popover's own label, expected). Click Apply — the button must NOW read 'Every month on the 4th, once'. Click Add. The new row's menu offers Post transaction, Post transaction today, Complete, Delete — no Skip. For contrast, the pre-existing never-ending monthly does offer Skip. Restart is absent from both menus and proves nothing."
+      },
+      {
+        "id": "AC-2",
+        "check": "After Apply, the recurring-date trigger shows the one-occurrence wording ('Every month on the 4th, once'), and while the popover is open and before Apply it does not.",
+        "verify": "browser",
+        "source": "TR-2",
+        "how_to_verify": "Follow AC-1's steps in the same session and read the button at both moments: open the popover and read it (no ', once'), click Apply and read it again (', once'). Never assert that this button reads 'occurrence' — the singular label belongs to the occurrences field inside the popover, which renders only while it is open."
+      },
+      {
+        "id": "AC-3",
+        "check": "Double-clicking a Schedules row opens one schedule-edit modal, and a single Cancel returns to the schedules list.",
+        "verify": "browser",
+        "source": "TR-6",
+        "how_to_verify": "Boot the app, load the demo budget, go to Schedules. Double-click the body of any schedule row (the text area, not the actions menu button in the rightmost cell). Exactly one copy of the schedule edit form is on screen — one 'Schedule name' field. Press Cancel once: the modal is gone and the table is fully visible. Before the fix two stacked copies appear and one Cancel still shows a form."
+      },
+      {
+        "id": "AC-4",
+        "check": "The edit modal for a schedule with no stored name renders without a React uncontrolled-to-controlled input warning, on the edit path as well as the add path.",
+        "verify": "browser",
+        "source": "TR-7",
+        "how_to_verify": "On the demo budget, create a schedule leaving 'Schedule name' empty (a payee and an amount are enough). Click that row to open it for editing: the Name field is empty, and the browser console logs neither 'A component is changing an uncontrolled input to be controlled' nor 'value prop on an input should not be null'. This is a dev-build warning, so read the console on the yarn start dev server. The same journey is automated in schedules.test.ts, whose watchReactInputWarnings collector must still be in place after the probe self-check is removed."
+      },
+      {
+        "id": "AC-5",
+        "check": "The loot-core schedule unit tests still pass after weeklyOnSaturday is restored inside describe('getNextDateAfter') and describe('scheduleIsSkippable') gets its own RuleConditionEntity factory.",
+        "verify": "test",
+        "source": "TR-5",
+        "how_to_verify": "Run `yarn workspace @actual-app/core run test`. Every getNextDateAfter case and every scheduleIsSkippable case passes unchanged. This is the one acceptance criterion CI itself runs (root `yarn test` reaches it through lage), which is why it is stated as behaviour rather than as a property of the diff."
+      }
+    ],
+    "qa_script": [
+      "Boot: yarn start, open http://localhost:3001, choose \"Don't use a server\" then \"View demo\".",
+      "Go to Schedules. Note the one pre-existing schedule (a never-ending monthly) — the Skip-PRESENT control, not the subject.",
+      "Click 'Add new schedule'. Payee 'QA exhausted', pick an account, Amount 1, 'Schedule name' left empty (also covers AC-4).",
+      "Tick 'Repeats'. Click the recurring-date button, which reads 'Every month on the 4th'.",
+      "With the popover open and before touching anything, re-read the button: still 'Every month on the 4th', no ', once'. This is the pre-Apply state, the boundary the picker only crosses on Apply.",
+      "In the popover set the end dropdown from 'indefinitely' to 'for'. Leave occurrences at 1. Click Apply.",
+      "Re-read the button: it must read 'Every month on the 4th, once' — 'once', not 'occurrence'. The singular label only appears beside the occurrences field inside the open popover.",
+      "Click Add. The new row appears, Due, next date today.",
+      "Open the new row's actions menu: Post transaction, Post transaction today, Complete, Delete — and no Skip. Restart being absent is expected on every non-completed row.",
+      "Open the actions menu on the pre-existing never-ending monthly schedule: Skip must be present. That contrast is AC-1.",
+      "Open the console: no 'A component is changing an uncontrolled input to be controlled' and no 'value prop on an input should not be null' at any point above (AC-4).",
+      "Double-click the body of the 'QA exhausted' row. Exactly one schedule edit form is on screen.",
+      "Press Cancel once. The modal is gone and the table fully visible — not a second copy of the form (AC-3).",
+      "Regression: yarn typecheck, yarn lint, yarn test, then E2E_START_URL=http://localhost:3001 yarn workspace @actual-app/web run playwright test schedules.test.ts — all green."
+    ],
+    "risks": [
+      "The e2e fixture depends on a start date of today (useScheduleEdit.ts:195), so the exhausted schedule is Due; a run across midnight moves its status off Due. The Skip assertions do not depend on status.",
+      "Renaming three page-model methods touches two external and three internal call sites; a missed one is a typecheck failure, not a silent behaviour change.",
+      "replaceModal on onEdit changes stacking for every row click, not only double-clicks. Grepped every schedule-edit push: index.tsx:31 is the only one on the page; ScheduleEditModal's edit-rule push is a different modal and is untouched.",
+      "The new fixture adds a third row to a suite whose other cases address rows by index, so the new rows are located by payee to avoid order dependence.",
+      "Leaving getByRole('menu') unscoped keeps a latent strict-mode break; a deliberate, reviewer-directed choice listed in out_of_scope.",
+      "The e2e suite lengthens by two journeys, adding to an already slow file.",
+      "The post-Apply trigger assertion is the only thing standing between this plan and the defect the last review caught: if the fixture applies too early, the assertion silently moves to the wrong side of the write-back. The pre-Apply assertion makes that failure legible rather than vacuous.",
+      "No CI job runs the e2e suite (config.yml verify.e2e is empty), so the new e2e cases are proven by a local Playwright run. This is why the 'these tests fail without the fix' proof is carried as a tests[] requirement and a files[] instruction rather than as an acceptance criterion — no stage could verify it."
+    ],
+    "out_of_scope": [
+      "Scoping getByRole('menu') repo-wide across accounts, budget, payees, rules, reports and schedules — finding 7 asks for repo-wide or not at all, and this ticket does not touch those files.",
+      "A shared e2e warning-probe helper housing the Radix dialog probe alongside any React probe (finding 2 places it there).",
+      "Comparing all four skip-eligibility menus against each other — a consequence of the fix, not one of this ticket's items, and it reaches into transaction menu surfaces.",
+      "Changing the popover's 'occurrence'/'occurrences' label at RecurringSchedulePicker.tsx:461; it reads singular today only via the uncontrolled field's string value, and the fixture is built so it never depends on that path.",
+      "Debouncing or rate-limiting the row's onClick; the stacking is a reducer-choice bug and replaceModal already exists.",
+      "Anything about the recurring-date description's wording or formatting beyond exposing its existing string to a test."
+    ],
+    "evidence": [
+      "The trigger/write-back boundary that sank the last plan, verified in source: RecurringSchedulePicker.tsx:632 renders `{value ? recurringDescription : t('No recurring date')}` with recurringDescription memoised on [locale, value, dateFormat] (:612-615); value is fields.date (ScheduleEditForm.tsx:261); onChange is called from exactly one place, onSave (:607-609), wired to Apply at :579. Pre-Apply the only writes are the tooltip's own reducer, the re-seed effect reading the unchanged currentConfig, and the preview effect setting previewDates. So the pre-Apply trigger cannot read ', once'.",
+      "The post-Apply string is real and already pinned: useScheduleEdit.ts:195-201 seeds {start: today, frequency:'monthly', patterns: [], endMode:'never', endOccurrences: 1}; unparseConfig's validInterval(1) returns the number 1 (RecurringSchedulePicker.tsx:284-287); getRecurringDescription's after_n_occurrences branch (util/schedule.ts:57-61) emits t('once'); util/schedule.test.ts:256 already asserts 'Every 2 weeks on Monday, once'. The 'occurrence'/'occurrences' label at :461 is a different control rendered only while the popover is open.",
+      "The demo budget QA boots has no exhausted recurrence: unzipping packages/desktop-client/e2e/data/actual-demo-budget.zip gives one row in `schedules` (beb0413a-0846-4214-8298-66956b2204c8), whose rule condition in messages_crdt is {\"op\":\"isapprox\",\"field\":\"date\",\"value\":{\"start\":\"2023-02-28\",\"frequency\":\"monthly\",\"patterns\":[]}} — no endMode, no count. AC-1 therefore creates the subject.",
+      "SchedulesTable.tsx:178 computes `const canSkip = scheduleIsSkippable(dateCond, schedule.next_date)` and it is the only gate on Skip (:203, hidden when status === 'completed' || !canSkip). Restart at :196 is hidden for status !== 'completed', so it is excluded from the contrast. scheduleIsSkippable (loot-core/src/shared/schedules.ts:516) returns false when nextDate == null.",
+      "The reviewer's own experiment, reproduced in the issue: reverting all four call sites (SchedulesTable.tsx:178, ScheduledTransactionMenuModal.tsx:62, SelectedTransactionsButton.tsx:148, useTransactionRowContextActions.ts:107) left `playwright test schedules.test.ts -g \"hides skip\"` green (1 passed, 23.4s); restored, the full 7-test suite passed (45.0s).",
+      "modalsSlice.ts:755 pushModal appends unconditionally apart from a 'keyboard-shortcuts' special case; :769 replaceModal sets modalStack = [modal]; both exported at :803. Modals.tsx:268 renders <ScheduleEditModal key={key}> per stack entry, and common/Modal.tsx:82 stamps data-testid={`${name}-modal`} — the source of the e2e `schedule-edit-modal` locator, so the double-click test can count modals by testid.",
+      "git show fd50869^:packages/loot-core/src/shared/schedules.test.ts shows weeklyOnSaturday declared inside describe('getNextDateAfter') with no return annotation and no field key — the shape finding 5 asks to restore, against the current hoisted, annotated, field:'date' version at :948.",
+      "The console guard is load-bearing (the reviewer confirmed by reverting ScheduleEditForm.tsx:134 and getting the predicted failure), and the file does contain all three pieces to remove: REACT_INPUT_WARNING_PROBES (:33-36), the alternatives loop (:459-467), the page.evaluate probe block (:473-481).",
+      "The row body is the correct double-click target: SchedulesTable.tsx:225 puts onClick on the Row, and the actions cell's Button (:270-285) opens the context menu without that press reaching the Row's onClick — every existing menu test depends on it."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Assert the trigger's 'once' description before clicking Apply, as the previous plan did in understanding and files[4].",
+        "rejected_because": "It cannot pass. The trigger renders the `value` prop and Apply (onSave → onChange → set-field date) is the picker's only write-back, so pre-Apply the prop still holds the seeded endMode 'never'. The negative half would have passed vacuously while the positive half failed. The previous review rejected the plan over exactly this and its argument checks out line by line."
+      },
+      {
+        "approach": "Drop the trigger-text assertion entirely and rely on the stored rule condition to prove the fixture is an exhausted recurrence.",
+        "rejected_because": "It would leave the one part of the fixture a QA agent can see in a browser unpinned, and the reviewer asked to move the assertion after Apply, not remove it."
+      },
+      {
+        "approach": "Restate AC-1 as verify:\"test\" and let the e2e suite be its only verification.",
+        "rejected_because": "No CI job runs the e2e suite (config.yml verify.e2e is empty), so a verify:\"test\" criterion naming it proves nothing any stage can check, and the ticket's one behaviour would never be walked in a browser."
+      },
+      {
+        "approach": "Seed the exhausted recurrence into the budget with the test file's aqlQuery helper instead of building it through the picker.",
+        "rejected_because": "It would pass without the picker working and would not exercise unparseConfig or getRecurringDescription's 'once' branch — the product paths the ticket is about. Finding 1 names the UI recipe explicitly."
+      },
+      {
+        "approach": "Fix the double-click by teaching pushModal to ignore a push identical to the top of the stack.",
+        "rejected_because": "231 call sites depend on pushModal's unconditional append, and modal options carry callbacks that no equality check can compare, so 'identical' is not decidable at that layer. replaceModal at the one call site QA reported has a fraction of the blast radius and is already used this way at Sidebar.tsx:31 and AccountsPage.tsx:565."
+      },
+      {
+        "approach": "Fix the double-click by debouncing the Row's onClick, or by ignoring a click whose MouseEvent detail is 2.",
+        "rejected_because": "Timing-based; `detail === 2` drops the second click without knowing whether the first already opened the modal, and pushes the rule into a shared table component for one page's sake."
+      },
+      {
+        "approach": "Scope the menu locator to the row (finding 4's '.last()' shape) inside openScheduleMenu.",
+        "rejected_because": "Finding 7 is the later and more specific word on the same line and asks for consistency with the seven other unscoped uses, or a repo-wide pass. Half-scoping one page model is the worse of the two."
+      },
+      {
+        "approach": "Drop Nth from all six page-model methods, not just the three that widened.",
+        "rejected_because": "The other five still take a 0-based index, so Nth describes their contract exactly. Finding 6 is about names describing half their contract; renaming the others introduces that in the other direction."
+      },
+      {
+        "approach": "Keep the RuleConditionEntity annotation on the hoisted weeklyOnSaturday and just drop the field key.",
+        "rejected_because": "It does not typecheck — the annotation is what requires field, and scheduleIsSkippable needs the annotation because its parameter is RuleConditionEntity | null. Two fixtures with different shapes is the only arrangement satisfying both the type checker and finding 5."
+      }
+    ],
+    "assumptions": [
+      "QA runs the en locale, so the trigger reads 'Every month on the 4th, once'; AC-1's contrast is the Skip difference, not the wording.",
+      "The QA browser reaches Schedules with the demo budget loaded (env.boot is `yarn start`, landing on the setup screen where 'View demo' populates data). The recipe does not depend on that budget's contents — it creates the subject itself.",
+      "Playwright's Select renders options as Buttons inside a role=\"menu\" (Select.tsx:123-155 wrapping Menu, Menu.tsx:161), so 'for' is reachable by exact name inside that menu; at that moment it is the only open role=\"menu\".",
+      "The row body is the double-click target; the actions-cell Button's press does not propagate to the Row's onClick.",
+      "The e2e suite is run locally by the implementer with E2E_START_URL, because no CI job runs it; AC-5 is the only acceptance criterion CI itself executes."
+    ],
+    "unknowns": [
+      "Whether QA can read the browser console on the yarn start dev build for AC-4 — it is a dev-mode React warning. If not, the automated collector in the e2e suite is the remaining guard, and AC-4's how_to_verify says so.",
+      "Whether the console-error filter catches React's production-mode wording; this ticket changes neither the filter nor its alternatives."
+    ],
+    "debate_summary": "The previous plan (v3) was rejected with one numbered objection, and it is correct on the source. I verified it line by line before replanning rather than defending the old text.\n\nThe objection: the plan told the implementer to assert the trigger's 'once' description BEFORE clicking Apply, in `understanding` step 3 and `files[4].change` (a), and that assertion cannot pass. The trigger renders the `value` prop (RecurringSchedulePicker.tsx:632, memoised on [locale, value, dateFormat]); `value` is fields.date (ScheduleEditForm.tsx:261) and reaches the picker's onChange from exactly one place, onSave (:607-609), wired to Apply at :579. Everything before Apply is local to the tooltip — the change-field reducer, the re-seed effect that reads the same unchanged currentConfig, and the preview effect that only sets previewDates. So while the popover is open the trigger renders the seeded endMode 'never' and reads 'Every month on the 4th', with no ', once'. The negative half would have passed vacuously while the positive half failed.\n\nWhat I changed, exactly where the reviewer asked: in `understanding` step 3a and `files[4].change` (a), the 'once' assertion now sits AFTER Apply, with the reason stated inline — the trigger renders the `value` prop and Apply is the picker's only write-back. I also took the reviewer's optional suggestion and added the pre-Apply state as its own case: while the popover is open the trigger still reads 'Every month on the 4th' with no ', once'. That turns the write-back boundary into something the test pins at both ends rather than a claim the plan merely made. tests[0].cases[1] and [2] are split the same way, and qa_script reads the button at both moments (steps 5 and 7).\n\nThe reviewer also asked me to re-read the plan for any other place the pre/post-Apply split had drifted, and to make `debate_summary` match what `files[]` actually says. I re-checked every mention of the trigger's text: AC-1's how_to_verify was already correct (it reads the button after Apply), qa_script steps 5-6 were already correct, and `files[1].why` describes the string without claiming a moment. The two wrong places were the only two, and both are fixed above. This `debate_summary` now describes the file as it is written, not as it was intended.\n\nOne further change, made on my own judgement and disclosed here rather than buried. The previous plan carried four verify:\"test\" criteria, two of which (its old AC-2 and AC-4) were properties of a diff — \"read schedules.test.ts and confirm these identifiers are gone\" — with no verifier in any stage, and two more whose only proof was a Playwright run that no CI job performs. An earlier review of this same ticket rejected exactly that shape and told the planner to carry those requirements as notes on the files[] descriptions instead. The v3 plan did not do so. This version does: the console-guard narrowing, the page-model renames and the edit-path coverage are now stated in `files[4].change` (b), (c) and in `files[3].change` rather than as acceptance criteria, and the remaining five criteria are each either browser-observable or run by CI. Nothing was dropped — each requirement is still written down, in the field a stage actually reads.\n\nThe other six findings and QA's finding are carried forward as before, with finding 7's explicit instruction (leave getByRole('menu') unscoped for consistency) preferred over finding 4's, and the repo-wide scoping pass it points at listed in out_of_scope rather than half-done here.",
+    "residual_risks": [
+      "The exhausted-recurrence fixture is the ticket's load-bearing test and it is a long UI journey; a future change to the picker's layout or the RecurConfig shape breaks it in a way that reads as a test failure rather than a product one.",
+      "Deleting the probe self-check leaves the two React warning literals unverified against a future React upgrade — they are React's own wording, and a constant declared beside the regex proves nothing about the app.",
+      "No CI job runs the e2e suite, so the claim that these tests fail without the fix is proven only by a local run. It is written into the tests[] cases and the last qa_script step, but no stage enforces it."
+    ],
+    "reproduced": true
+  }
 }
