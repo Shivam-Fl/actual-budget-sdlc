@@ -75,7 +75,7 @@
       "action": "-> needs-human"
     }
   ],
-  "resume_at": "plan",
+  "resume_at": null,
   "flow_plan": {
     "kind": "chore",
     "confidence": 85,
@@ -87,7 +87,7 @@
     },
     "decided_at": "2026-10-03T21:40:12.984Z"
   },
-  "stopped_at": "plan",
+  "stopped_at": null,
   "dispatched_stage": "plan",
   "failure_packet": {
     "issue": 58,
