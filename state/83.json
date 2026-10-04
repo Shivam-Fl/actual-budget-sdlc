@@ -160,7 +160,7 @@
       {
         "what": "PR #9's title lacks the mandatory `[AI]` prefix and misspells 'categories'; its body does not use the repository's pull-request template and its '## Changed' section names 5 of the 11 files the pull request touched.",
         "why": "PR #9 is merged and its squash commit already carries the misspelled subject, so nothing here is a change to this repository that a work order can make. #75 is the canonical home for the `[AI]` prefix finding and is already open; re-filing it here would race it. The roadmap records that the available remedy is twelve `gh pr edit --title` calls and that this is a person's decision, not a ticket's — and the same roadmap notes #75 is currently parked behind a `sdlc:blocked` label that does not apply to it. Unblocked by a person, not by a piece.",
-        "issue": null
+        "issue": 90
       }
     ]
   },
