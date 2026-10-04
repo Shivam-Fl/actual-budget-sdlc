@@ -255,7 +255,18 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/server/forecast/app.ts",
+    "packages/loot-core/src/server/forecast/forecast-schedules.ts",
+    "packages/loot-core/src/shared/transactions.ts",
+    "packages/loot-core/src/server/schedules/app.ts",
+    "packages/loot-core/src/server/schedules/app.test.ts",
+    "upcoming-release-notes/fix-split-occurrence-double-post.md",
+    "upcoming-release-notes/fix-unsplit-empty-split.md",
+    "packages/loot-core/src/server/forecast/app.test.ts",
+    "packages/loot-core/src/shared/transactions.test.ts",
+    "packages/loot-core/src/server/schedules/app.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
