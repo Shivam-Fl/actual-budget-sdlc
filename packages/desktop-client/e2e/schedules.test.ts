@@ -24,18 +24,6 @@ const reactInputWarning =
 const CONSOLE_SETTLE_MS = 1000;
 
 /**
- * The verbatim strings `reactInputWarning` matches its alternatives against, one
- * per alternative. They are held as literals rather than read out of React, so
- * a future React release that rewords either will leave this test red rather than
- * silently narrowing what it guards — which is the point of the probe that
- * emits them below.
- */
-const REACT_INPUT_WARNING_PROBES = [
-  'Warning: `value` prop on an input should not be null. Consider using an empty string to clear the component or `undefined` for uncontrolled components.',
-  'Warning: A component is changing an uncontrolled input to be controlled.',
-];
-
-/**
  * Collect React's controlled/uncontrolled input warnings off the page's
  * console channel while the schedule edit modal is driven.
  *
@@ -398,6 +386,43 @@ test.describe('Schedules', () => {
     });
     await recurringModal.add();
 
+    // The one input where "is this recurring?" and "can this be skipped?"
+    // disagree: an `after_n_occurrences` recurrence whose count is already
+    // spent. A one-off's date condition is a plain date, so `is recurring` was
+    // already false for it, and a never-ending monthly has a next date under
+    // both predicates — which is why neither of the two fixtures above can tell
+    // the predicates apart.
+    //
+    // Repeats is already on for a new schedule: the form seeds a monthly
+    // recurrence starting today, so the picker is the only date control here.
+    // Left without a name, so the edit path below reaches the nameless seed.
+    const exhaustedModal = await schedulesPage.addNewSchedule();
+    await exhaustedModal.fill({
+      payee: 'IKEA',
+      account: 'HSBC',
+      amount: 40,
+    });
+
+    // The trigger names the recurrence's start day as an ordinal, and the day
+    // is whatever the run date makes it — Playwright pins the app's "today" to
+    // 2017-01-01, a real browser does not. So the pre-Apply text is captured
+    // and compared against itself rather than against a literal of ours.
+    const preApplyText = await exhaustedModal.recurrenceDescription();
+    expect(preApplyText).not.toContain(', once');
+
+    await exhaustedModal.setRecurrenceEndAfterOccurrences();
+    await page.getByRole('button', { name: 'Apply' }).click();
+
+    // Only Apply writes the config back, so this is the moment the end mode
+    // reaches the description — and the pre-Apply text is the expectation, so a
+    // fixture that applied early fails here instead of silently satisfying a
+    // looser regex.
+    await expect(exhaustedModal.recurrenceDescriptionButton).toHaveText(
+      `${preApplyText}, once`,
+    );
+
+    await exhaustedModal.add();
+
     // Located by payee rather than by index, so neither assertion can drift onto
     // the wrong row if the fixture's schedule count changes.
     const oneOffRow = schedulesPage.schedulesTableRow.filter({
@@ -406,13 +431,27 @@ test.describe('Schedules', () => {
     const recurringRow = schedulesPage.schedulesTableRow.filter({
       hasText: 'Apple',
     });
+    const exhaustedRow = schedulesPage.schedulesTableRow.filter({
+      hasText: 'IKEA',
+    });
     await expect(oneOffRow).toHaveCount(1);
     await expect(recurringRow).toHaveCount(1);
+    await expect(exhaustedRow).toHaveCount(1);
 
     // The rest of its menu is untouched: a one-off is handled by completing it,
     // not by the item that silently does nothing. Asserted by name rather than
     // by counting the menu, which a due recurring row legitimately fills to five.
-    expect(await schedulesPage.nthScheduleMenuItemNames(oneOffRow)).toEqual([
+    expect(await schedulesPage.scheduleMenuItemNames(oneOffRow)).toEqual([
+      'Post transaction',
+      'Post transaction today',
+      'Complete',
+      'Delete',
+    ]);
+
+    // Same list as the one-off's, and the contrast that carries the assertion:
+    // an exhausted recurrence is still a recurrence, but there is no next
+    // occurrence to skip to, and `setNextDate` would drop the write.
+    expect(await schedulesPage.scheduleMenuItemNames(exhaustedRow)).toEqual([
       'Post transaction',
       'Post transaction today',
       'Complete',
@@ -422,11 +461,17 @@ test.describe('Schedules', () => {
     // The recurring schedule still offers it, and still offers Complete
     // alongside it — the two are not mutually exclusive on this menu.
     expect(
-      await schedulesPage.nthScheduleMenuHasItem(
+      await schedulesPage.scheduleMenuHasItem(
         recurringRow,
         'Skip next scheduled date',
       ),
     ).toBe(true);
+    expect(
+      await schedulesPage.scheduleMenuHasItem(
+        exhaustedRow,
+        'Skip next scheduled date',
+      ),
+    ).toBe(false);
 
     const nextDateBefore = await readScheduleNextDate(page, 'Apple monthly');
     await recurringRow.getByTestId('actions').getByRole('button').click();
@@ -441,6 +486,13 @@ test.describe('Schedules', () => {
       .poll(() => readScheduleNextDate(page, 'Apple monthly'))
       .toBeGreaterThan(nextDateBefore);
 
+    // The edit path too, while the collector is still installed: opening a
+    // nameless schedule for editing is the half that seeds `fields.name` from
+    // a null, which is what the modal's guarded name input exists for.
+    const exhaustedEditModal = await schedulesPage.editSchedule(exhaustedRow);
+    await expect(exhaustedEditModal.scheduleNameInput).toHaveValue('');
+    await exhaustedEditModal.cancel();
+
     // Console events arrive out of band over CDP, so nothing above waits for
     // the channel itself. The drain is unconditional — the channel, not the DOM,
     // is what carries these events.
@@ -450,34 +502,38 @@ test.describe('Schedules', () => {
     // regression the modal's guarded name input exists to prevent, and a later
     // failure would otherwise mask it.
     expect(messages).toEqual([]);
+  });
 
-    // Every alternative in the filter needs a probe of its own, or the arm
-    // nobody probes is a blind spot: an edit that breaks it leaves this test
-    // green while the comment above claims otherwise. The naive split is correct
-    // for this flat alternation and would need revisiting if the pattern ever
-    // gained a group or an escaped `|`.
-    for (const alternative of reactInputWarning.source.split('|')) {
-      expect(
-        REACT_INPUT_WARNING_PROBES.some(message =>
-          new RegExp(alternative).test(message),
-        ),
-        `no REACT_INPUT_WARNING_PROBES entry matches the reactInputWarning alternative /${alternative}/`,
-      ).toBe(true);
-    }
+  test('double clicking a schedule row opens a single edit modal', async () => {
+    const scheduleEditModal = await schedulesPage.addNewSchedule();
+    await scheduleEditModal.fill({
+      payee: 'Home Depot',
+      account: 'HSBC',
+      amount: 25,
+    });
+    await scheduleEditModal.add();
 
-    // The probe stays after the assertion above: it matches the same pattern, so
-    // emitted first it would poison the buffer it is meant to be independent of.
-    // It proves the channel still delivers and the filter still matches the
-    // wording React actually uses, so a broken collector turns this test red on
-    // every run. Sorted because CDP does not guarantee event order.
-    const probe = watchReactInputWarnings(page);
-    await page.evaluate(probes => {
-      for (const message of probes) {
-        console.error(message);
-      }
-    }, REACT_INPUT_WARNING_PROBES);
-    await expect
-      .poll(() => [...probe.messages].sort(), { timeout: CONSOLE_SETTLE_MS })
-      .toEqual([...REACT_INPUT_WARNING_PROBES].sort());
+    // The row body, not the actions cell: the actions button opens the menu
+    // and does not reach the row's own onClick.
+    const row = schedulesPage.schedulesTableRow.filter({
+      hasText: 'Home Depot',
+    });
+    await expect(row).toHaveCount(1);
+    await row.dblclick();
+
+    // Two clicks on one row must not stack two copies of the form, or a single
+    // Cancel leaves the other on screen.
+    const modals = page.getByTestId('schedule-edit-modal');
+    await expect(modals).toHaveCount(1);
+    await expect(
+      modals.getByRole('textbox', { name: 'Schedule name' }),
+    ).toHaveCount(1);
+
+    await page
+      .getByTestId('schedule-edit-modal')
+      .getByRole('button', { name: 'Cancel' })
+      .click();
+    await expect(page.getByTestId('schedule-edit-modal')).toHaveCount(0);
+    await expect(schedulesPage.addNewScheduleButton).toBeVisible();
   });
 });

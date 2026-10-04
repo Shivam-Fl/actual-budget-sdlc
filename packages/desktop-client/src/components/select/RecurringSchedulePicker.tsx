@@ -626,6 +626,7 @@ export function RecurringSchedulePicker({
     <View>
       <Button
         ref={triggerRef}
+        data-testid="recurrence-description"
         style={{ textAlign: 'left', ...buttonStyle }}
         onPress={() => setIsOpen(true)}
       >
