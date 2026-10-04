@@ -292,6 +292,12 @@
         "ac-4"
       ],
       "head": "8592a5528ea848aa040851b07740f73961b4b76a"
+    },
+    {
+      "criteria": [
+        "ac-3"
+      ],
+      "head": "5b6a3561d532ebb2d0e4ff97ed50a0e21a60209b"
     }
   ],
   "review_root_caused": [],
