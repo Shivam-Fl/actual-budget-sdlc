@@ -551,7 +551,8 @@
         "detail": "category: Bugfix on a change that touches no production code and whose body describes the fix in test internals. All three files in this PR are e2e tests plus the note; nothing a user can observe changes. The docs define Maintenance as \"Internal changes that don't directly affect users\" and ask that the body be non-technical \"unless the category is Maintenance\" — this body is technical either way.\n\n`upcoming-release-notes/fix-command-bar-dialog-console-drain.md:2`\n\nEvidence: `git diff --stat main pr60` -> command-bar.test.ts, reports.test.ts, release note; no file under packages/*/src. Same-class precedent: upcoming-release-notes/fix-e2e-long-note-flake.md is category: Maintenance (\"Fix flaky e2e test caused by dropped keystrokes\"); stabilize-e2e-timing.md is category: Maintenance (\"Fix timing-dependent flakiness ... e2e test\"). Policy at packages/docs/docs/contributing/index.md:131-137.\n\nFix: category: Maintenance. Already-disclosed: the work order considered this and pinned Bugfix at AC-8 to match the note dbcdcee shipped for the same file — circular, since the criterion was written by the same revision to match what it wanted. The decision stands; a human can close this with a one-word edit before merge."
       }
     ],
-    "pr": "60"
+    "pr": "60",
+    "filed": 63
   },
   "qa": {
     "verdict": "pass",
