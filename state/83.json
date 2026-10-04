@@ -75,7 +75,7 @@
           "The age-of-money report's text operators, which are a separate implementation at age-of-money-spreadsheet.ts:341-393 and were not reported.",
           "Bounding the pattern's wildcard count or length — that is the ReDoS piece and it changes `likePatternToRegex` itself."
         ],
-        "issue": null
+        "issue": 84
       },
       {
         "title": "A wildcard-heavy filter value cannot hang a report, and the shared pattern module stops exporting what nothing uses",
@@ -164,5 +164,7 @@
       }
     ]
   },
-  "children": []
+  "children": [
+    84
+  ]
 }
