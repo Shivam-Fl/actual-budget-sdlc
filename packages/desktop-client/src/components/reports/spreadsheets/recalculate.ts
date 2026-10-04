@@ -9,6 +9,7 @@ import type {
   QueryDataEntity,
   UncategorizedEntity,
 } from '#components/reports/ReportOptions';
+import { getEffectiveEndDate } from '#components/reports/reportRanges';
 
 import { filterHiddenItems } from './filterHiddenItems';
 
@@ -91,21 +92,14 @@ export function recalculate({
       // the From/To pickers can offer, and never projects past today. Same rule
       // as the query bound in the spreadsheet factories, so the bucket and the
       // data behind it agree.
-      let intervalEndDate: string;
-      if (index + 1 === intervals.length) {
-        if (interval === 'Weekly') {
-          const weekEnd = monthUtils.getWeekEnd(
-            intervalItem,
-            firstDayOfWeekIdx,
-          );
-          const today = monthUtils.currentDay();
-          intervalEndDate = today < weekEnd ? today : weekEnd;
-        } else {
-          intervalEndDate = endDate;
-        }
-      } else {
-        intervalEndDate = monthUtils.subDays(intervals[index + 1], 1);
-      }
+      //
+      // The helper is anchored on `endDate` rather than this bucket's own start:
+      // the final element of a weekly range is `weekFromDate(endDate)`, so both
+      // are in the same week and give the same answer.
+      const intervalEndDate =
+        index + 1 === intervals.length
+          ? getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx)
+          : monthUtils.subDays(intervals[index + 1], 1);
 
       arr.push({
         date: intervalItem,

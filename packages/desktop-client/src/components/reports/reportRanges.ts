@@ -86,6 +86,35 @@ export function validateEnd(
   );
 }
 
+/**
+ * The last day a report actually covers, given the raw end date a report was
+ * asked for.
+ *
+ * A weekly bucket is labelled with its week start but covers the whole week, so
+ * a weekly report's end is the week's true end, clamped to today so an
+ * in-progress week never projects into future days. The From/To pickers can only
+ * offer week starts, so without this the final week is truncated to a single
+ * day. Every other interval ends exactly where it was asked to.
+ *
+ * @param endDate the raw end date, e.g. a week start for a weekly report.
+ * @param interval one of the `ReportOptions.intervalOptions` keys.
+ * @param firstDayOfWeekIdx the `firstDayOfWeekIdx` synced pref, '0' (Sunday) by default.
+ * @returns the effective end date, as 'yyyy-MM-dd'.
+ */
+export function getEffectiveEndDate(
+  endDate: string,
+  interval: string,
+  firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx'],
+): string {
+  if (interval !== 'Weekly') {
+    return endDate;
+  }
+
+  const weekEnd = monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx);
+  const today = monthUtils.currentDay();
+  return today < weekEnd ? today : weekEnd;
+}
+
 export function validateRange(
   earliest: string,
   start: string,
