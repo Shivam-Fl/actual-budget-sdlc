@@ -7,6 +7,7 @@ import {
   ReportOptions,
 } from '#components/reports/ReportOptions';
 import type { QueryDataEntity } from '#components/reports/ReportOptions';
+import { getEffectiveEndDate } from '#components/reports/reportRanges';
 import type { useSpreadsheet } from '#hooks/useSpreadsheet';
 
 import type { createCustomSpreadsheetProps } from './custom-spreadsheet';
@@ -55,10 +56,11 @@ export function createGroupedSpreadsheet({
     // Same rule as custom-spreadsheet: a weekly bucket covers its whole week,
     // clamped to today. Without this the grouped/table view of the same weekly
     // report would disagree with its graph view.
-    const weekEnd = monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx);
-    const today = monthUtils.currentDay();
-    const effectiveEndDate =
-      interval === 'Weekly' ? (today < weekEnd ? today : weekEnd) : endDate;
+    const effectiveEndDate = getEffectiveEndDate(
+      endDate,
+      interval,
+      firstDayOfWeekIdx,
+    );
 
     let assets: QueryDataEntity[];
     let debts: QueryDataEntity[];
@@ -77,6 +79,13 @@ export function createGroupedSpreadsheet({
       budgetType,
     }));
 
+    // This guard remaps rows onto week starts; it is deliberately *not* applied
+    // to the widening above, which applies to every balance type. Budget rows
+    // arrive keyed by month while weekly bucket labels are week starts, so a
+    // budget row can never match a bucket and the remap would only misattribute
+    // one. Widening a budgeted weekly report is therefore free: it fetches one
+    // more month of rows that are still discarded. Keep the two decisions as
+    // they are — the widening is shared, this remap is budgeted-only.
     if (interval === 'Weekly' && balanceTypeOp !== 'totalBudgeted') {
       debts = debts.map(d => {
         return {
