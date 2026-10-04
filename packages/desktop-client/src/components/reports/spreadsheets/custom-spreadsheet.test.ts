@@ -130,7 +130,6 @@ async function runCustom({
 }): Promise<{
   data: CustomData;
   queryEndDates: string[];
-  budgetMonths: string[];
 }> {
   const queryEndDates = getQueryEndDates();
 
@@ -159,7 +158,7 @@ async function runCustom({
   if (!data) {
     throw new Error('Spreadsheet did not produce report data');
   }
-  return { data, queryEndDates, budgetMonths: [...budgetMonths] };
+  return { data, queryEndDates };
 }
 
 async function runGrouped({
