@@ -299,7 +299,7 @@
       "action": "lock acquired"
     }
   ],
-  "resume_at": null,
+  "resume_at": "root-cause",
   "flow_plan": {
     "kind": "chore",
     "confidence": 85,
@@ -310,7 +310,7 @@
     },
     "decided_at": "2026-10-04T00:35:29.225Z"
   },
-  "stopped_at": null,
+  "stopped_at": "root-cause",
   "dispatched_stage": "root-cause",
   "validated_from": "plan",
   "validated_at": "2026-10-04T00:42:27.780Z",
