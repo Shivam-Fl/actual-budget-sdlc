@@ -247,7 +247,17 @@
     ],
     "version": 1
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/reports/spreadsheets/recalculate.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/grouped-spreadsheet.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+    "packages/desktop-client/src/components/reports/ReportSummary.test.tsx",
+    "upcoming-release-notes/weekly-report-follow-up-cleanup.md",
+    "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+    "packages/desktop-client/src/components/reports/ReportSummary.test.tsx",
+    "packages/desktop-client/src/components/reports/reportRanges.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
