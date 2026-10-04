@@ -364,7 +364,8 @@
         "detail": "No release note, which the project's own PR instructions ask for; the closest precedent in this series went the other way, so this is the maintainer's call rather than a defect.\n\n`packages/loot-core/src/platform/server/sqlite/index.test.ts:1`\n\nEvidence: packages/docs/docs/contributing/index.md:105 lists 'Add a release note' as one of four things to do when opening a PR, and there is no documented test-only exemption anywhere under packages/docs/docs/contributing/. The category 'Maintenance: Internal changes that don't directly affect users' (index.md:132-138) fits this change exactly. The precedent is genuinely mixed rather than uniformly in favour: the nearest sibling, PR 55 'fix: Follow-ups from #47: 4 from the review', touched this same index.test.ts and shipped no release note, while PR 53, PR 49 and PR 60 all did. This change is test-only with no user-visible effect, so it is defensible either way — flagging it because it is a one-file, checkable convention and cheap to satisfy.\n\nFix: Either add upcoming-release-notes/<slug>.md with category: Maintenance and a one-line body, or record the decision not to on the issue so the next follow-up PR in this series is not re-litigated."
       }
     ],
-    "pr": "65"
+    "pr": "65",
+    "filed": 66
   },
   "qa": {
     "verdict": "pass",
