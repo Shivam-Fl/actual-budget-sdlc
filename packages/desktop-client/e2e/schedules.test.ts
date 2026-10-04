@@ -6,39 +6,119 @@ import { Navigation } from './page-models/navigation';
 import type { SchedulesPage } from './page-models/schedules-page';
 
 /**
+ * The React warnings a controlled `Input` emits when it is first handed a
+ * `null` value, and then a string once it is typed into. Each `.` below stands
+ * for a backtick, so unrelated console output that merely mentions an input or
+ * a value prop does not fail the test:
+ *
+ *   Warning: `value` prop on an input should not be null. Consider using an
+ *   empty string to clear the component or `undefined` for uncontrolled
+ *   components.
+ *
+ *   Warning: A component is changing an uncontrolled input to be controlled.
+ */
+const reactInputWarning =
+  /.value. prop on an input should not be null|A component is changing an uncontrolled input to be controlled/;
+
+/** How long to let the console channel drain when no warning arrives. */
+const CONSOLE_SETTLE_MS = 1000;
+
+/**
+ * The verbatim strings `reactInputWarning` matches its alternatives against, one
+ * per alternative. They are held as literals rather than read out of React, so
+ * a future React release that rewords either will leave this test red rather than
+ * silently narrowing what it guards — which is the point of the probe that
+ * emits them below.
+ */
+const REACT_INPUT_WARNING_PROBES = [
+  'Warning: `value` prop on an input should not be null. Consider using an empty string to clear the component or `undefined` for uncontrolled components.',
+  'Warning: A component is changing an uncontrolled input to be controlled.',
+];
+
+/**
+ * Collect React's controlled/uncontrolled input warnings off the page's
+ * console channel while the schedule edit modal is driven.
+ *
+ * Console events are delivered over CDP out of band, so awaiting anything that
+ * synchronises on the DOM does not wait for them — the channel has to be given
+ * its own time, which is why the caller polls it rather than reading it once.
+ * Narrowed to those two warnings on purpose: dev-mode console output during
+ * this flow is otherwise noisy and unrelated to what is being guarded here.
+ */
+function watchReactInputWarnings(page: Page): { messages: string[] } {
+  const messages: string[] = [];
+  page.on('console', message => {
+    if (message.type() !== 'error' && message.type() !== 'warning') return;
+    const text = message.text();
+    if (!reactInputWarning.test(text)) return;
+    messages.push(text);
+  });
+  return { messages };
+}
+
+/**
+ * Run an AQL query against the app's in-page data layer and return its rows.
+ *
+ * This owns the `$send('query', …)` envelope rather than repeating it: a
+ * `page.evaluate` callback is serialised into the browser and so cannot close
+ * over a binding hoisted into Node scope, which means deduplicating the
+ * envelope means giving it exactly one Node-side owner.
+ */
+async function aqlQuery<T>(
+  page: Page,
+  {
+    table,
+    filterExpressions,
+    selectExpressions,
+  }: {
+    table: string;
+    filterExpressions: unknown[];
+    selectExpressions: string[];
+  },
+): Promise<T[]> {
+  const { data } = await page.evaluate(
+    async ({ table, filterExpressions, selectExpressions }) => {
+      const $send = (
+        window as unknown as {
+          $send: <T>(type: string, args?: unknown) => Promise<T>;
+        }
+      ).$send;
+
+      return $send<{ data: unknown[] }>('query', {
+        table,
+        tableOptions: {},
+        filterExpressions,
+        selectExpressions,
+        groupExpressions: [],
+        orderExpressions: [],
+        calculation: false,
+        rawMode: false,
+        withDead: false,
+        validateRefs: true,
+        limit: null,
+        offset: null,
+      });
+    },
+    { table, filterExpressions, selectExpressions },
+  );
+
+  return data as T[];
+}
+
+/**
  * A schedule's stored next date as a timestamp, rather than its rendered one:
  * the table formats dates for the current locale, so only the stored value
  * compares as a date. Throws when the schedule has no next date, which would
  * otherwise read as "not later" rather than as a broken fixture.
  */
 async function readScheduleNextDate(page: Page, name: string) {
-  const nextDate = await page.evaluate(async name => {
-    const $send = (
-      window as unknown as {
-        $send: <T>(type: string, args?: unknown) => Promise<T>;
-      }
-    ).$send;
+  const [schedule] = await aqlQuery<{ next_date: string }>(page, {
+    table: 'schedules',
+    filterExpressions: [{ name }],
+    selectExpressions: ['next_date'],
+  });
 
-    const {
-      data: [schedule],
-    } = await $send<{ data: [{ next_date: string }] }>('query', {
-      table: 'schedules',
-      tableOptions: {},
-      filterExpressions: [{ name }],
-      selectExpressions: ['next_date'],
-      groupExpressions: [],
-      orderExpressions: [],
-      calculation: false,
-      rawMode: false,
-      withDead: false,
-      validateRefs: true,
-      limit: null,
-      offset: null,
-    });
-
-    return schedule?.next_date ?? null;
-  }, name);
-
+  const nextDate = schedule?.next_date ?? null;
   if (nextDate === null) {
     throw new Error(`Schedule "${name}" has no next date`);
   }
@@ -127,84 +207,65 @@ test.describe('Schedules', () => {
   });
 
   test('shows a scheduled split transfer in its destination account', async () => {
-    await page.evaluate(async () => {
-      const $send = (
-        window as unknown as {
-          $send: <T>(type: string, args?: unknown) => Promise<T>;
-        }
-      ).$send;
-      const query = <T>(
-        table: string,
-        filterExpressions: unknown[],
-        selectExpressions: string[],
-      ) =>
-        $send<{ data: T[] }>('query', {
-          table,
-          tableOptions: {},
-          filterExpressions,
-          selectExpressions,
-          groupExpressions: [],
-          orderExpressions: [],
-          calculation: false,
-          rawMode: false,
-          withDead: false,
-          validateRefs: true,
-          limit: null,
-          offset: null,
-        });
-
-      const {
-        data: [destinationAccount],
-      } = await query<{ id: string }>(
-        'accounts',
-        [{ name: 'Ally Savings' }],
-        ['id'],
-      );
-      const {
-        data: [destinationPayee],
-      } = await query<{ id: string }>(
-        'payees',
-        [{ transfer_acct: destinationAccount.id }],
-        ['id'],
-      );
-      const {
-        data: [schedule],
-      } = await query<{ rule: string }>(
-        'schedules',
-        [{ name: 'Phone bills' }],
-        ['rule'],
-      );
-      const rule = await $send<{
-        actions: unknown[];
-        conditions: unknown[];
-        conditionsOp: 'and' | 'or';
-        id: string;
-        stage: 'pre' | 'post' | null;
-      }>('rule-get', { id: schedule.rule });
-
-      await $send('rule-update', {
-        ...rule,
-        actions: [
-          ...rule.actions,
-          {
-            op: 'set-split-amount',
-            value: -7_000,
-            options: { splitIndex: 1, method: 'fixed-amount' },
-          },
-          {
-            op: 'set-split-amount',
-            value: null,
-            options: { splitIndex: 2, method: 'remainder' },
-          },
-          {
-            op: 'set',
-            field: 'payee',
-            value: destinationPayee.id,
-            options: { splitIndex: 2 },
-          },
-        ],
-      });
+    const [destinationAccount] = await aqlQuery<{ id: string }>(page, {
+      table: 'accounts',
+      filterExpressions: [{ name: 'Ally Savings' }],
+      selectExpressions: ['id'],
     });
+    const [destinationPayee] = await aqlQuery<{ id: string }>(page, {
+      table: 'payees',
+      filterExpressions: [{ transfer_acct: destinationAccount.id }],
+      selectExpressions: ['id'],
+    });
+    const [schedule] = await aqlQuery<{ rule: string }>(page, {
+      table: 'schedules',
+      filterExpressions: [{ name: 'Phone bills' }],
+      selectExpressions: ['rule'],
+    });
+
+    // The rule-get/rule-update pair needs the page's own `$send`, so it stays
+    // browser-side and takes its data in as plain serialisable arguments.
+    await page.evaluate(
+      async ({ scheduleRule, destinationPayeeId }) => {
+        const $send = (
+          window as unknown as {
+            $send: <T>(type: string, args?: unknown) => Promise<T>;
+          }
+        ).$send;
+
+        const rule = await $send<{
+          actions: unknown[];
+          conditions: unknown[];
+          conditionsOp: 'and' | 'or';
+          id: string;
+          stage: 'pre' | 'post' | null;
+        }>('rule-get', { id: scheduleRule });
+
+        await $send('rule-update', {
+          ...rule,
+          actions: [
+            ...rule.actions,
+            {
+              op: 'set-split-amount',
+              value: -7_000,
+              options: { splitIndex: 1, method: 'fixed-amount' },
+            },
+            {
+              op: 'set-split-amount',
+              value: null,
+              options: { splitIndex: 2, method: 'remainder' },
+            },
+            {
+              op: 'set',
+              field: 'payee',
+              value: destinationPayeeId,
+              options: { splitIndex: 2 },
+            },
+          ],
+        });
+      },
+      { scheduleRule: schedule.rule, destinationPayeeId: destinationPayee.id },
+    );
 
     const destinationAccountPage =
       await navigation.goToAccountPage('Ally Savings');
@@ -315,6 +376,8 @@ test.describe('Schedules', () => {
   });
 
   test('hides skip on a one-off schedule and offers it on a recurring one', async () => {
+    const { messages } = watchReactInputWarnings(page);
+
     // A one-off has no next occurrence, so skipping it moved the date nowhere.
     const oneOffModal = await schedulesPage.addNewSchedule();
     await oneOffModal.fill({
@@ -346,27 +409,23 @@ test.describe('Schedules', () => {
     await expect(oneOffRow).toHaveCount(1);
     await expect(recurringRow).toHaveCount(1);
 
-    await oneOffRow.getByTestId('actions').getByRole('button').click();
-    await expect(
-      page
-        .getByRole('menu')
-        .getByRole('button', { name: 'Skip next scheduled date' }),
-    ).toHaveCount(0);
-    await page.keyboard.press('Escape');
-
     // The rest of its menu is untouched: a one-off is handled by completing it,
     // not by the item that silently does nothing. Asserted by name rather than
     // by counting the menu, which a due recurring row legitimately fills to five.
-    expect(await schedulesPage.nthScheduleMenuItemNames(2)).toEqual([
+    expect(await schedulesPage.nthScheduleMenuItemNames(oneOffRow)).toEqual([
       'Post transaction',
       'Post transaction today',
       'Complete',
       'Delete',
     ]);
 
-    // The recurring schedule still offers it: index 3 is the second added.
+    // The recurring schedule still offers it, and still offers Complete
+    // alongside it — the two are not mutually exclusive on this menu.
     expect(
-      await schedulesPage.nthScheduleMenuHasItem(3, 'Skip next scheduled date'),
+      await schedulesPage.nthScheduleMenuHasItem(
+        recurringRow,
+        'Skip next scheduled date',
+      ),
     ).toBe(true);
 
     const nextDateBefore = await readScheduleNextDate(page, 'Apple monthly');
@@ -381,5 +440,44 @@ test.describe('Schedules', () => {
     await expect
       .poll(() => readScheduleNextDate(page, 'Apple monthly'))
       .toBeGreaterThan(nextDateBefore);
+
+    // Console events arrive out of band over CDP, so nothing above waits for
+    // the channel itself. The drain is unconditional — the channel, not the DOM,
+    // is what carries these events.
+    await page.waitForTimeout(CONSOLE_SETTLE_MS);
+
+    // Assert the console before anything that could fail after it: this is the
+    // regression the modal's guarded name input exists to prevent, and a later
+    // failure would otherwise mask it.
+    expect(messages).toEqual([]);
+
+    // Every alternative in the filter needs a probe of its own, or the arm
+    // nobody probes is a blind spot: an edit that breaks it leaves this test
+    // green while the comment above claims otherwise. The naive split is correct
+    // for this flat alternation and would need revisiting if the pattern ever
+    // gained a group or an escaped `|`.
+    for (const alternative of reactInputWarning.source.split('|')) {
+      expect(
+        REACT_INPUT_WARNING_PROBES.some(message =>
+          new RegExp(alternative).test(message),
+        ),
+        `no REACT_INPUT_WARNING_PROBES entry matches the reactInputWarning alternative /${alternative}/`,
+      ).toBe(true);
+    }
+
+    // The probe stays after the assertion above: it matches the same pattern, so
+    // emitted first it would poison the buffer it is meant to be independent of.
+    // It proves the channel still delivers and the filter still matches the
+    // wording React actually uses, so a broken collector turns this test red on
+    // every run. Sorted because CDP does not guarantee event order.
+    const probe = watchReactInputWarnings(page);
+    await page.evaluate(probes => {
+      for (const message of probes) {
+        console.error(message);
+      }
+    }, REACT_INPUT_WARNING_PROBES);
+    await expect
+      .poll(() => [...probe.messages].sort(), { timeout: CONSOLE_SETTLE_MS })
+      .toEqual([...REACT_INPUT_WARNING_PROBES].sort());
   });
 });
