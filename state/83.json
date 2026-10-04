@@ -112,7 +112,7 @@
           "**AC-6** The custom-report e2e suite runs green at Playwright's default 1280px viewport and at a narrower one, with no test relying on where the button happens to sit."
         ],
         "kind": "chore",
-        "issue": null
+        "issue": 86
       },
       {
         "title": "The weekly end-date suite runs once, in one file, instead of twice in two",
@@ -166,6 +166,7 @@
   },
   "children": [
     84,
-    85
+    85,
+    86
   ]
 }
