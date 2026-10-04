@@ -456,4 +456,179 @@ describe("'any of' must not narrow the axis past what the query fetches", () => 
     ]);
     expect(data.totalDebts).toBe(-500);
   });
+
+  it("still narrows 'or' over two category conditions to their union", async () => {
+    // The negative control for the wildcard case below: two ordinary category
+    // disjuncts still narrow, so the fix cannot be "never narrow text
+    // conditions" - which would pass the money cases and drop the rows these
+    // assert on.
+    serveTheseRows([debtRow('c-food', -1000), debtRow('c-cell', -500)]);
+
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: [
+          { field: 'category', op: 'oneOf', value: ['c-food'] },
+          { field: 'category', op: 'oneOf', value: ['c-cell'] },
+        ] as RuleConditionEntity[],
+        conditionsOp: 'or',
+      }),
+    );
+
+    expect(axisNames(data.data)).toEqual([
+      'c-food',
+      'c-cell',
+      'Uncategorized',
+      'Off budget',
+      'Transfers',
+    ]);
+    expect(data.totalDebts).toBe(-1500);
+  });
+});
+
+describe('text operators are read the way the query reads them', () => {
+  // `contains` reaches the query as `$like '%' + value + '%'`, and UNICODE_LIKE
+  // speaks a pattern language: '%' and '?' are wildcards. Read as a literal
+  // substring instead, the axis ends up narrower than the result set, and a
+  // category with no row has nowhere to render the money the query fetched —
+  // `recalculate` finds no row to attach it to and the amount leaves every
+  // total with nothing on screen saying so. These cases assert the MONEY, not
+  // the axis, because an axis assertion can be satisfied by a report that
+  // renders the rows and then zeroes them.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    serveTheseRows([]);
+  });
+
+  const spending = [
+    debtRow('c-food', -700),
+    debtRow('c-rent', -300),
+    debtRow('c-cell', -500),
+  ];
+
+  it('does not lose spending to a `contains` filter whose value is a bare %', async () => {
+    // BUG-2. The query matches every category for this condition, so the axis
+    // must too. On the buggy head the axis keeps only categories whose name
+    // contains a literal percent sign - here, none - and the report reads 0.00.
+    serveTheseRows(spending);
+
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: [
+          { field: 'category', op: 'contains', value: '%' },
+        ] as RuleConditionEntity[],
+      }),
+    );
+
+    expect(axisNames(data.data)).toEqual(
+      expect.arrayContaining(['c-food', 'c-rent', 'c-cell']),
+    );
+    expect(data.totalDebts).toBe(-1500);
+    expect(data.totalTotals).toBe(-1500);
+  });
+
+  it('does not lose spending to `contains %` beside a oneOf under "any of"', async () => {
+    // BUG-3. Same divergence, reached through the gate: both disjuncts address
+    // the category field, so the axis narrows to the oneOf branch, while the
+    // query unions in a '%' arm that matches every transaction.
+    serveTheseRows(spending);
+
+    const data = await runCustom(
+      baseProps(makeFixture(), {
+        conditions: [
+          { field: 'category', op: 'oneOf', value: ['c-cell'] },
+          { field: 'category', op: 'contains', value: '%' },
+        ] as RuleConditionEntity[],
+        conditionsOp: 'or',
+      }),
+    );
+
+    expect(axisNames(data.data)).toEqual(
+      expect.arrayContaining(['c-food', 'c-rent', 'c-cell']),
+    );
+    expect(data.totalDebts).toBe(-1500);
+    expect(data.totalTotals).toBe(-1500);
+  });
+
+  // The class-level invariant: every category the report FETCHED spending for
+  // has a row to render into. BUG-2 and BUG-3 are both instances of it, and it
+  // is the assertion to keep if a fifth operator is ever added - it needs no
+  // reasoning about LIKE semantics to catch the next one.
+  //
+  // The served set per row below is the query's answer, derived from the
+  // pattern language rather than from the axis, so this is a differential and
+  // not a restatement of the implementation. It is deliberately ONE-DIRECTIONAL:
+  // "Show empty rows" legitimately renders categories the query returned
+  // nothing for, so a category with no row is only a failure when the report
+  // fetched spending for it.
+  const invariantCategories = [
+    ...categories,
+    { id: 'c-cafe', name: 'Café', group: 'g-usual', sort_order: 2 },
+    { id: 'c-discount', name: '100% Off', group: 'g-bills', sort_order: 2 },
+  ] as CategoryEntity[];
+
+  function makeInvariantFixture() {
+    return {
+      list: invariantCategories,
+      grouped: categoryGroups.map(group => ({
+        ...group,
+        categories: invariantCategories.filter(c => c.group === group.id),
+      })),
+    };
+  }
+
+  const invariantCases: Array<{
+    op: string;
+    value: string;
+    // What the query matches, and therefore what it fetches money for.
+    fetched: string[];
+  }> = [
+    {
+      op: 'contains',
+      value: '%',
+      fetched: ['c-food', 'c-rent', 'c-cell', 'c-cafe', 'c-discount'],
+    },
+    {
+      op: 'contains',
+      value: '?',
+      fetched: ['c-food', 'c-rent', 'c-cell', 'c-cafe', 'c-discount'],
+    },
+    { op: 'contains', value: 'o', fetched: ['c-food', 'c-discount'] },
+    {
+      op: 'contains',
+      value: 'o%',
+      fetched: ['c-food', 'c-discount'],
+    },
+    { op: 'contains', value: '100\\%', fetched: ['c-discount'] },
+    { op: 'contains', value: 'cafe', fetched: ['c-cafe'] },
+    { op: 'contains', value: 'CAFÉ', fetched: ['c-cafe'] },
+    { op: 'contains', value: '_', fetched: [] },
+    { op: 'contains', value: 'ood', fetched: ['c-food'] },
+    { op: 'doesNotContain', value: '%', fetched: [] },
+    {
+      op: 'doesNotContain',
+      value: 'o',
+      fetched: ['c-rent', 'c-cell', 'c-cafe'],
+    },
+  ];
+
+  it.each(invariantCases)(
+    'renders a row for every category $op $value fetched',
+    async ({ op, value, fetched }) => {
+      const amounts = fetched.map((_id, index) => -(index + 1) * 100);
+      serveTheseRows(fetched.map((id, index) => debtRow(id, amounts[index])));
+
+      const data = await runCustom(
+        baseProps(makeInvariantFixture(), {
+          conditions: [
+            { field: 'category', op, value },
+          ] as RuleConditionEntity[],
+        }),
+      );
+
+      for (const id of fetched) {
+        expect(axisNames(data.data)).toContain(id);
+      }
+      expect(data.totalDebts).toBe(amounts.reduce((sum, n) => sum + n, 0));
+    },
+  );
 });

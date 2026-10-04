@@ -104,6 +104,144 @@ describe('filterCategoriesByConditions', () => {
   });
 });
 
+// The query side compiles `contains` to `$like '%' + value + '%'`, which the
+// compiler turns into `UNICODE_LIKE(<normalised pattern>, NORMALISE(name))`.
+// UNICODE_LIKE speaks a PATTERN language, not a substring language: '%' and '?'
+// are wildcards and a backslash escapes them. Reading the same condition as a
+// plain `toLowerCase().includes()` puts the axis in a strict subset of the
+// result set, and a category with no row has nowhere to render its money — it
+// is silently dropped from every total. These cases hold the axis to what the
+// query actually returns.
+describe('filterCategoriesByConditions reads text operators as LIKE patterns', () => {
+  // The fixture above is plain ASCII with no wildcard-looking characters, so it
+  // cannot tell an over-broad fix (keeps everything) from an over-escaping one
+  // (keeps only literal substrings). This one carries every shape that matters.
+  const wildcardCategories = [
+    { id: 'c-food', name: 'Food', group: 'group-fun' },
+    { id: 'c-groceries', name: 'Groceries', group: 'group-fun' },
+    { id: 'c-discount', name: '100% Off', group: 'group-bills' },
+    { id: 'c-cafe', name: 'Café', group: 'group-savings' },
+    { id: 'c-underscore', name: 'C_Sharp', group: 'group-savings' },
+  ] as CategoryEntity[];
+
+  const wildcardGroups = [
+    { id: 'group-bills', name: 'Bills' },
+    { id: 'group-fun', name: 'Fun Money' },
+    { id: 'group-savings', name: 'Savings' },
+  ] as CategoryGroupEntity[];
+
+  const allIds = wildcardCategories.map(category => category.id);
+
+  function filterBy(op: string, value: unknown, field = 'category') {
+    return filterCategoriesByConditions(
+      wildcardCategories,
+      wildcardGroups,
+      [
+        {
+          field,
+          op,
+          value,
+        } as RuleConditionEntity,
+      ],
+      'and',
+    ).map(category => category.id);
+  }
+
+  // BUG-2. On the buggy head these return only the categories whose name
+  // contains a literal '%' / '?', which for this fixture is one category or
+  // none — the report renders 0.00 while the query fetched everything.
+  it('keeps every category for a bare % , as the query does', () => {
+    // The query compiles this to the pattern '%%%', which matches any name.
+    expect(filterBy('contains', '%')).toEqual(allIds);
+  });
+
+  it('keeps every category for a bare ? , as the query does', () => {
+    expect(filterBy('contains', '?')).toEqual(allIds);
+  });
+
+  it('reads a backslash-escaped % as a literal, so it does narrow', () => {
+    // '\%' compiles to an escaped wildcard - a literal percent sign - so this
+    // is an ordinary narrowing filter. A fix that escaped the user's wildcards
+    // would agree here but reintroduce the loss in the other direction.
+    expect(filterBy('contains', '\\%')).toEqual(['c-discount']);
+  });
+
+  it('treats an embedded wildcard as a pattern, not as a literal', () => {
+    // '%o%%' matches any name containing an 'o'. It is NOT required to keep
+    // every category: on the data side this narrows, and the axis must agree.
+    expect(filterBy('contains', 'o%')).toEqual([
+      'c-food',
+      'c-groceries',
+      'c-discount',
+    ]);
+  });
+
+  it('treats _ as a literal, not as a wildcard', () => {
+    // '_' is not a wildcard in UNICODE_LIKE. A QA report claimed it reproduced
+    // the same defect as '%'; it does not, and the axis and query already agree
+    // on it. Escaping it here would create a divergence that does not exist.
+    expect(filterBy('contains', '_')).toEqual(['c-underscore']);
+    expect(filterBy('contains', 'C_')).toEqual(['c-underscore']);
+  });
+
+  it('folds diacritics the way the query does', () => {
+    // NORMALISE strips the accent on the data side; a bare toLowerCase() on the
+    // axis side does not, which drops 'Café' out of a filtered report.
+    expect(filterBy('contains', 'cafe')).toEqual(['c-cafe']);
+    expect(filterBy('contains', 'café')).toEqual(['c-cafe']);
+    expect(filterBy('contains', 'e')).toEqual(['c-groceries', 'c-cafe']);
+  });
+
+  it('negates the same pattern for doesNotContain', () => {
+    // The query's $notlike carries an `OR left IS NULL` disjunct, which never
+    // fires for a category name - so the negation of the positive test is exact.
+    expect(filterBy('doesNotContain', '%')).toEqual([]);
+    expect(filterBy('doesNotContain', '?')).toEqual([]);
+    expect(filterBy('doesNotContain', 'o')).toEqual(['c-cafe', 'c-underscore']);
+  });
+
+  it('still narrows an ordinary substring', () => {
+    // The negative control: a fix that made every text condition a no-op would
+    // pass the wildcard cases above and fail here.
+    expect(filterBy('contains', 'oo')).toEqual(['c-food']);
+    expect(filterBy('contains', 'BILL')).toEqual([]);
+  });
+
+  it('narrows the category_group text path the same way', () => {
+    expect(filterBy('contains', '%', 'category_group')).toEqual(allIds);
+    expect(filterBy('contains', 'Fun', 'category_group')).toEqual([
+      'c-food',
+      'c-groceries',
+    ]);
+  });
+
+  it('leaves `matches` alone: it is neither the bug nor in scope', () => {
+    // `matches` compiles to $regexp, not to LIKE, and every divergence between
+    // the two is axis-WIDER - the axis's regex carries /i and the query's does
+    // not, so the axis keeps rows the query dropped, which costs an empty row
+    // and never money. Pinned so it is checkable rather than argued.
+    expect(filterBy('matches', 'RE')).toEqual([]);
+    expect(
+      filterCategoriesByConditions(
+        categories,
+        categoryGroups,
+        [
+          {
+            field: 'category',
+            op: 'matches',
+            value: 'RE',
+          } as RuleConditionEntity,
+        ],
+        'and',
+      ).map(category => category.id),
+    ).toEqual(['cat-rent']);
+
+    // The 256-character guard does NOT reject the value: the failed length test
+    // skips the `if` and falls through to `return true`, keeping every category.
+    expect(filterBy('matches', 'x'.repeat(257))).toEqual(allIds);
+  });
+});
+
 describe('narrowCategoriesByConditions', () => {
   const axisGroups = [
     { id: 'g-usual', name: 'Usual Expenses', sort_order: 0 },
@@ -248,6 +386,51 @@ describe('narrowCategoriesByConditions', () => {
     );
 
     expect(result.list.map(category => category.id)).toEqual(['c-cell']);
+  });
+
+  // BUG-3. The gate below asks which FIELD a condition addresses, which is
+  // necessary but not sufficient on its own: it also has to be true that the
+  // axis and the query READ the condition the same way. For `contains '%'` they
+  // did not - the axis looked for a literal percent sign, the query compiled a
+  // pattern matching every name - so the gate returned true, the axis narrowed
+  // to the oneOf branch, and the query's '%' arm fetched everything before the
+  // axis threw it away.
+  const cellsPlusBareWildcard = [
+    { field: 'category', op: 'oneOf', value: ['c-rent', 'c-cell'] },
+    { field: 'category', op: 'contains', value: '%' },
+  ] as RuleConditionEntity[];
+
+  it('keeps the full axis when a disjunct is `contains` with a bare wildcard', () => {
+    // At the helper level: the union of the two disjuncts is every category,
+    // because '%' matches every name on the query side.
+    expect(
+      filterCategoriesByConditions(
+        axisCategories,
+        axisGroups,
+        cellsPlusBareWildcard,
+        'or',
+      ).map(category => category.id),
+    ).toEqual(['c-food', 'c-rent', 'c-cell', 'c-net']);
+  });
+
+  it('keeps the full axis through the gate for the same conditions', () => {
+    const result = narrow(cellsPlusBareWildcard, 'or');
+
+    expect(result.list.map(category => category.id)).toEqual([
+      'c-food',
+      'c-rent',
+      'c-cell',
+      'c-net',
+    ]);
+    expect(
+      result.grouped.map(group => [
+        group.id,
+        (group.categories ?? []).map(category => category.id),
+      ]),
+    ).toEqual([
+      ['g-usual', ['c-food', 'c-rent']],
+      ['g-bills', ['c-cell', 'c-net']],
+    ]);
   });
 
   it('still narrows under "and" with a non-category condition', () => {

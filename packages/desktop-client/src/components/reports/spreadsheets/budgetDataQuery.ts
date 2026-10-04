@@ -1,5 +1,7 @@
 import { send } from '@actual-app/core/platform/client/connection';
+import { likePatternToRegex } from '@actual-app/core/shared/likePattern';
 import * as monthUtils from '@actual-app/core/shared/months';
+import { getNormalisedString } from '@actual-app/core/shared/normalisation';
 import type { Handlers } from '@actual-app/core/types/handlers';
 import type {
   CategoryEntity,
@@ -232,20 +234,43 @@ export function filterCategoriesByConditions(
       return !condition.value.includes(key);
     }
 
+    // `contains` reaches the query as `$like '%' + value + '%'`
+    // (transaction-rules.ts), which the compiler emits as
+    // `UNICODE_LIKE(<normalised pattern>, NORMALISE(name))`
+    // (aql/compiler.ts). UNICODE_LIKE speaks a PATTERN language in which '%'
+    // and '?' are wildcards and a backslash escapes them - not a substring
+    // language. Reading it as a literal `includes` leaves the axis in a strict
+    // subset of the result set, and a category with no row has nowhere to
+    // render the money the query fetched: it leaves every total silently. So
+    // the axis runs the query's own two primitives instead, in the same order.
     if (condition.op === 'contains') {
       return (
         typeof condition.value === 'string' &&
-        textValue.toLowerCase().includes(condition.value.toLowerCase())
+        likePatternToRegex(
+          getNormalisedString('%' + condition.value + '%'),
+        ).test(getNormalisedString(textValue))
       );
     }
 
+    // The query's `$notlike` also carries an `OR left IS NULL` disjunct
+    // (aql/compiler.ts), which never fires for a category name - `name` is not
+    // nullable - so the exact negation is the whole of it.
     if (condition.op === 'doesNotContain') {
       return (
         typeof condition.value === 'string' &&
-        !textValue.toLowerCase().includes(condition.value.toLowerCase())
+        !likePatternToRegex(
+          getNormalisedString('%' + condition.value + '%'),
+        ).test(getNormalisedString(textValue))
       );
     }
 
+    // `matches` compiles to `$regexp`, not to `$like`, so it is deliberately
+    // NOT routed through `likePatternToRegex`. Its two divergences from the
+    // query - the /i flag the query's REGEXP does not carry, and a value over
+    // 256 characters - both leave the axis WIDER than the result set, which
+    // costs at most an empty row under "Show empty rows" and never money. The
+    // over-long value does not even reject: the failed length test skips this
+    // `if` and falls through to `return true`, keeping every category.
     if (
       condition.op === 'matches' &&
       typeof condition.value === 'string' &&
