@@ -287,7 +287,10 @@
     ]
   },
   "touch_paths": [
+    "packages/loot-core/src/shared/likePattern.ts",
+    "packages/loot-core/src/platform/server/sqlite/unicodeLike.ts",
     "packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts",
+    "packages/loot-core/src/shared/likePattern.test.ts",
     "packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.test.ts",
     "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
     "packages/desktop-client/e2e/reports.test.ts"
