@@ -33,6 +33,7 @@ import {
   getNextDateAfter,
   getScheduledAmount,
   getStatus,
+  MAX_ADVANCE_ATTEMPTS,
   recurConfigToRSchedule,
 } from '#shared/schedules';
 import type {
@@ -236,34 +237,59 @@ export async function setNextDate({
 
   // Only do this if a date condition exists
   if (dateCond) {
-    const newNextDate = advance
+    // Our `update` functon requires the id of the item and we don't
+    // have it, so we need to query it. The skip list is read here too,
+    // before the arithmetic, because it decides where `next_date` may land.
+    const nd = await db.first<
+      Pick<
+        db.DbScheduleNextDate,
+        'id' | 'base_next_date_ts' | 'skipped_occurrences'
+      >
+    >(
+      'SELECT id, base_next_date_ts, skipped_occurrences FROM schedules_next_date WHERE schedule_id = ?',
+      [id],
+    );
+    const skippedOccurrences = parseSkippedOccurrences(nd.skipped_occurrences);
+
+    let newNextDate = advance
       ? getNextDateAfter(dateCond, nextDate)
       : getNextDate(dateCond, new Date());
 
-    if (newNextDate != null && newNextDate !== nextDate) {
-      // Our `update` functon requires the id of the item and we don't
-      // have it, so we need to query it
-      const nd = await db.first<
-        Pick<db.DbScheduleNextDate, 'id' | 'base_next_date_ts'>
-      >(
-        'SELECT id, base_next_date_ts FROM schedules_next_date WHERE schedule_id = ?',
-        [id],
-      );
+    // `next_date` is what `getStatus` and `advanceSchedulesService` read as
+    // "due", so it must never come to rest on an occurrence the user skipped:
+    // that would auto-post a payment they said will not happen. The loop is
+    // unconditional — the reset path and the bare `setNextDate({ id })` call
+    // take the same route into it — and bounded, because a skip list can
+    // name occurrences a recurrence stops producing.
+    for (
+      let attempt = 0;
+      attempt < MAX_ADVANCE_ATTEMPTS &&
+      newNextDate != null &&
+      skippedOccurrences.includes(newNextDate);
+      attempt++
+    ) {
+      newNextDate = getNextDateAfter(dateCond, newNextDate);
+    }
 
-      await db.update(
-        'schedules_next_date',
-        reset
+    if (newNextDate != null && newNextDate !== nextDate) {
+      await db.update('schedules_next_date', {
+        id: nd.id,
+        ...(reset
           ? {
-              id: nd.id,
               base_next_date: toDateRepr(newNextDate),
               base_next_date_ts: Date.now(),
             }
           : {
-              id: nd.id,
               local_next_date: toDateRepr(newNextDate),
               local_next_date_ts: nd.base_next_date_ts,
-            },
-      );
+            }),
+        // Skips `next_date` has now moved past can never be reached again,
+        // so they are dropped here rather than accumulating for the life of
+        // the schedule.
+        skipped_occurrences: JSON.stringify(
+          skippedOccurrences.filter(date => date > newNextDate).sort(),
+        ),
+      });
     }
   }
 }
@@ -463,8 +489,67 @@ export async function deleteSchedule({ id }) {
   });
 }
 
-export async function skipNextDate({ id }) {
-  return setNextDate({ id, advance: true });
+// The column holds a JSON array of `YYYY-MM-DD` strings, but it is read here
+// through raw SQL rather than AQL, so it is still text at this boundary.
+function parseSkippedOccurrences(value: string | null | undefined): string[] {
+  if (value == null || value === '') {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    // Only reachable with a value this app did not write. Falling back to "no
+    // skips recorded" degrades to the old behaviour — a skipped occurrence
+    // reappears in the register and in the forecast — which is recoverable,
+    // whereas failing the handler would strand the schedule entirely.
+    return [];
+  }
+}
+
+export async function skipNextDate({
+  id,
+  date,
+}: {
+  id: string;
+  date?: string;
+}) {
+  if (date == null) {
+    return setNextDate({ id, advance: true });
+  }
+
+  const { data: nextDate } = await aqlQuery(
+    q('schedules').filter({ id }).calculate('next_date'),
+  );
+
+  // Skipping the occurrence `next_date` already sits on is the original
+  // behaviour: advance the schedule's anchor one step.
+  if (date === nextDate) {
+    return setNextDate({ id, advance: true });
+  }
+
+  const nd = await db.first<
+    Pick<db.DbScheduleNextDate, 'id' | 'skipped_occurrences'>
+  >(
+    'SELECT id, skipped_occurrences FROM schedules_next_date WHERE schedule_id = ?',
+    [id],
+  );
+
+  const skippedOccurrences = parseSkippedOccurrences(nd.skipped_occurrences);
+
+  // A record, not a move: `next_date` stays on the earliest occurrence still
+  // owed, so skipping a later one does not take the occurrences in between
+  // with it. The filter drops anything at or before `next_date` — a stale
+  // occurrence is already unreachable, so it records nothing.
+  await db.update('schedules_next_date', {
+    id: nd.id,
+    skipped_occurrences: JSON.stringify(
+      [...new Set([...skippedOccurrences, date])]
+        .filter(occurrence => occurrence > nextDate)
+        .sort(),
+    ),
+  });
 }
 
 function discoverSchedules() {
@@ -565,9 +650,9 @@ async function postTransactionForSchedule({
   // The occurrence this post discharges. Posting from the register can select a
   // LATER occurrence than the one `next_date` sits on, and that has to be the
   // one recorded — `next_date` here is simply the earliest one still owed.
-  // `today` is the exception: it pays `next_date` early and leaves that
-  // occurrence pending, so it discharges `next_date` whatever `date` says.
-  const occurrence = today ? schedule.next_date : (date ?? schedule.next_date);
+  // `today` only decides when the transaction is dated, never which occurrence
+  // it pays: a caller that names an occurrence is honoured for both.
+  const occurrence = date ?? schedule.next_date;
 
   // Consuming an occurrence is idempotent: the stamp below IS the identity the
   // whole per-occurrence model rests on, so a second message for an occurrence
@@ -580,9 +665,11 @@ async function postTransactionForSchedule({
   // through `runMutator`, which is `sequential(_runMutator)` — two dispatches
   // cannot interleave, so the second check always sees the first write.
   //
-  // Deliberately not applied to `today`, which discharges `next_date` early
-  // and can legitimately be invoked more than once.
-  if (!today) {
+  // Not applied to `today` without a date: that path pays `next_date` early
+  // and leaves the occurrence pending, so it may legitimately be invoked more
+  // than once. A `today` post that *did* name an occurrence consumes it, and is
+  // guarded like any other.
+  if (!today || date != null) {
     const {
       data: [alreadyPosted],
     } = await aqlQuery(

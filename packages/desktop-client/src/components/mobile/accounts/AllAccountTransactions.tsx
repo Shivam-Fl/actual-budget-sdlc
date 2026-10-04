@@ -128,8 +128,11 @@ function TransactionListWithPreviews() {
                   );
                 },
                 onSkip: async transactionId => {
-                  const parts = transactionId.split('/');
-                  await send('schedule/skip-next-date', { id: parts[1] });
+                  const { scheduleId, date } = parsePreviewId(transactionId);
+                  await send('schedule/skip-next-date', {
+                    id: scheduleId,
+                    date,
+                  });
                   dispatch(
                     collapseModals({
                       rootModalName: 'scheduled-transaction-menu',

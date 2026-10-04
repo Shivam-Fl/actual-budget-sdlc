@@ -1569,17 +1569,18 @@ class AccountInternal extends PureComponent<
         void this.refetchTransactions();
         break;
       case 'post-transaction-today':
-        for (const { scheduleId } of schedules) {
+        for (const { scheduleId, date } of schedules) {
           await send('schedule/post-transaction', {
             id: scheduleId,
+            date,
             today: true,
           });
         }
         void this.refetchTransactions();
         break;
       case 'skip':
-        for (const { scheduleId } of schedules) {
-          await send('schedule/skip-next-date', { id: scheduleId });
+        for (const { scheduleId, date } of schedules) {
+          await send('schedule/skip-next-date', { id: scheduleId, date });
         }
         break;
       case 'complete':

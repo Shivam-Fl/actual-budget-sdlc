@@ -24,6 +24,10 @@ export type ScheduleEntity = {
   name?: string;
   rule: RuleEntity['id'];
   next_date: string;
+  // Occurrence dates the user chose to skip, as `YYYY-MM-DD`. A skip does not
+  // move `next_date` — it removes exactly the occurrence that was clicked — so
+  // this is the only record that the occurrence will not happen.
+  skipped_occurrences?: string[] | null;
   completed: boolean;
   posts_transaction: boolean;
   custom_upcoming_length?: string | null;

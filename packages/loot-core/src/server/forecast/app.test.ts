@@ -770,4 +770,77 @@ describe('forecast app', () => {
       ),
     ).toBe(true);
   });
+
+  // A skipped occurrence leaves no transaction behind, so the forecast cannot
+  // infer it from the transaction table the way it infers a posted occurrence.
+  // It has to read the schedule's skip list explicitly — and because the filter
+  // omits rather than errors, getting it wrong shows up as a plausible-looking
+  // balance projection with no error anywhere.
+  describe('skipped schedule occurrences', () => {
+    async function createMonthlySchedule() {
+      const accountId = await db.insertAccount({
+        id: 'acct',
+        name: 'Checking',
+      });
+      const scheduleId = await createSchedule({
+        conditions: [
+          { op: 'is', field: 'account', value: accountId },
+          { op: 'is', field: 'amount', value: -75 },
+          {
+            op: 'is',
+            field: 'date',
+            value: { start: '2024-03-15', frequency: 'monthly' },
+          },
+        ] satisfies RuleConditionEntity[],
+      });
+      return { accountId, scheduleId };
+    }
+
+    it('omits a skipped occurrence from the forecast', async () => {
+      const { accountId, scheduleId } = await createMonthlySchedule();
+
+      // Record the skip the way the handler does: on the schedule's own
+      // next-date row, leaving `next_date` alone.
+      db.runQuery(
+        'UPDATE schedules_next_date SET skipped_occurrences = ? WHERE schedule_id = ?',
+        [JSON.stringify(['2024-04-15']), scheduleId],
+      );
+
+      const result = await generateForecast({
+        accountIds: [accountId],
+        startDate: '2024-03-01',
+        endDate: '2024-05-31',
+      });
+      const dataPointByDate = Object.fromEntries(
+        result.dataPoints.map(dataPoint => [dataPoint.date, dataPoint]),
+      );
+
+      // March is still forecast...
+      expect(dataPointByDate['2024-03-15'].balance).toBe(-75);
+      // ...April was skipped and must not be projected at all...
+      expect(dataPointByDate['2024-04-15'].transactions).toEqual([]);
+      expect(dataPointByDate['2024-04-15'].balance).toBe(-75);
+      // ...while the occurrence after it is untouched.
+      expect(dataPointByDate['2024-05-15'].balance).toBe(-150);
+    });
+
+    it('forecasts exactly as before when nothing is skipped', async () => {
+      const { accountId } = await createMonthlySchedule();
+
+      const result = await generateForecast({
+        accountIds: [accountId],
+        startDate: '2024-03-01',
+        endDate: '2024-05-31',
+      });
+      const dataPointByDate = Object.fromEntries(
+        result.dataPoints.map(dataPoint => [dataPoint.date, dataPoint]),
+      );
+
+      // Guards the filter above against silently emptying every forecast: a
+      // schedule with no skips must project all three occurrences.
+      expect(dataPointByDate['2024-03-15'].balance).toBe(-75);
+      expect(dataPointByDate['2024-04-15'].balance).toBe(-150);
+      expect(dataPointByDate['2024-05-15'].balance).toBe(-225);
+    });
+  });
 });

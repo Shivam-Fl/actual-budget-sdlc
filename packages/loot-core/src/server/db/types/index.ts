@@ -174,6 +174,9 @@ export type DbScheduleNextDate = {
   local_next_date_ts: number;
   base_next_date: number;
   base_next_date_ts: number;
+  // A JSON array of `YYYY-MM-DD` occurrence dates the user chose to skip.
+  // Read through raw SQL, so it is still TEXT here — the AQL schema parses it.
+  skipped_occurrences: string | null;
 };
 
 // This is unused in the codebase.
@@ -357,6 +360,7 @@ export type DbViewSchedule = {
     | DbScheduleNextDate['local_next_date_ts']
     | DbScheduleNextDate['local_next_date']
     | DbScheduleNextDate['base_next_date'];
+  skipped_occurrences: string[] | null;
   active: DbSchedule['active'];
   completed: DbSchedule['completed'];
   posts_transaction: DbSchedule['posts_transaction'];
