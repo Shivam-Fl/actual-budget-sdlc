@@ -395,7 +395,74 @@
         "detail": "The new test opens, dismisses, and re-opens the same one-off menu to make two assertions that one read could make, so the smaller version of the test is one call shorter.\n\n`packages/desktop-client/e2e/schedules.test.ts:349`\n\nEvidence: `schedules.test.ts:349-355` clicks the one-off row's actions trigger and asserts `Skip next scheduled date` has count 0, then presses Escape. `schedules.test.ts:360-365` then calls `nthScheduleMenuItemNames(2)` on the same row and asserts the menu equals `['Post transaction', 'Post transaction today', 'Complete', 'Delete']`. The second assertion already implies the first: a four-item list that does not contain the skip item proves skip is hidden, which is strictly more than a count-0 check on one name. As written the test performs two full open/dismiss cycles against one row to learn one thing, and the extra cycle is also what creates the index-versus-payee split that `review/correctness.json` finding 1 flags at line 360 — collapsing the pair removes that inconsistency rather than papering over it.\n\nFix: Drop lines 349-355 and let the `nthScheduleMenuItemNames(2)` assertion at 360 carry the skip-is-hidden claim on its own; if the explicit `toHaveCount(0)` is kept for the AC's wording, then instead derive the row once and read the menu once."
       }
     ],
-    "pr": "59"
+    "pr": "59",
+    "qa": [
+      {
+        "id": "BUG-1",
+        "severity": "minor",
+        "area": "scheduleIsRecurring / SchedulesTable canSkip predicate",
+        "title": "A recurrence that has already run out still offers 'Skip next scheduled date', and clicking it is a silent no-op",
+        "expected": "A schedule with no next occurrence should not offer 'Skip next scheduled date' -- or, if it does, clicking it should change the date. This PR exists to stop offering an action that silently does nothing, and its new predicate does not catch the exhausted case.",
+        "actual": "'Skip next scheduled date' is offered, and clicking it leaves next_date unchanged with no error and no toast. The row looks interactive and is not.",
+        "repro": [
+          "Boot a demo budget (setup screen -> 'Try the demo').",
+          "Create a schedule whose date condition is a recur config that has already run out -- e.g. {start: '2020-01-01', frequency: 'weekly', endMode: 'after_n_occurrences', endOccurrences: 1}. The public @actual-app/api and sync both accept this; the edit form cannot create it, because ScheduleEditModal hardcodes endMode 'never'.",
+          "Open the row's actions menu: 'Skip next scheduled date' is present.",
+          "Click it. Read next_date before and after: identical (2020-01-01).",
+          "Same with endMode 'on_date' and an endDate in the past -- recurConfigToRSchedule maps it to an RSchedule `end`, and the no-op repeats."
+        ],
+        "evidence": [
+          "qa-evidence/T-6a-exhausted-menu.png",
+          "qa-evidence/T-6b-exhausted-after-skip.png",
+          "qa-evidence/T-7a-ondate-menu.png",
+          "qa-evidence/T-7b-ondate-after-skip.png"
+        ],
+        "suspected_cause": "The new predicate is `scheduleIsRecurring(extractScheduleConds(schedule._conditions).date)`, and scheduleIsRecurring only tests `value.type === 'recur'`. A recur config with an exhausted `after_n_occurrences` or a past `on_date` end still parses as a recur, so the predicate returns true. The write is then dropped server-side by setNextDate's `newNextDate != null` guard, because getNextDateAfter has no occurrence past the recurrence's end. Fixing it needs either a has-next-occurrence check alongside scheduleIsRecurring, or dropping setNextDate's silent null guard in favour of a reported no-op.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      },
+      {
+        "id": "BUG-2",
+        "severity": "minor",
+        "area": "packages/loot-core/src/server/schedules/app.ts setNextDate",
+        "title": "Two concurrent skips on the same schedule advance next_date twice, silently skipping a payment",
+        "expected": "Both calls read the same next_date and compute the same successor, so the two writes should collapse to one period. A user who asks to skip once must not have two occurrences skipped.",
+        "actual": "next_date advances two periods. The schedule skips a payment the user never asked to skip, with no error and no toast.",
+        "repro": [
+          "Boot a demo budget.",
+          "Create a monthly recurring schedule.",
+          "Read next_date.",
+          "Dispatch schedule/skip-next-date twice for the same id in the same tick (Promise.all).",
+          "Re-read next_date: it has advanced two months, not one.",
+          "Reproduced on two consecutive runs."
+        ],
+        "evidence": [
+          "qa-evidence/T-14-after-double-skip.png"
+        ],
+        "suspected_cause": "setNextDate is a read-modify-write with no compare-and-swap: it queries next_date, computes getNextDateAfter(dateCond, nextDate), then writes schedules_next_date. Under concurrency the second call reads the first's write and advances again. The Schedules table menu closes on the first click so a user cannot double-fire this from the Schedules page; the exposure is the API, the sync path, and any caller that retries.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      },
+      {
+        "id": "BUG-3",
+        "severity": "trivial",
+        "area": "ScheduleEditModal",
+        "title": "Opening the schedule edit modal logs two React controlled/uncontrolled input warnings",
+        "expected": "Opening a form in the console-clean build logs nothing to console.error.",
+        "actual": "Two console.error entries on every modal open: a `value` prop on an input should not be null, and a component changing an uncontrolled input to be controlled.",
+        "repro": [
+          "Boot a demo budget and go to /schedules.",
+          "Click 'Add new schedule'.",
+          "Watch the console: two React dev-mode warnings."
+        ],
+        "evidence": [
+          "qa-evidence/full-run.log"
+        ],
+        "suspected_cause": "Inputs in ScheduleEditModal.tsx are seeded with a null/undefined value and then receive a defined one. Unrelated to this PR and untouched by it; recorded so the QA suite's empty-console assertions can filter it deliberately rather than by accident.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "pass",
