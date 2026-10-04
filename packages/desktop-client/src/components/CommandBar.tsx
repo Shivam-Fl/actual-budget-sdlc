@@ -21,6 +21,7 @@ import { styles } from '@actual-app/components/styles';
 import { Text } from '@actual-app/components/text';
 import { View } from '@actual-app/components/view';
 import { css } from '@emotion/css';
+import * as RadixDialog from '@radix-ui/react-dialog';
 import { Command } from 'cmdk';
 
 import { useAccounts } from '#hooks/useAccounts';
@@ -289,6 +290,20 @@ export function CommandBar() {
         zIndex: 3001,
       })}
     >
+      {/*
+       * cmdk's Command.Dialog never renders a Radix DialogTitle or
+       * DialogDescription, so the ids Radix hands to Dialog.Content as
+       * aria-labelledby / aria-describedby point at nothing and it warns on
+       * every open. Rendering both here — visually hidden so the palette is
+       * unchanged — gives those ids real elements. The accessible name comes
+       * from the title, matching the `label` prop above.
+       */}
+      <RadixDialog.Title style={styles.visuallyHidden}>
+        <Trans>Command Bar</Trans>
+      </RadixDialog.Title>
+      <RadixDialog.Description style={styles.visuallyHidden}>
+        <Trans>Search pages, accounts and reports</Trans>
+      </RadixDialog.Description>
       <Command.Input
         autoFocus
         placeholder={t('Search {{budgetName}}...', { budgetName })}

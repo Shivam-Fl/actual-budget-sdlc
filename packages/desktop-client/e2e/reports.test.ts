@@ -6,6 +6,12 @@ import type { CustomReportPage } from './page-models/custom-report-page';
 import { Navigation } from './page-models/navigation';
 import type { ReportsPage } from './page-models/reports-page';
 
+/**
+ * How long to let the pageerror channel drain before reading it. Page errors are
+ * delivered over CDP out of band, so no DOM-synchronising await waits for them.
+ */
+const PAGE_ERROR_SETTLE_MS = 1000;
+
 test.describe('Reports', () => {
   test.describe.configure({ mode: 'serial' });
 
@@ -711,6 +717,7 @@ test.describe('Reports without transactions', () => {
         exact: true,
       }),
     ).toBeVisible();
+    await page.waitForTimeout(PAGE_ERROR_SETTLE_MS);
     expect(pageErrors).toEqual([]);
   });
 });

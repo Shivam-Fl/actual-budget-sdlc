@@ -1,10 +1,11 @@
 import * as monthUtils from '@actual-app/core/shared/months';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   boundMonthRange,
   calculateSpendingReportTimeRange,
   calculateTimeRange,
+  getEffectiveEndDate,
   getFullFutureRange,
   getLatestRange,
 } from './reportRanges';
@@ -181,5 +182,61 @@ describe('boundMonthRange', () => {
     expect(boundMonthRange('2026-08', '2026-09', '2026-09', '2026-07')).toEqual(
       ['2026-09', '2026-09'],
     );
+  });
+});
+
+describe('getEffectiveEndDate', () => {
+  // `currentDay()` is hardcoded under the test setup (it short-circuits on
+  // `global.IS_TESTING`), so the clamp has to be moved by replacing the module
+  // function rather than with fake timers.
+  function pinToday(today: string) {
+    vi.spyOn(monthUtils, 'currentDay').mockReturnValue(today);
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('clamps to today while the final week is still in progress', () => {
+    pinToday('2026-10-02');
+
+    // 2026-09-27 is a Sunday; its week runs to 10/03, which has not happened.
+    expect(getEffectiveEndDate('2026-09-27', 'Weekly')).toBe('2026-10-02');
+  });
+
+  it('uses the week end once the week has elapsed', () => {
+    pinToday('2026-10-04');
+
+    expect(getEffectiveEndDate('2026-09-27', 'Weekly')).toBe('2026-10-03');
+  });
+
+  it('leaves a week that is entirely in the past on that past week', () => {
+    pinToday('2026-10-02');
+
+    expect(getEffectiveEndDate('2026-09-13', 'Weekly')).toBe('2026-09-19');
+  });
+
+  it('clamps a week that has not started yet to today', () => {
+    pinToday('2026-10-02');
+
+    expect(getEffectiveEndDate('2026-10-11', 'Weekly')).toBe('2026-10-02');
+  });
+
+  it('honours a Monday first day of week', () => {
+    pinToday('2026-10-09');
+
+    // Same inputs under both pref values. 2026-09-28 is a Monday, so its week
+    // ends 10/04 under a Monday start and 10/03 under a Sunday start — the
+    // pair is what makes the pref observable.
+    expect(getEffectiveEndDate('2026-09-28', 'Weekly', '1')).toBe('2026-10-04');
+    expect(getEffectiveEndDate('2026-09-28', 'Weekly', '0')).toBe('2026-10-03');
+  });
+
+  it('returns every other interval unchanged', () => {
+    pinToday('2026-10-02');
+
+    expect(getEffectiveEndDate('2026-09-27', 'Daily')).toBe('2026-09-27');
+    expect(getEffectiveEndDate('2026-09-27', 'Monthly')).toBe('2026-09-27');
+    expect(getEffectiveEndDate('2026-09-27', 'Yearly')).toBe('2026-09-27');
   });
 });

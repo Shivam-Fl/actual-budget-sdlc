@@ -4,9 +4,14 @@ import { q } from '@actual-app/core/shared/query';
 import type { ObjectExpression, Query } from '@actual-app/core/shared/query';
 import {
   getHasTransactionsQuery,
+  getPostedScheduleTransactionsQuery,
   getStatus,
+  indexPostedScheduleTransactions,
 } from '@actual-app/core/shared/schedules';
-import type { ScheduleStatuses } from '@actual-app/core/shared/schedules';
+import type {
+  PostedScheduleTransaction,
+  ScheduleStatuses,
+} from '@actual-app/core/shared/schedules';
 import type {
   AccountEntity,
   ScheduleEntity,
@@ -52,6 +57,25 @@ function loadStatuses(
     onError,
   });
 }
+function loadPostedTransactions(
+  schedules: readonly ScheduleEntity[],
+  onData: (data: Map<string, PostedScheduleTransaction[]>) => void,
+  onError: (error: Error) => void,
+) {
+  return liveQuery<TransactionEntity>(
+    getPostedScheduleTransactionsQuery(schedules),
+    {
+      onData: data => {
+        onData?.(
+          indexPostedScheduleTransactions(
+            data.filter(Boolean) as PostedScheduleTransaction[],
+          ),
+        );
+      },
+      onError,
+    },
+  );
+}
 export type UseSchedulesProps = {
   query?: Query;
 };
@@ -59,6 +83,7 @@ type ScheduleData = {
   schedules: readonly ScheduleEntity[];
   statuses: ScheduleStatuses;
   statusLabels: ScheduleStatusLabels;
+  postedTransactionsBySchedule: Map<string, PostedScheduleTransaction[]>;
 };
 export type UseSchedulesResult = ScheduleData & {
   readonly isLoading: boolean;
@@ -74,11 +99,13 @@ export function useSchedules({
     schedules: [],
     statuses: new Map(),
     statusLabels: new Map(),
+    postedTransactionsBySchedule: new Map(),
   });
   const [upcomingLength] = useSyncedPref('upcomingScheduledTransactionLength');
 
   const scheduleQueryRef = useRef<LiveQuery<ScheduleEntity> | null>(null);
   const statusQueryRef = useRef<LiveQuery<TransactionEntity> | null>(null);
+  const postedQueryRef = useRef<LiveQuery<TransactionEntity> | null>(null);
 
   useEffect(() => {
     let isUnmounted = false;
@@ -107,28 +134,58 @@ export function useSchedules({
     scheduleQueryRef.current = liveQuery<ScheduleEntity>(query, {
       onData: async schedules => {
         // `onData` fires again whenever the schedules change, so tear down the
-        // previous status query first. Otherwise each refresh orphans a live
-        // query that stays subscribed to sync events and keeps re-running.
+        // previous status and posted-transaction queries first. Otherwise each
+        // refresh orphans live queries that stay subscribed to sync events and
+        // keep re-running.
         statusQueryRef.current?.unsubscribe();
+        postedQueryRef.current?.unsubscribe();
+
+        // The two queries are independent subscriptions and can land in either
+        // order, so each publishes with whatever the other has most recently
+        // reported. Waiting for both would strand the register in its loading
+        // state whenever one of them is slow to deliver.
+        let statuses: ScheduleStatuses = new Map();
+        let postedTransactionsBySchedule = new Map<
+          string,
+          PostedScheduleTransaction[]
+        >();
+
+        const publish = () => {
+          if (isUnmounted) {
+            return;
+          }
+
+          setData({
+            schedules,
+            statuses,
+            statusLabels: new Map(
+              [...statuses.keys()].map(key => [
+                key,
+                getStatusLabel(statuses.get(key) || ''),
+              ]),
+            ),
+            postedTransactionsBySchedule,
+          });
+        };
+
         statusQueryRef.current = loadStatuses(
           schedules,
-          (statuses: ScheduleStatuses) => {
-            if (!isUnmounted) {
-              setData({
-                schedules,
-                statuses,
-                statusLabels: new Map(
-                  [...statuses.keys()].map(key => [
-                    key,
-                    getStatusLabel(statuses.get(key) || ''),
-                  ]),
-                ),
-              });
-              setIsLoading(false);
-            }
+          next => {
+            statuses = next;
+            publish();
+            setIsLoading(false);
           },
           onError,
           upcomingLength,
+        );
+
+        postedQueryRef.current = loadPostedTransactions(
+          schedules,
+          next => {
+            postedTransactionsBySchedule = next;
+            publish();
+          },
+          onError,
         );
       },
       onError,
@@ -138,6 +195,7 @@ export function useSchedules({
       isUnmounted = true;
       scheduleQueryRef.current?.unsubscribe();
       statusQueryRef.current?.unsubscribe();
+      postedQueryRef.current?.unsubscribe();
     };
   }, [query, upcomingLength]);
 

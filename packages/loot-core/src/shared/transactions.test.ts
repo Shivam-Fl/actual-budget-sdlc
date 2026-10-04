@@ -6,9 +6,11 @@ import type { TransactionEntity } from '#types/models';
 import {
   addSplitTransaction,
   deleteTransaction,
+  isPreviewId,
   makeAsNonChildTransactions,
   makeChild,
   makeEmptySplitSubtransactions,
+  parsePreviewId,
   splitTransaction,
   updateTransaction,
 } from './transactions';
@@ -33,6 +35,40 @@ function splitError(amount: number) {
 }
 
 describe('Transactions', () => {
+  describe('parsePreviewId', () => {
+    test('returns the schedule id and occurrence date of a preview id', () => {
+      expect(parsePreviewId('preview/schedule-abc/2026-10-09')).toEqual({
+        scheduleId: 'schedule-abc',
+        date: '2026-10-09',
+      });
+    });
+
+    test('returns no date for a bare id, so callers keep their next_date fallback', () => {
+      expect(parsePreviewId('schedule-abc')).toEqual({
+        scheduleId: 'schedule-abc',
+      });
+      expect(parsePreviewId('schedule-abc').date).toBeUndefined();
+    });
+
+    test('agrees with isPreviewId on which ids carry a date', () => {
+      const ids = [
+        'preview/schedule-abc/2026-10-09',
+        'schedule-abc',
+        'a-real-transaction-id',
+      ];
+
+      for (const id of ids) {
+        expect(parsePreviewId(id).date != null).toBe(isPreviewId(id));
+      }
+    });
+
+    test('falls back to no date for a preview id with no date segment', () => {
+      expect(parsePreviewId('preview/schedule-abc')).toEqual({
+        scheduleId: 'schedule-abc',
+      });
+    });
+  });
+
   test('updating a transaction works', () => {
     const transactions = [
       makeTransaction({ amount: 5000 }),

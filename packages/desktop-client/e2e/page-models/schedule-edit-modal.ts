@@ -15,6 +15,7 @@ export class ScheduleEditModal {
   readonly payeeInput: Locator;
   readonly accountInput: Locator;
   readonly amountInput: Locator;
+  readonly repeatsCheckbox: Locator;
   readonly addButton: Locator;
   readonly saveButton: Locator;
   readonly cancelButton: Locator;
@@ -30,6 +31,7 @@ export class ScheduleEditModal {
     this.payeeInput = locator.getByRole('textbox', { name: 'Payee' });
     this.accountInput = locator.getByRole('textbox', { name: 'Account' });
     this.amountInput = locator.getByLabel('Amount');
+    this.repeatsCheckbox = locator.locator('#form_repeats');
     this.addButton = locator.getByRole('button', { name: 'Add' });
     this.saveButton = locator.getByRole('button', { name: 'Save' });
     this.cancelButton = locator.getByRole('button', { name: 'Cancel' });
@@ -56,6 +58,19 @@ export class ScheduleEditModal {
     if (data.amount) {
       await this.amountInput.fill(String(data.amount));
     }
+  }
+
+  /**
+   * Make the schedule a one-off by clearing Repeats.
+   *
+   * `useScheduleEdit` replaces the RecurConfig with `monthUtils.currentDay()`
+   * as a plain string when Repeats is cleared, `ScheduleEditModal` then derives
+   * `repeats` as false from it, and saving writes that string back as an
+   * `isapprox date` condition — which is what makes the saved schedule a
+   * one-off rather than a recurring one.
+   */
+  async uncheckRepeats() {
+    await this.repeatsCheckbox.uncheck();
   }
 
   async #typeAndSelectOption(input: Locator, content: string) {

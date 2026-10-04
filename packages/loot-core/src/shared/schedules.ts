@@ -104,6 +104,12 @@ export function getScheduleOccurrenceMatchStartDate(
 export type PostedScheduleTransaction = {
   schedule?: string | null;
   date: string;
+  /**
+   * The occurrence the transaction was posted for, when it was posted from the
+   * schedule. Undefined/null on transactions that predate the stamp, or that a
+   * user, import or API created themselves.
+   */
+  schedule_occurrence?: string | null;
 };
 
 export function indexPostedScheduleTransactions(
@@ -127,6 +133,15 @@ export function indexPostedScheduleTransactions(
   return byScheduleId;
 }
 
+/**
+ * Whether `tx` discharges `occurrenceDate` for its schedule.
+ *
+ * A stamped transaction is credited to the occurrence it names and to nothing
+ * else, whatever date it carries — the date is the user's to edit, and matching
+ * on it is what let a re-dated payment un-pay its own occurrence. An unstamped
+ * transaction falls back to the date comparison, one-sided as before: it may be
+ * early by up to the lookback but never later than the occurrence.
+ */
 export function isScheduleOccurrencePosted({
   schedule,
   scheduleId,
@@ -143,36 +158,58 @@ export function isScheduleOccurrencePosted({
     occurrenceDate,
   );
 
-  return postedTransactions.some(
-    tx =>
-      tx.schedule === scheduleId &&
-      tx.date >= matchStartDate &&
-      tx.date <= occurrenceDate,
-  );
+  return postedTransactions.some(tx => {
+    if (tx.schedule !== scheduleId) {
+      return false;
+    }
+
+    if (tx.schedule_occurrence != null) {
+      return tx.schedule_occurrence === occurrenceDate;
+    }
+
+    return tx.date >= matchStartDate && tx.date <= occurrenceDate;
+  });
 }
 
 /**
  * Builds a query to check if each schedule already has a matching transaction.
  *
- * The date lower-bound varies:
+ * Each schedule matches on its `schedule_occurrence` stamp first — an exact
+ * identity comparison against `next_date`, so re-dating the payment does not
+ * un-pay the occurrence. Transactions without the stamp fall back to a date
+ * lower bound, which is unchanged from before:
  * - `dateCond.op === 'is'` (one-time or recurring): exact `next_date`, no lookback.
  * - `posts_transaction` (auto-posted recurring): exact `next_date`, since
  *   auto-posted dates are always precise. A lookback here would cause
  *   yesterday's transaction to falsely match today's occurrence.
  * - Otherwise (manual recurring with `isapprox`, etc.): 2-day lookback to catch
  *   early payments.
+ *
+ * The fallback arm must use the `$and` ARRAY form: AQL's `compileOr` joins the
+ * conditions inside a branch with OR, so the object form matches every
+ * schedule-linked transaction and would make every occurrence look paid.
  */
 export function getHasTransactionsQuery(schedules) {
   const filters = schedules.map(schedule => {
     return {
       $and: {
         schedule: schedule.id,
-        date: {
-          $gte: getScheduleOccurrenceMatchStartDate(
-            schedule,
-            schedule.next_date,
-          ),
-        },
+        $or: [
+          { schedule_occurrence: schedule.next_date },
+          {
+            $and: [
+              { schedule_occurrence: null },
+              {
+                date: {
+                  $gte: getScheduleOccurrenceMatchStartDate(
+                    schedule,
+                    schedule.next_date,
+                  ),
+                },
+              },
+            ],
+          },
+        ],
       },
     };
   });
@@ -180,7 +217,7 @@ export function getHasTransactionsQuery(schedules) {
   const query = q('transactions')
     .options({ splits: 'all' })
     .orderBy({ date: 'desc' })
-    .select(['schedule', 'date']);
+    .select(['schedule', 'date', 'schedule_occurrence']);
 
   // An empty `$or` compiles away to no constraint at all (`WHERE 1`), which
   // would scan every transaction in the budget to answer a question about zero
@@ -190,6 +227,42 @@ export function getHasTransactionsQuery(schedules) {
   }
 
   return query.filter({ $or: filters });
+}
+
+/**
+ * Builds a query for every schedule-linked transaction of the given schedules.
+ *
+ * `getHasTransactionsQuery` answers "is this schedule's `next_date` paid?" and
+ * can only ever ask about that one date, which is what makes the preview list
+ * unable to drop a single occurrence out of the middle. This one drops the
+ * `next_date` restriction: it returns every transaction carrying one of these
+ * `schedule` ids, stamped or not, so the caller can match occurrences
+ * individually with `isScheduleOccurrencePosted`.
+ *
+ * It deliberately does not reuse or widen `getHasTransactionsQuery`, which is
+ * load-bearing for `hasTransactionForSchedule` and `advanceSchedulesService`:
+ * a query that reported on later occurrences too would make a later posted
+ * occurrence mark an earlier, still-unpaid one paid.
+ *
+ * The list is unbounded by date — unlike the status query, this one cannot be
+ * narrowed to the upcoming window, because an occurrence may have been posted
+ * at any time in the schedule's life.
+ */
+export function getPostedScheduleTransactionsQuery(schedules) {
+  const query = q('transactions')
+    .options({ splits: 'all' })
+    .select(['schedule', 'date', 'schedule_occurrence']);
+
+  // Same reason as `getHasTransactionsQuery`: an empty `$or` compiles away to
+  // no constraint and would scan every transaction to answer a question about
+  // zero schedules. `id` is a primary key and never null.
+  if (schedules.length === 0) {
+    return query.filter({ id: null });
+  }
+
+  return query.filter({
+    $or: schedules.map(schedule => ({ schedule: schedule.id })),
+  });
 }
 
 type ScheduleRuleOptions = IRuleOptions & {
@@ -409,7 +482,15 @@ export function getUpcomingDays(
   }
 }
 
-export function scheduleIsRecurring(dateCond: Condition | null) {
+/**
+ * Is this a recurrence at all? This does not answer whether a schedule can be
+ * skipped — an exhausted recurrence is still a recur — so for the skip
+ * question use `scheduleIsSkippable`, which asks the stronger one.
+ *
+ * Takes a stored date condition rather than a `Condition`: every caller passes
+ * what `extractScheduleConds` read off the schedule's rule.
+ */
+export function scheduleIsRecurring(dateCond: RuleConditionEntity | null) {
   if (!dateCond) {
     return false;
   }
@@ -417,6 +498,33 @@ export function scheduleIsRecurring(dateCond: Condition | null) {
   const value = cond.getValue();
 
   return value.type === 'recur';
+}
+
+/**
+ * Can this schedule's next date be skipped, i.e. does `setNextDate` have a date
+ * to move it to? `setNextDate` computes the successor with `getNextDateAfter`
+ * and writes only when it returns one (server/schedules/app.ts), so offering
+ * Skip for a schedule with no successor would be an action the server silently
+ * drops.
+ *
+ * `scheduleIsRecurring` answers a different, weaker question — "is this a
+ * recurrence?" — and stays true for a recurrence whose occurrences are all used
+ * up, which is exactly the case `getNextDateAfter` drops. Widening it to cover
+ * that would be wrong: several callers read it to decide whether a schedule is
+ * *not* recurring, and preview expansion needs the plain answer.
+ */
+export function scheduleIsSkippable(
+  dateCond: RuleConditionEntity | null,
+  nextDate: string | null | undefined,
+) {
+  if (nextDate == null) {
+    return false;
+  }
+
+  return (
+    scheduleIsRecurring(dateCond) &&
+    getNextDateAfter(dateCond, nextDate) != null
+  );
 }
 
 export type ScheduleStatusType = ReturnType<typeof getStatus>;
@@ -433,11 +541,23 @@ export function isForPreview(
   );
 }
 
+/**
+ * Builds the preview rows the register shows for scheduled transactions.
+ *
+ * `postedTransactionsBySchedule` is the per-occurrence view of what has already
+ * been paid, as returned by `getPostedScheduleTransactionsQuery` and indexed by
+ * `indexPostedScheduleTransactions`. It is optional: a caller that does not
+ * have it gets an empty map, which leaves the list exactly as it was.
+ */
 export function computeSchedulePreviewTransactions(
   schedules: readonly ScheduleEntity[],
   statuses: ScheduleStatuses,
   upcomingLength?: string,
   filter?: (schedule: ScheduleEntity) => boolean,
+  postedTransactionsBySchedule: Map<
+    string,
+    PostedScheduleTransaction[]
+  > = new Map(),
 ) {
   const schedulesForPreview = schedules
     .filter(s => isForPreview(s, statuses))
@@ -496,7 +616,29 @@ export function computeSchedulePreviewTransactions(
         dates.shift();
       }
 
-      return dates.map(date => ({
+      // `status` is one bit per schedule and only ever describes `next_date`,
+      // so the shift above can consume the head and nothing else. Posting a
+      // LATER occurrence leaves `next_date` on the earlier, still-unpaid one —
+      // that occurrence has to come out too, and it can only be identified by
+      // the stamp the transaction was written with.
+      //
+      // The shift stays: `getHasTransactionsQuery`'s fallback arm matches an
+      // unstamped transaction dated *after* the occurrence (a lower bound only),
+      // which this two-sided comparison deliberately does not, so neither
+      // filter subsumes the other.
+      const postedTransactions =
+        postedTransactionsBySchedule.get(schedule.id) ?? [];
+      const unpaidDates = dates.filter(
+        date =>
+          !isScheduleOccurrencePosted({
+            schedule,
+            scheduleId: schedule.id,
+            occurrenceDate: date,
+            postedTransactions,
+          }),
+      );
+
+      return unpaidDates.map(date => ({
         id: 'preview/' + schedule.id + `/${date}`,
         payee: schedule._payee,
         account: schedule._account,

@@ -25,6 +25,7 @@ import type {
   QueryDataEntity,
   UncategorizedEntity,
 } from '#components/reports/ReportOptions';
+import { getEffectiveEndDate } from '#components/reports/reportRanges';
 import type { useSpreadsheet } from '#hooks/useSpreadsheet';
 
 import { narrowCategoriesByConditions } from './budgetDataQuery';
@@ -127,15 +128,11 @@ export function createCustomSpreadsheet({
     });
     const conditionsOpKey = conditionsOp === 'or' ? '$or' : '$and';
 
-    // A weekly bucket is labelled with its week start but covers the whole week,
-    // so the query bound and the final bucket's `intervalEndDate` both use the
-    // week's true end, clamped to today so an in-progress week never projects
-    // into future days. The From/To pickers can only offer week starts, so
-    // without this the final week is truncated to a single day.
-    const weekEnd = monthUtils.getWeekEnd(endDate, firstDayOfWeekIdx);
-    const today = monthUtils.currentDay();
-    const effectiveEndDate =
-      interval === 'Weekly' ? (today < weekEnd ? today : weekEnd) : endDate;
+    const effectiveEndDate = getEffectiveEndDate(
+      endDate,
+      interval,
+      firstDayOfWeekIdx,
+    );
 
     let assets: QueryDataEntity[];
     let debts: QueryDataEntity[];
@@ -154,6 +151,13 @@ export function createCustomSpreadsheet({
       budgetType,
     }));
 
+    // This guard remaps rows onto week starts; it is deliberately *not* applied
+    // to the widening above, which applies to every balance type. Budget rows
+    // arrive keyed by month while weekly bucket labels are week starts, so a
+    // budget row can never match a bucket and the remap would only misattribute
+    // one. Widening a budgeted weekly report is therefore free: it fetches one
+    // more month of rows that are still discarded. Keep the two decisions as
+    // they are — the widening is shared, this remap is budgeted-only.
     if (interval === 'Weekly' && balanceTypeOp !== 'totalBudgeted') {
       debts = debts.map(d => {
         return {
