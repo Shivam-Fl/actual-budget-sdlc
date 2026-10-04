@@ -24,8 +24,8 @@ beforeAll(async () => {
 // than spy-scoped, so it takes down the global.fetch spy this file's beforeAll
 // installed along with the console spies. Nothing breaks today, because init()
 // has already run and sql.js caches the compiled wasm — but before the
-// beforeEach below re-armed it, from the second test on, global.fetch was the
-// real jsdom fetch again. patchFetchForSqlJS is a
+// beforeEach below re-armed the fetch patch, from the second test on,
+// global.fetch was the real jsdom fetch again. patchFetchForSqlJS is a
 // vi.spyOn(...).mockImplementation(...) with no restore of its own, so calling
 // it once per test is idempotent and the blanket restore can no longer outrun
 // it.
