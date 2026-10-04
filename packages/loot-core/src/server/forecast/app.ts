@@ -147,6 +147,15 @@ export async function generateForecast({
   // stamp off `transactions` therefore misses a posted occurrence whose
   // transaction has since been split, and projects it a second time. The
   // fourth reader of the stamp; the other three already pass `splits: 'all'`.
+  //
+  // Deliberately NOT narrowed by `accountIdsToQuery` or `filterInfo.filters`,
+  // which `getTransactions` above does apply: 'posted' means the occurrence was
+  // paid, which is a fact about the ledger and not about what the user happens
+  // to be filtering the forecast by. Narrowing it would make an occurrence read
+  // as unpaid — and get projected on top of the real rows — whenever a filter
+  // excluded the payment. `indexScheduleOccurrences` narrows the PROJECTED rows
+  // by account and conditions separately, so nothing outside the filter leaks
+  // into the result.
   const { data: postedScheduleTransactions } = await aqlQuery(
     getPostedScheduleTransactionsQuery(schedules),
   );

@@ -555,21 +555,33 @@ describe('forecast app', () => {
     const NEXT_OCCURRENCE = '2024-03-17';
     const AMOUNT = -100_000;
 
-    // The `_account` and other rule-derived fields on a schedule only resolve
-    // once the JSON-path mappings are populated and the services are running,
-    // and `schedule/post-transaction` bails out without them.
-    beforeEach(() => {
-      schedulesApp.startServices();
-    });
-
-    afterEach(async () => {
-      await schedulesApp.stopServices();
-    });
-
     // Posted through the real handler so the row carries a genuine occurrence
     // stamp, then split through the same reducer the register's Split
     // affordance uses, with the amount divided between the two children.
-    async function createForecastWithSplitPostedOccurrence() {
+    //
+    // The schedules service is started and stopped HERE rather than in a
+    // describe-wide hook pair, matching the sibling cases in this file: the
+    // lifecycle is opened at the point of use, so a case added to this block
+    // later cannot silently inherit a running service, and a throw between
+    // the two does not leave one running for the rest of the file. It is
+    // needed because the `_account` and other rule-derived fields on a
+    // schedule only resolve once the JSON-path mappings are populated, and
+    // `schedule/post-transaction` bails out without them.
+    async function createForecastWithSplitPostedOccurrence(
+      conditions?: RuleConditionEntity[],
+    ) {
+      schedulesApp.startServices();
+
+      try {
+        return await buildSplitPostedOccurrenceForecast(conditions);
+      } finally {
+        await schedulesApp.stopServices();
+      }
+    }
+
+    async function buildSplitPostedOccurrenceForecast(
+      conditions?: RuleConditionEntity[],
+    ) {
       const accountId = await db.insertAccount({
         id: 'acct',
         name: 'Checking',
@@ -635,6 +647,7 @@ describe('forecast app', () => {
         accountIds: [accountId],
         startDate: '2024-03-01',
         endDate: '2024-03-31',
+        conditions,
       });
 
       return {
@@ -671,6 +684,33 @@ describe('forecast app', () => {
       expect(dataPointByDate[NEXT_OCCURRENCE].transactions[0]).toMatchObject({
         amount: AMOUNT,
       });
+    });
+
+    it('stays suppressed when an active filter excludes the posted transaction', async () => {
+      // Pins what the separate query means when a forecast filter is on. The
+      // posted-transaction query is deliberately NOT narrowed by `filterInfo`
+      // or `accountIdsToQuery` — it answers "has this occurrence been paid",
+      // which does not depend on what the user is currently filtering the
+      // forecast by. Narrowing it would resurrect the duplicate projection
+      // below whenever a filter excluded the real payment, because the
+      // occurrence would read as unpaid and be projected on top of rows that
+      // the filter is already hiding. `indexScheduleOccurrences` applies both
+      // narrowings to the PROJECTED rows separately.
+      //
+      // Filtering on the OCCURRENCE's amount discriminates the two readings.
+      // The real rows are the two children at AMOUNT / 2 each, so this filter
+      // excludes the payment that proves the occurrence was paid while still
+      // admitting a projected occurrence of AMOUNT. Were the posted query
+      // narrowed by the filter, the occurrence would read as unpaid and appear
+      // here — projected on top of rows the filter is already hiding.
+      const { dataPointByDate } = await createForecastWithSplitPostedOccurrence(
+        [{ op: 'is', field: 'amount', value: AMOUNT }],
+      );
+
+      expect(dataPointByDate[OCCURRENCE].transactions).toEqual([]);
+      // The next occurrence IS projected, so the filter is not simply
+      // suppressing everything and the assertion above is meaningful.
+      expect(dataPointByDate[NEXT_OCCURRENCE].transactions).toHaveLength(1);
     });
   });
 

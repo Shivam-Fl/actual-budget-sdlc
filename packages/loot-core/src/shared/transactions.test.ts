@@ -504,6 +504,34 @@ describe('Transactions', () => {
       expect(result.updated[0].error).toBeNull();
     });
 
+    test('takes the surviving row category from the parent, not a child', () => {
+      // `makeTransactionWithChildCategory` reads the category off the promoted
+      // row, so which category lands here depends on what the children carry.
+      // A never-filled split whose children were left holding the parent's
+      // category — which is what `makeChild` copies when the register's Split
+      // affordance opens them — keeps it. Pinned because the alternative (the
+      // first child's category winning) would make the surviving row's
+      // category depend on selection order.
+      const transactions = makeSplitTransaction(
+        { id: 'p', amount: 12345, category: 'cat-parent' },
+        [
+          { id: 'c1', amount: 0, category: 'cat-parent' },
+          { id: 'c2', amount: 0, category: 'cat-parent' },
+        ],
+      );
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1], transactions[2]],
+        transactions,
+      );
+
+      expect(result.updated[0]).toMatchObject({
+        id: 'p',
+        amount: 12345,
+        category: 'cat-parent',
+      });
+    });
+
     test('still splits out a filled split when both children are unsplit', () => {
       const transactions = makeSplitTransaction({ id: 'p', amount: 12345 }, [
         { id: 'c1', amount: 5000 },
@@ -590,11 +618,21 @@ describe('Transactions', () => {
       expect(result.deleted).toEqual([]);
     });
 
-    test('keeps the parent at its full amount when two of three partly-typed children are unsplit', () => {
-      // A product judgement, pinned so it is visible rather than incidental:
-      // 5000 + 4000 + 0 does not account for 12345, so the parent survives
-      // intact and the typed 9000 is discarded. Today's behaviour loses 2345
-      // instead by keeping the 9000 and deleting the parent. Both lose money.
+    test('splits out the typed amounts when two of three partly-typed children are unsplit', () => {
+      // Pinned because it is a JUDGEMENT and the guard sits right on the
+      // boundary of it. 5000 + 4000 + 0 does not add up to 12345, so the parent
+      // does not account for what the children say — but the user typed those
+      // amounts, and they are what the split currently means. This arm
+      // therefore behaves as it did before the guard: the typed 9000 survives
+      // and the parent's untyped 2345 does not.
+      //
+      // The alternative — restoring the parent at 12345 and discarding the
+      // typed rows — keeps the parent's full amount instead, and is defensible.
+      // It was what this PR originally did, and it was dropped because the same
+      // rule also fires on a split whose children OVERSHOOT the parent, where
+      // collapsing them destroys real value the user entered. See the two
+      // overshooting cases below. A rule that cannot tell those apart is the
+      // wrong rule; `every(amount === 0)` can.
       const transactions = makeSplitTransaction({ id: 'p', amount: 12345 }, [
         { id: 'c1', amount: 5000 },
         { id: 'c2', amount: 4000 },
@@ -606,12 +644,77 @@ describe('Transactions', () => {
         transactions,
       );
 
-      expect(asRows(result.updated)).toEqual([['p', 12345]]);
-      expect(asRows(result.deleted)).toEqual([
+      expect(asRows(result.updated)).toEqual([
         ['c1', 5000],
         ['c2', 4000],
         ['c3', 0],
       ]);
+      expect(asRows(result.deleted)).toEqual([['p', 12345]]);
+    });
+
+    test('still splits out when the children sum to MORE than the parent', () => {
+      // The overshoot arm, and the reason the guard is not "the promoted rows
+      // do not account for the parent". These children account for the parent
+      // and more; the user typed 14000 across them, and collapsing them onto
+      // the 12345 parent destroys the 1655 surplus with nothing to show for it.
+      const transactions = makeSplitTransaction({ id: 'p', amount: 12345 }, [
+        { id: 'c1', amount: 7000 },
+        { id: 'c2', amount: 7000 },
+      ]);
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1], transactions[2]],
+        transactions,
+      );
+
+      expect(asRows(result.updated)).toEqual([
+        ['c1', 7000],
+        ['c2', 7000],
+      ]);
+      expect(asRows(result.deleted)).toEqual([['p', 12345]]);
+    });
+
+    test('still splits out an overshooting split when ONE of two children is unsplit', () => {
+      // Same shape through the one-selected entry point, which is the ordinary
+      // "clicked one row of a split" gesture and reaches a different set.
+      const transactions = makeSplitTransaction({ id: 'p', amount: 12345 }, [
+        { id: 'c1', amount: 7000 },
+        { id: 'c2', amount: 7000 },
+      ]);
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1]],
+        transactions,
+      );
+
+      expect(asRows(result.updated)).toEqual([
+        ['c1', 7000],
+        ['c2', 7000],
+      ]);
+      expect(asRows(result.deleted)).toEqual([['p', 12345]]);
+    });
+
+    test('still splits out when one child of an under-filled split is unsplit', () => {
+      // The arm the guard must NOT reach in the other direction either. 5000 +
+      // 4000 falls short of 12345, but the user typed those amounts, so they
+      // are what the split means; restoring the parent at its full amount here
+      // would discard both typed rows AND delete the child the user never
+      // selected. Pre-guard behaviour, kept deliberately.
+      const transactions = makeSplitTransaction({ id: 'p', amount: 12345 }, [
+        { id: 'c1', amount: 5000 },
+        { id: 'c2', amount: 4000 },
+      ]);
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1]],
+        transactions,
+      );
+
+      expect(asRows(result.updated)).toEqual([
+        ['c1', 5000],
+        ['c2', 4000],
+      ]);
+      expect(asRows(result.deleted)).toEqual([['p', 12345]]);
     });
   });
 

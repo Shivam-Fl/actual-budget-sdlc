@@ -183,14 +183,7 @@ export async function buildFutureScheduleOccurrences(
   endDateObj: Date,
   accountsById: Map<string, AccountWithComputedBalance>,
   ruleAccountsById: Map<string, DbAccountForRules>,
-  /**
-   * Only the three columns `indexPostedScheduleTransactions` reads, from
-   * `getPostedScheduleTransactionsQuery` (which passes `splits: 'all'`, so a
-   * split parent is visible). The narrow type DOCUMENTS that projection — it
-   * is not a guard: `TransactionEntity` is structurally assignable to
-   * `PostedScheduleTransaction`, so the inline split set would still typecheck
-   * if it were passed back here. What keeps that from happening is the tests.
-   */
+  /** Rows from `getPostedScheduleTransactionsQuery`; only the three columns `indexPostedScheduleTransactions` reads. */
   postedTransactions: PostedScheduleTransaction[],
 ) {
   const postedByScheduleId =
