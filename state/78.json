@@ -368,7 +368,7 @@
       "action": "qa attempt 1"
     }
   ],
-  "resume_at": null,
+  "resume_at": "qa",
   "flow_plan": {
     "kind": "chore",
     "confidence": 85,
@@ -380,7 +380,7 @@
     },
     "decided_at": "2026-10-04T12:32:24.916Z"
   },
-  "stopped_at": null,
+  "stopped_at": "qa",
   "dispatched_stage": "qa",
   "validated_from": "plan",
   "validated_at": "2026-10-04T13:27:39.029Z",
