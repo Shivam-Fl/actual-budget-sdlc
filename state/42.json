@@ -156,7 +156,10 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/server/schedules/app.ts",
+    "packages/loot-core/src/server/schedules/app.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
