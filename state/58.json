@@ -287,7 +287,7 @@
     "decided_at": "2026-10-03T21:40:12.984Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "review",
+  "dispatched_stage": "qa",
   "failure_packet": {
     "issue": 58,
     "head": null,
