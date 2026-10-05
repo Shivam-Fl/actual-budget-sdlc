@@ -333,5 +333,21 @@
       }
     ],
     "pr": "103"
-  }
+  },
+  "qa": {
+    "verdict": "pass",
+    "introduced_bugs": 0,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5"
+    ],
+    "sha": "625983f7ff628bd4193374463e8537be916c82e3",
+    "run_id": "37270012968",
+    "work_order_version": 1,
+    "at": "2026-10-05T06:47:07.798Z"
+  },
+  "qa_open_bugs": []
 }
