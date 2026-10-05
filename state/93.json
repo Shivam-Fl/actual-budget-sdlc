@@ -454,7 +454,7 @@
     "decided_at": "2026-10-05T01:03:55.216Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "review",
+  "dispatched_stage": "qa",
   "validated_from": "root-cause",
   "validated_at": "2026-10-05T08:40:00.005Z",
   "validated_ac_changes": [
