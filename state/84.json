@@ -227,7 +227,13 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/reports/spreadsheets/sankey-spreadsheet.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/budget-analysis-spreadsheet.ts",
+    "upcoming-release-notes/category-text-filters-mean-the-same-in-sankey-and-budget-analysis.md",
+    "packages/desktop-client/src/components/reports/spreadsheets/sankey-spreadsheet.test.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/budget-analysis-spreadsheet.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
