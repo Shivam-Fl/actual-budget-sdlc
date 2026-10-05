@@ -246,7 +246,12 @@
       "AC-1 through AC-6 are browser-verified for the first time — no e2e test covers unsplitting. If the demo budget lacks a splittable expense, AC-6 cannot be checked as written and needs a hand-built one."
     ]
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/shared/transactions.ts",
+    "packages/loot-core/src/server/forecast/forecast-schedules.ts",
+    "packages/loot-core/src/server/forecast/app.test.ts",
+    "packages/loot-core/src/shared/transactions.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "debug",
