@@ -1,6 +1,8 @@
 import { theme } from '@actual-app/components/theme';
 import { send } from '@actual-app/core/platform/client/connection';
+import { likePatternToRegex } from '@actual-app/core/shared/likePattern';
 import * as monthUtils from '@actual-app/core/shared/months';
+import { getNormalisedString } from '@actual-app/core/shared/normalisation';
 import { q } from '@actual-app/core/shared/query';
 import type {
   CategoryGroupEntity,
@@ -442,6 +444,20 @@ export function filterCategoryGroups(
     return categoryGroups;
   }
 
+  // `contains` reaches the query as `$like '%' + value + '%'`
+  // (transaction-rules.ts), which the compiler emits as
+  // `UNICODE_LIKE(<normalised pattern>, NORMALISE(name))` (aql/compiler.ts).
+  // UNICODE_LIKE speaks a PATTERN language in which '%' and '?' are wildcards
+  // and a backslash escapes exactly those two - not a substring language.
+  // Reading it as a literal `includes` leaves this axis in a strict subset of
+  // what `api/budget-month` returned, and a category the query kept would have
+  // no node to render its value on. So the two arms below run the query's own
+  // two primitives, in the same order budgetDataQuery.ts runs them.
+  const containsLikePattern = (textValue: string, pattern: string): boolean =>
+    likePatternToRegex(getNormalisedString('%' + pattern + '%')).test(
+      getNormalisedString(textValue),
+    );
+
   const matchesStringCondition = (
     id: string,
     name: string,
@@ -457,16 +473,13 @@ export function filterCategoryGroups(
     if (op === 'oneOf') return Array.isArray(value) && value.includes(id);
     if (op === 'notOneOf') return !Array.isArray(value) || !value.includes(id);
     if (op === 'contains') {
-      return (
-        typeof value === 'string' &&
-        name.toLowerCase().includes(value.toLowerCase())
-      );
+      return typeof value === 'string' && containsLikePattern(name, value);
     }
+    // The query's `$notlike` also carries an `OR left IS NULL` disjunct
+    // (aql/compiler.ts), which never fires for a category name - `name` is not
+    // nullable - so the exact negation is the whole of it.
     if (op === 'doesNotContain') {
-      return (
-        typeof value === 'string' &&
-        !name.toLowerCase().includes(value.toLowerCase())
-      );
+      return typeof value === 'string' && !containsLikePattern(name, value);
     }
     if (op === 'matches') {
       if (typeof value !== 'string') return false;

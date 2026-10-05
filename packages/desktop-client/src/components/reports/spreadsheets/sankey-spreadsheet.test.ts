@@ -1,6 +1,11 @@
-import type { RuleConditionEntity } from '@actual-app/core/types/models';
+import type {
+  CategoryEntity,
+  CategoryGroupEntity,
+  RuleConditionEntity,
+} from '@actual-app/core/types/models';
 import { describe, expect, it, vi } from 'vitest';
 
+import { filterCategoriesByConditions } from './budgetDataQuery';
 import {
   addHiddenNodes,
   addNode,
@@ -495,6 +500,227 @@ describe('sankey-spreadsheet', () => {
       expect(result[0].categories).toHaveLength(2);
       expect(result[0].categories.map(c => c.id)).toContain('c1');
       expect(result[0].categories.map(c => c.id)).toContain('c3');
+    });
+
+    // `contains` reaches the query as `$like '%' + value + '%'`, which speaks a
+    // PATTERN language, not a substring one. Every case below is asserted
+    // against `filterCategoriesByConditions` - the implementation the Custom
+    // and Grouped reports ship - so "the two reports agree" is checked rather
+    // than argued. The names are deliberately wildcard-shaped: the fixtures
+    // above are plain ASCII and cannot tell an over-broad fix from an
+    // over-escaping one.
+    const wildcardGroups = [
+      createCategoryGroup('g_fun', 'Fun Money', false, [
+        { id: 'c_food', name: 'Food' },
+        { id: 'c_groceries', name: 'Groceries' },
+      ]),
+      createCategoryGroup('g_bills', 'Bills', false, [
+        { id: 'c_100off', name: '100% Off' },
+        { id: 'c_cafe', name: 'Café' },
+      ]),
+      createCategoryGroup('g_savings', 'Savings', false, [
+        { id: 'c_csharp', name: 'C_Sharp' },
+      ]),
+    ];
+
+    const flattenIds = (groups: Array<{ categories: Array<{ id: string }> }>) =>
+      groups.flatMap(g => g.categories.map(c => c.id));
+
+    const everyId = flattenIds(wildcardGroups);
+
+    const wildcardCategories = wildcardGroups.flatMap(g =>
+      g.categories.map(
+        c =>
+          ({
+            id: c.id,
+            name: c.name,
+            group: g.id,
+            is_income: false,
+            hidden: false,
+          }) as CategoryEntity,
+      ),
+    );
+
+    const wildcardCategoryGroups = wildcardGroups.map(
+      g => ({ id: g.id, name: g.name }) as CategoryGroupEntity,
+    );
+
+    const textCondition = (
+      field: 'category' | 'category_group',
+      op: 'contains' | 'doesNotContain',
+      value: string,
+    ) => ({ field, op, value, customName: '' }) as RuleConditionEntity;
+
+    const axisIds = (
+      field: 'category' | 'category_group',
+      op: 'contains' | 'doesNotContain',
+      value: string,
+    ) =>
+      flattenIds(
+        filterCategoryGroups(
+          wildcardGroups,
+          [textCondition(field, op, value)],
+          'and',
+        ),
+      );
+
+    const referenceIds = (
+      field: 'category' | 'category_group',
+      op: 'contains' | 'doesNotContain',
+      value: string,
+    ) =>
+      filterCategoriesByConditions(
+        wildcardCategories,
+        wildcardCategoryGroups,
+        [textCondition(field, op, value)],
+        'and',
+      ).map(c => c.id);
+
+    it('reads a bare "%" as a wildcard, keeping the whole axis', () => {
+      const result = axisIds('category', 'contains', '%');
+
+      expect(result).toEqual(referenceIds('category', 'contains', '%'));
+      expect(result).not.toEqual([]);
+    });
+
+    it('reads a bare "?" as a wildcard, keeping the whole axis', () => {
+      const result = axisIds('category', 'contains', '?');
+
+      expect(result).toEqual(referenceIds('category', 'contains', '?'));
+      expect(result).toEqual(everyId);
+    });
+
+    it('reads "o%" as an "o" followed by anything, not a literal "o%"', () => {
+      const result = axisIds('category', 'contains', 'o%');
+
+      expect(result).toEqual(referenceIds('category', 'contains', 'o%'));
+      expect(result).toEqual(['c_food', 'c_groceries', 'c_100off']);
+    });
+
+    it('reads a backslash-escaped "%" as a literal percent sign', () => {
+      const result = axisIds('category', 'contains', '\\%');
+
+      expect(result).toEqual(referenceIds('category', 'contains', '\\%'));
+      expect(result).toEqual(['c_100off']);
+    });
+
+    it('does not treat "_" as a wildcard', () => {
+      // `_` is not a wildcard in UNICODE_LIKE, so escaping it here would invent
+      // a divergence that does not exist.
+      expect(axisIds('category', 'contains', '_')).toEqual(
+        referenceIds('category', 'contains', '_'),
+      );
+      expect(axisIds('category', 'contains', '_')).toEqual(['c_csharp']);
+      expect(axisIds('category', 'contains', 'C_')).toEqual(
+        referenceIds('category', 'contains', 'C_'),
+      );
+      expect(axisIds('category', 'contains', 'C_')).toEqual(['c_csharp']);
+    });
+
+    it('folds diacritics on both sides of the comparison', () => {
+      // A bare `toLowerCase()` drops "Café" for both of these today.
+      expect(axisIds('category', 'contains', 'cafe')).toEqual(
+        referenceIds('category', 'contains', 'cafe'),
+      );
+      expect(axisIds('category', 'contains', 'cafe')).toEqual(['c_cafe']);
+      expect(axisIds('category', 'contains', 'café')).toEqual(
+        referenceIds('category', 'contains', 'café'),
+      );
+      expect(axisIds('category', 'contains', 'café')).toEqual(['c_cafe']);
+    });
+
+    it.each(['%', '?', 'o%', 'cafe'])(
+      'makes doesNotContain "%s" the exact complement of contains',
+      value => {
+        const contains = axisIds('category', 'contains', value);
+        const excludes = axisIds('category', 'doesNotContain', value);
+
+        expect(excludes).toEqual(everyId.filter(id => !contains.includes(id)));
+        expect(excludes.filter(id => contains.includes(id))).toEqual([]);
+        expect([...contains, ...excludes].sort()).toEqual([...everyId].sort());
+      },
+    );
+
+    it('still narrows on an ordinary substring', () => {
+      // Negative control: a fix that turned every text condition into a no-op
+      // would pass the wildcard cases above and fail here.
+      expect(axisIds('category', 'contains', 'oo')).toEqual(
+        referenceIds('category', 'contains', 'oo'),
+      );
+      expect(axisIds('category', 'contains', 'oo')).toEqual(['c_food']);
+      expect(axisIds('category', 'contains', 'BILL')).toEqual(
+        referenceIds('category', 'contains', 'BILL'),
+      );
+      expect(axisIds('category', 'contains', 'BILL')).toEqual([]);
+    });
+
+    it('applies the same pattern language to the category_group field', () => {
+      expect(axisIds('category_group', 'contains', '%')).toEqual(
+        referenceIds('category_group', 'contains', '%'),
+      );
+      expect(axisIds('category_group', 'contains', '%')).toEqual(everyId);
+      expect(axisIds('category_group', 'contains', 'Fun')).toEqual(
+        referenceIds('category_group', 'contains', 'Fun'),
+      );
+      expect(axisIds('category_group', 'contains', 'Fun')).toEqual([
+        'c_food',
+        'c_groceries',
+      ]);
+    });
+
+    it('leaves the id and regex operators alone', () => {
+      const conditions: RuleConditionEntity[] = [
+        { field: 'category', op: 'is', value: 'c_food', customName: '' },
+      ];
+      expect(
+        flattenIds(filterCategoryGroups(wildcardGroups, conditions, 'and')),
+      ).toEqual(['c_food']);
+
+      const isNot: RuleConditionEntity[] = [
+        { field: 'category', op: 'isNot', value: 'c_food', customName: '' },
+      ];
+      expect(
+        flattenIds(filterCategoryGroups(wildcardGroups, isNot, 'and')),
+      ).toEqual(everyId.filter(id => id !== 'c_food'));
+
+      const oneOf: RuleConditionEntity[] = [
+        {
+          field: 'category',
+          op: 'oneOf',
+          value: ['c_food', 'c_cafe'],
+          customName: '',
+        },
+      ];
+      expect(
+        flattenIds(filterCategoryGroups(wildcardGroups, oneOf, 'and')),
+      ).toEqual(['c_food', 'c_cafe']);
+
+      const notOneOf: RuleConditionEntity[] = [
+        {
+          field: 'category',
+          op: 'notOneOf',
+          value: ['c_food', 'c_cafe'],
+          customName: '',
+        },
+      ];
+      expect(
+        flattenIds(filterCategoryGroups(wildcardGroups, notOneOf, 'and')),
+      ).toEqual(everyId.filter(id => !['c_food', 'c_cafe'].includes(id)));
+
+      const matches: RuleConditionEntity[] = [
+        { field: 'category', op: 'matches', value: 'grocer', customName: '' },
+      ];
+      expect(
+        flattenIds(filterCategoryGroups(wildcardGroups, matches, 'and')),
+      ).toEqual(['c_groceries']);
+
+      // The `/re/flags` special case `matches` carries on this report.
+      const slashed: RuleConditionEntity[] = [
+        { field: 'category', op: 'matches', value: '/FOOD/i', customName: '' },
+      ];
+      expect(
+        flattenIds(filterCategoryGroups(wildcardGroups, slashed, 'and')),
+      ).toEqual(['c_food']);
     });
   });
 

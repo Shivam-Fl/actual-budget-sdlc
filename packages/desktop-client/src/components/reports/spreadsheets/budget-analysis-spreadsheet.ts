@@ -1,6 +1,8 @@
 // @ts-strict-ignore
 import { send } from '@actual-app/core/platform/client/connection';
+import { likePatternToRegex } from '@actual-app/core/shared/likePattern';
 import * as monthUtils from '@actual-app/core/shared/months';
+import { getNormalisedString } from '@actual-app/core/shared/normalisation';
 import type {
   CategoryEntity,
   RuleConditionEntity,
@@ -171,6 +173,135 @@ export function getNextRunningBalance({
   return hasBudgetData ? carryoverToNextMonth : runningBalance;
 }
 
+function containsLikePattern(textValue: string, pattern: string): boolean {
+  return likePatternToRegex(getNormalisedString('%' + pattern + '%')).test(
+    getNormalisedString(textValue),
+  );
+}
+
+/**
+ * The expense categories a Budget Analysis report is built from.
+ *
+ * `envelope-budget-month` is fetched with no conditions, so - like the Sankey
+ * report's `filterCategoryGroups` - this axis is narrowed in JS rather than by
+ * the query. `contains` / `doesNotContain` therefore have to be read the way
+ * the query reads them: `$like '%' + value + '%'` compiles to
+ * `UNICODE_LIKE(<normalised pattern>, NORMALISE(name))` (aql/compiler.ts), a
+ * PATTERN language in which '%' and '?' are wildcards and a backslash escapes
+ * exactly those two. A bare `toLowerCase().includes()` is a substring test and
+ * keeps a strict subset of what the month data holds - and this list is exactly
+ * what `summarizeMonthCategories` sums every month's totals over, so a category
+ * the filter drops leaves the report's totals with no error and no empty state.
+ * budgetDataQuery.ts carries the same translation for the Custom and Grouped
+ * reports.
+ */
+export function filterCategoriesForConditions(
+  baseCategories: CategoryEntity[],
+  categoryGroups: Array<{ id: string; name: string }>,
+  conditions: RuleConditionEntity[],
+  conditionsOp: 'and' | 'or',
+): CategoryEntity[] {
+  // Build a UUID → name map for category groups so text-based operators
+  // (contains, doesNotContain, matches) can match against the group name.
+  const groupNameById = new Map<string, string>(
+    categoryGroups.map(group => [group.id, group.name] as const),
+  );
+
+  // Filter categories based on conditions (supports both 'category' and 'category_group' fields)
+  const relevantConditions = conditions.filter(
+    cond =>
+      !cond.customName &&
+      (cond.field === 'category' || cond.field === 'category_group'),
+  );
+
+  let categoriesToInclude: CategoryEntity[];
+  if (relevantConditions.length > 0) {
+    // Evaluate each condition to get sets of matching categories.
+    // category_group conditions are expanded to their member categories via cat.group.
+    const conditionResults = relevantConditions.map(cond => {
+      const getKey = (cat: CategoryEntity) =>
+        cond.field === 'category_group' ? cat.group : cat.id;
+      const matchesRegex =
+        cond.op === 'matches' &&
+        typeof cond.value === 'string' &&
+        cond.value.length <= 256
+          ? (() => {
+              try {
+                return new RegExp(cond.value, 'i');
+              } catch {
+                return null;
+              }
+            })()
+          : null;
+      return baseCategories.filter((cat: CategoryEntity) => {
+        const key = getKey(cat);
+        // For text-based operators, compare against the human-readable name
+        // rather than the UUID. For category_group, resolve UUID → name via
+        // the map; for category, use the category's own name directly.
+        const textValue =
+          cond.field === 'category_group'
+            ? (groupNameById.get(key) ?? key)
+            : cat.name;
+        if (cond.op === 'is') {
+          return cond.value === key;
+        } else if (cond.op === 'isNot') {
+          return cond.value !== key;
+        } else if (cond.op === 'oneOf') {
+          return Array.isArray(cond.value) && cond.value.includes(key);
+        } else if (cond.op === 'notOneOf') {
+          return Array.isArray(cond.value) && !cond.value.includes(key);
+        } else if (cond.op === 'contains') {
+          return (
+            typeof cond.value === 'string' &&
+            containsLikePattern(textValue, cond.value)
+          );
+        } else if (cond.op === 'doesNotContain') {
+          return (
+            typeof cond.value === 'string' &&
+            !containsLikePattern(textValue, cond.value)
+          );
+        } else if (cond.op === 'matches') {
+          return matchesRegex?.test(textValue) ?? false;
+        }
+        return false;
+      });
+    });
+
+    // Combine results based on conditionsOp
+    if (conditionsOp === 'or') {
+      // OR: Union of all matching categories
+      const categoryIds = new Set(conditionResults.flat().map(cat => cat.id));
+      categoriesToInclude = baseCategories.filter(cat =>
+        categoryIds.has(cat.id),
+      );
+    } else {
+      // AND: Intersection of all matching categories
+      if (conditionResults.length === 0) {
+        categoriesToInclude = [];
+      } else {
+        const firstSet = new Set(conditionResults[0].map(cat => cat.id));
+        for (let i = 1; i < conditionResults.length; i++) {
+          const currentIds = new Set(conditionResults[i].map(cat => cat.id));
+          // Keep only categories that are in both sets
+          for (const id of firstSet) {
+            if (!currentIds.has(id)) {
+              firstSet.delete(id);
+            }
+          }
+        }
+        categoriesToInclude = baseCategories.filter(cat =>
+          firstSet.has(cat.id),
+        );
+      }
+    }
+  } else {
+    // No category or category group filter — include all expense categories
+    categoriesToInclude = baseCategories;
+  }
+
+  return categoriesToInclude;
+}
+
 export function createBudgetAnalysisSpreadsheet({
   conditions = [],
   conditionsOp = 'and',
@@ -186,111 +317,18 @@ export function createBudgetAnalysisSpreadsheet({
     const { list: allCategories, grouped: allCategoryGroups } =
       await send('get-categories');
 
-    // Build a UUID → name map for category groups so text-based operators
-    // (contains, doesNotContain, matches) can match against the group name.
-    const groupNameById = new Map<string, string>(
-      allCategoryGroups.map(
-        (g: { id: string; name: string }) => [g.id, g.name] as const,
-      ),
-    );
-
-    // Filter categories based on conditions (supports both 'category' and 'category_group' fields)
-    const relevantConditions = conditions.filter(
-      cond =>
-        !cond.customName &&
-        (cond.field === 'category' || cond.field === 'category_group'),
-    );
-
     // Base set: expense categories only; hidden categories are included when
     // showHiddenCategories is true so historic data is not misrepresented.
     const baseCategories = allCategories.filter((cat: CategoryEntity) =>
       isBaseCategory(cat, showHiddenCategories),
     );
 
-    let categoriesToInclude: CategoryEntity[];
-    if (relevantConditions.length > 0) {
-      // Evaluate each condition to get sets of matching categories.
-      // category_group conditions are expanded to their member categories via cat.group.
-      const conditionResults = relevantConditions.map(cond => {
-        const getKey = (cat: CategoryEntity) =>
-          cond.field === 'category_group' ? cat.group : cat.id;
-        const matchesRegex =
-          cond.op === 'matches' &&
-          typeof cond.value === 'string' &&
-          cond.value.length <= 256
-            ? (() => {
-                try {
-                  return new RegExp(cond.value, 'i');
-                } catch {
-                  return null;
-                }
-              })()
-            : null;
-        return baseCategories.filter((cat: CategoryEntity) => {
-          const key = getKey(cat);
-          // For text-based operators, compare against the human-readable name
-          // rather than the UUID. For category_group, resolve UUID → name via
-          // the map; for category, use the category's own name directly.
-          const textValue =
-            cond.field === 'category_group'
-              ? (groupNameById.get(key) ?? key)
-              : cat.name;
-          if (cond.op === 'is') {
-            return cond.value === key;
-          } else if (cond.op === 'isNot') {
-            return cond.value !== key;
-          } else if (cond.op === 'oneOf') {
-            return Array.isArray(cond.value) && cond.value.includes(key);
-          } else if (cond.op === 'notOneOf') {
-            return Array.isArray(cond.value) && !cond.value.includes(key);
-          } else if (cond.op === 'contains') {
-            return (
-              typeof cond.value === 'string' &&
-              textValue.toLowerCase().includes(cond.value.toLowerCase())
-            );
-          } else if (cond.op === 'doesNotContain') {
-            return (
-              typeof cond.value === 'string' &&
-              !textValue.toLowerCase().includes(cond.value.toLowerCase())
-            );
-          } else if (cond.op === 'matches') {
-            return matchesRegex?.test(textValue) ?? false;
-          }
-          return false;
-        });
-      });
-
-      // Combine results based on conditionsOp
-      if (conditionsOp === 'or') {
-        // OR: Union of all matching categories
-        const categoryIds = new Set(conditionResults.flat().map(cat => cat.id));
-        categoriesToInclude = baseCategories.filter(cat =>
-          categoryIds.has(cat.id),
-        );
-      } else {
-        // AND: Intersection of all matching categories
-        if (conditionResults.length === 0) {
-          categoriesToInclude = [];
-        } else {
-          const firstSet = new Set(conditionResults[0].map(cat => cat.id));
-          for (let i = 1; i < conditionResults.length; i++) {
-            const currentIds = new Set(conditionResults[i].map(cat => cat.id));
-            // Keep only categories that are in both sets
-            for (const id of firstSet) {
-              if (!currentIds.has(id)) {
-                firstSet.delete(id);
-              }
-            }
-          }
-          categoriesToInclude = baseCategories.filter(cat =>
-            firstSet.has(cat.id),
-          );
-        }
-      }
-    } else {
-      // No category or category group filter — include all expense categories
-      categoriesToInclude = baseCategories;
-    }
+    const categoriesToInclude = filterCategoriesForConditions(
+      baseCategories,
+      allCategoryGroups,
+      conditions,
+      conditionsOp,
+    );
 
     // Get monthly intervals (Budget Analysis only supports monthly)
     const intervals = monthUtils.rangeInclusive(

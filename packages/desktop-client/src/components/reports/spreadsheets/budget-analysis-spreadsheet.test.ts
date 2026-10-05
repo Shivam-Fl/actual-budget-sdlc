@@ -1,12 +1,18 @@
 import { rangeInclusive } from '@actual-app/core/shared/months';
-import type { CategoryEntity } from '@actual-app/core/types/models';
+import type {
+  CategoryEntity,
+  CategoryGroupEntity,
+  RuleConditionEntity,
+} from '@actual-app/core/types/models';
 
 import {
+  filterCategoriesForConditions,
   getLastSelectableMonth,
   getNextRunningBalance,
   isBaseCategory,
   summarizeMonthCategories,
 } from './budget-analysis-spreadsheet';
+import { filterCategoriesByConditions } from './budgetDataQuery';
 import type { BudgetMonthCell } from './budgetMonthCell';
 
 const makeCategory = (
@@ -44,6 +50,12 @@ function filterBaseCategories(
 ): CategoryEntity[] {
   return categories.filter(cat => isBaseCategory(cat, showHiddenCategories));
 }
+
+const cells = (values: Record<string, number | boolean>): BudgetMonthCell[] =>
+  Object.entries(values).map(([name, value]) => ({
+    name: `budget202601!${name}`,
+    value,
+  })) as BudgetMonthCell[];
 
 describe('createBudgetAnalysisSpreadsheet', () => {
   describe('hidden category filtering', () => {
@@ -126,14 +138,6 @@ describe('createBudgetAnalysisSpreadsheet', () => {
   });
 
   describe('summarizeMonthCategories', () => {
-    const cells = (
-      values: Record<string, number | boolean>,
-    ): BudgetMonthCell[] =>
-      Object.entries(values).map(([name, value]) => ({
-        name: `budget202601!${name}`,
-        value,
-      })) as BudgetMonthCell[];
-
     it('reports no budget data when every cell is empty', () => {
       const result = summarizeMonthCategories([], [visibleExpense]);
 
@@ -290,6 +294,319 @@ describe('createBudgetAnalysisSpreadsheet', () => {
       }
 
       expect(runningBalance).toBe(0);
+    });
+  });
+
+  // The list `filterCategoriesForConditions` returns is exactly the list
+  // `summarizeMonthCategories` sums every month's totals over, so a filter that
+  // is stricter than the month data deletes a category's budgeted and spent
+  // amounts from the report with no error and no empty state. The differential
+  // cases hold it against `filterCategoriesByConditions`, the implementation
+  // the Custom and Grouped reports ship. The names are deliberately
+  // wildcard-shaped so an over-broad fix and an over-escaping one both fail.
+  describe('filterCategoriesForConditions', () => {
+    const wildcardBase = filterBaseCategories(
+      [
+        makeCategory({ id: 'c_food', name: 'Food', group: 'g_fun' }),
+        makeCategory({ id: 'c_groceries', name: 'Groceries', group: 'g_fun' }),
+        makeCategory({ id: 'c_100off', name: '100% Off', group: 'g_bills' }),
+        makeCategory({ id: 'c_cafe', name: 'Café', group: 'g_bills' }),
+        makeCategory({ id: 'c_csharp', name: 'C_Sharp', group: 'g_savings' }),
+      ],
+      false,
+    );
+
+    const wildcardGroups = [
+      { id: 'g_fun', name: 'Fun Money' },
+      { id: 'g_bills', name: 'Bills' },
+      { id: 'g_savings', name: 'Savings' },
+    ] as CategoryGroupEntity[];
+
+    const everyId = wildcardBase.map(cat => cat.id);
+
+    const monthCells = cells({
+      'budget-c_food': 100,
+      'sum-amount-c_food': -10,
+      'leftover-c_food': 0,
+      'budget-c_groceries': 200,
+      'sum-amount-c_groceries': -20,
+      'leftover-c_groceries': 0,
+      'budget-c_100off': 300,
+      'sum-amount-c_100off': -30,
+      'leftover-c_100off': 0,
+      'budget-c_cafe': 400,
+      'sum-amount-c_cafe': -40,
+      'leftover-c_cafe': -40,
+      'budget-c_csharp': 500,
+      'sum-amount-c_csharp': -50,
+      'leftover-c_csharp': -80,
+    });
+
+    const textCondition = (
+      field: 'category' | 'category_group',
+      op: 'contains' | 'doesNotContain',
+      value: string,
+    ) => ({ field, op, value, customName: '' }) as RuleConditionEntity;
+
+    const ids = (
+      op: 'contains' | 'doesNotContain',
+      value: string,
+      field: 'category' | 'category_group' = 'category',
+    ) =>
+      filterCategoriesForConditions(
+        wildcardBase,
+        wildcardGroups,
+        [textCondition(field, op, value)],
+        'and',
+      ).map(cat => cat.id);
+
+    const referenceIds = (
+      op: 'contains' | 'doesNotContain',
+      value: string,
+      field: 'category' | 'category_group' = 'category',
+    ) =>
+      filterCategoriesByConditions(
+        wildcardBase,
+        wildcardGroups,
+        [textCondition(field, op, value)],
+        'and',
+      ).map(cat => cat.id);
+
+    const differentialCases = (['category', 'category_group'] as const).flatMap(
+      field =>
+        ['%', '?', 'o%', '\\%', '_', 'C_', 'oo', 'cafe', 'café', 'Fun'].map(
+          value => [field, value] as const,
+        ),
+    );
+
+    it.each(differentialCases)(
+      'agrees with the query-side filter on %s / "%s"',
+      (field, value) => {
+        expect(ids('contains', value, field)).toEqual(
+          referenceIds('contains', value, field),
+        );
+        expect(ids('doesNotContain', value, field)).toEqual(
+          referenceIds('doesNotContain', value, field),
+        );
+      },
+    );
+
+    it('keeps the whole axis for a bare "%" and a bare "?"', () => {
+      expect(ids('contains', '%')).toEqual(everyId);
+      expect(ids('contains', '?')).toEqual(everyId);
+    });
+
+    it('reads "o%" as an "o" followed by anything', () => {
+      expect(ids('contains', 'o%')).toEqual([
+        'c_food',
+        'c_groceries',
+        'c_100off',
+      ]);
+    });
+
+    it('reads a backslash-escaped "%" as a literal percent sign', () => {
+      expect(ids('contains', '\\%')).toEqual(['c_100off']);
+    });
+
+    it.each(['%', '?', 'o%'])(
+      'makes doesNotContain "%s" the exact complement of contains',
+      value => {
+        const includes = ids('contains', value);
+        const excludes = ids('doesNotContain', value);
+
+        expect(excludes).toEqual(everyId.filter(id => !includes.includes(id)));
+        expect(excludes.filter(id => includes.includes(id))).toEqual([]);
+        expect([...includes, ...excludes].sort()).toEqual([...everyId].sort());
+      },
+    );
+
+    it('sums the totals over exactly the list the filter returns', () => {
+      // Food 100 + Groceries 200 + 100% Off 300.
+      const totals = summarizeMonthCategories(
+        monthCells,
+        filterCategoriesForConditions(
+          wildcardBase,
+          wildcardGroups,
+          [textCondition('category', 'contains', 'o%')],
+          'and',
+        ),
+      );
+
+      expect(totals.budgeted).toBe(600);
+      expect(totals.spent).toBe(-60);
+
+      // A bare "%" keeps every category, so the totals are the unfiltered ones.
+      const unfiltered = summarizeMonthCategories(
+        monthCells,
+        filterCategoriesForConditions(
+          wildcardBase,
+          wildcardGroups,
+          [textCondition('category', 'contains', '%')],
+          'and',
+        ),
+      );
+
+      expect(unfiltered.budgeted).toBe(1500);
+      expect(unfiltered.spent).toBe(-150);
+    });
+
+    it('counts an excluded category nowhere at all', () => {
+      const totals = summarizeMonthCategories(
+        monthCells,
+        filterCategoriesForConditions(
+          wildcardBase,
+          wildcardGroups,
+          [textCondition('category', 'contains', 'cafe')],
+          'and',
+        ),
+      );
+
+      // Only "Café" survives, so only its own -40 balance becomes an
+      // overspending adjustment; C_Sharp's -80 is not counted either.
+      expect(totals).toEqual({
+        budgeted: 400,
+        spent: -40,
+        carryoverToNextMonth: 0,
+        overspendingThisMonth: -40,
+        hasBudgetData: true,
+      });
+    });
+
+    it('leaves the id and regex operators alone', () => {
+      const byOp = (condition: RuleConditionEntity) =>
+        filterCategoriesForConditions(
+          wildcardBase,
+          wildcardGroups,
+          [condition],
+          'and',
+        ).map(cat => cat.id);
+
+      expect(
+        byOp({ field: 'category', op: 'is', value: 'c_food', customName: '' }),
+      ).toEqual(['c_food']);
+      expect(
+        byOp({
+          field: 'category',
+          op: 'isNot',
+          value: 'c_food',
+          customName: '',
+        }),
+      ).toEqual(everyId.filter(id => id !== 'c_food'));
+      expect(
+        byOp({
+          field: 'category',
+          op: 'oneOf',
+          value: ['c_food', 'c_cafe'],
+          customName: '',
+        }),
+      ).toEqual(['c_food', 'c_cafe']);
+      expect(
+        byOp({
+          field: 'category',
+          op: 'notOneOf',
+          value: ['c_food', 'c_cafe'],
+          customName: '',
+        }),
+      ).toEqual(everyId.filter(id => !['c_food', 'c_cafe'].includes(id)));
+      expect(
+        byOp({
+          field: 'category',
+          op: 'matches',
+          value: 'grocer',
+          customName: '',
+        }),
+      ).toEqual(['c_groceries']);
+    });
+
+    it('returns the base categories untouched when nothing filters them', () => {
+      expect(
+        filterCategoriesForConditions(wildcardBase, wildcardGroups, [], 'and'),
+      ).toBe(wildcardBase);
+
+      // A condition on a non-category field is not a category filter either.
+      expect(
+        filterCategoriesForConditions(
+          wildcardBase,
+          wildcardGroups,
+          [
+            {
+              field: 'notes',
+              op: 'contains',
+              value: '%',
+              customName: '',
+            } as RuleConditionEntity,
+          ],
+          'and',
+        ),
+      ).toBe(wildcardBase);
+    });
+
+    it('unions under "or" and intersects under "and"', () => {
+      const foodCondition = textCondition('category', 'contains', 'oo');
+      const cafeCondition = textCondition('category', 'contains', 'cafe');
+
+      expect(
+        filterCategoriesForConditions(
+          wildcardBase,
+          wildcardGroups,
+          [foodCondition, cafeCondition],
+          'or',
+        ).map(cat => cat.id),
+      ).toEqual(['c_food', 'c_cafe']);
+      expect(
+        filterCategoriesForConditions(
+          wildcardBase,
+          wildcardGroups,
+          [foodCondition, cafeCondition],
+          'and',
+        ),
+      ).toEqual([]);
+
+      const reference = (conditionsOp: 'and' | 'or') =>
+        filterCategoriesByConditions(
+          wildcardBase,
+          wildcardGroups,
+          [foodCondition, cafeCondition],
+          conditionsOp,
+        ).map(cat => cat.id);
+
+      expect(reference('or')).toEqual(['c_food', 'c_cafe']);
+      expect(reference('and')).toEqual([]);
+    });
+
+    it('excludes hidden and income categories before the filter runs', () => {
+      const withHidden = [
+        ...wildcardBase,
+        makeCategory({
+          id: 'c_hidden',
+          name: 'Food',
+          group: 'g_fun',
+          hidden: true,
+        }),
+        makeCategory({
+          id: 'c_income',
+          name: 'Groceries',
+          group: 'g_savings',
+          is_income: true,
+        }),
+      ];
+
+      expect(
+        filterCategoriesForConditions(
+          filterBaseCategories(withHidden, false),
+          wildcardGroups,
+          [textCondition('category', 'contains', '%')],
+          'and',
+        ).map(cat => cat.id),
+      ).toEqual(everyId);
+      expect(
+        filterCategoriesForConditions(
+          filterBaseCategories(withHidden, true),
+          wildcardGroups,
+          [textCondition('category', 'contains', '%')],
+          'and',
+        ).map(cat => cat.id),
+      ).toEqual([...everyId, 'c_hidden']);
     });
   });
 });
