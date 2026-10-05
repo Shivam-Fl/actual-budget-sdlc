@@ -115,6 +115,17 @@ function makeTransactionWithChildCategory<T extends GenericTransactionEntity>(
     ...parent,
     is_parent: false,
     category: data.category || null,
+    // The payee cannot be inherited from the parent, the way the fields the
+    // spread above carries can: `splitTransaction` sets `payee: null` on a
+    // parent when the split opens, because it moves the payee down onto the
+    // children. A survivor built from the parent alone therefore comes back
+    // payee-less — the row is not lost and its amount is right, but it renders
+    // blank and drops out of any view filtered by payee. Taken from the same
+    // promoted row the category comes from so both share one provenance.
+    // `data` is that row, except on the degenerate path where nothing was
+    // promoted and the caller passed the parent itself; the parent's payee is
+    // null there too, so the fallback cannot make it worse.
+    payee: data.payee ?? parent.payee,
   } as unknown as T;
 }
 

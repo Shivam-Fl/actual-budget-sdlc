@@ -34,6 +34,22 @@ function splitError(amount: number) {
   return { difference: amount, type: 'SplitTransactionError', version: 1 };
 }
 
+// The shape the register actually holds once a split is OPENED, rather than the
+// shape `makeSplitTransaction` builds by hand: `splitTransaction` sets
+// `payee: null` on the parent because a split parent's payee belongs to its
+// children, and `makeChild` is what copies it down there. A fixture that skips
+// that step leaves the payee on the parent, so a survivor built from the parent
+// would look correct and the case would assert nothing.
+function makeOpenedSplit(data, children) {
+  const parent = makeTransaction({ ...data });
+
+  const { data: openedSplit } = splitTransaction([parent], parent.id, p =>
+    children.map(t => makeChild(p, t)),
+  );
+
+  return openedSplit;
+}
+
 describe('Transactions', () => {
   describe('parsePreviewId', () => {
     test('returns the schedule id and occurrence date of a preview id', () => {
@@ -921,6 +937,148 @@ describe('Transactions', () => {
       expect(result.updated[0]).toMatchObject({
         schedule: 'sched-1',
         schedule_occurrence: '2024-03-10',
+      });
+    });
+
+    // `asRows` destructures `{ id, amount }`, so it cannot see the payee — and
+    // the payee is the field a surviving row loses. A row built by spreading a
+    // split parent inherits `payee: null` from it, because `splitTransaction`
+    // moved the payee down onto the children when the split opened. The row is
+    // not deleted and its amount is right, so it never shows up as a wrong
+    // figure: it renders with a blank payee and drops out of any view filtered
+    // by one. The cases below read `payee` off the returned rows directly.
+    test('keeps the payee on the row that survives a never-filled split', () => {
+      // The two 0.00 children the register's Split button produces, both
+      // unsplit. Before the fix the survivor came back `payee: null` and the
+      // register showed nothing under a search for that payee.
+      const transactions = makeOpenedSplit(
+        { id: 'p', amount: 12345, payee: 'payee-parent' },
+        [
+          { id: 'c1', amount: 0 },
+          { id: 'c2', amount: 0 },
+        ],
+      );
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1], transactions[2]],
+        transactions,
+      );
+
+      expect(result.updated).toHaveLength(1);
+      expect(result.updated[0]).toMatchObject({
+        id: 'p',
+        amount: 12345,
+        payee: 'payee-parent',
+      });
+    });
+
+    test('keeps the payee on the row that survives an under-filled split', () => {
+      // One leg typed, one left empty: the promoted rows fall short of the
+      // parent, so the parent stays and the survivor is built from a promoted
+      // child. The expense arm is here because `splitTransaction` moves the
+      // payee down identically for an expense.
+      const income = makeOpenedSplit(
+        { id: 'p', amount: 12345, payee: 'payee-parent' },
+        [
+          { id: 'c1', amount: 5000 },
+          { id: 'c2', amount: 0 },
+        ],
+      );
+
+      expect(
+        makeAsNonChildTransactions([income[1], income[2]], income).updated[0],
+      ).toMatchObject({ id: 'p', amount: 12345, payee: 'payee-parent' });
+
+      const expense = makeOpenedSplit(
+        { id: 'p', amount: -12345, payee: 'payee-parent' },
+        [
+          { id: 'c1', amount: -5000 },
+          { id: 'c2', amount: 0 },
+        ],
+      );
+
+      expect(
+        makeAsNonChildTransactions([expense[1], expense[2]], expense)
+          .updated[0],
+      ).toMatchObject({ id: 'p', amount: -12345, payee: 'payee-parent' });
+    });
+
+    test('keeps the payee on the single-child early return', () => {
+      // The branch above the guard, taken when a one-child split has that child
+      // unsplit. It is the only path that also clears the error, so both are
+      // asserted on the one row: a survivor that drops the payee while clearing
+      // the error is the same defect wearing a different path.
+      const transactions = makeOpenedSplit(
+        { id: 'p', amount: 12345, payee: 'payee-parent' },
+        [{ id: 'c1', amount: 0 }],
+      );
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1]],
+        transactions,
+      );
+
+      expect(result.updated[0]).toMatchObject({
+        id: 'p',
+        amount: 12345,
+        payee: 'payee-parent',
+        error: null,
+      });
+    });
+
+    test('keeps the payee on the row that survives opposite-sign legs', () => {
+      // 5000 and -5000 net to zero against a 12345 parent, so the parent stays.
+      // The promoted total is non-zero, which is why the all-zero clause alone
+      // does not reach this shape — and it is still a payee-less row without
+      // the fix.
+      const transactions = makeOpenedSplit(
+        { id: 'p', amount: 12345, payee: 'payee-parent' },
+        [
+          { id: 'c1', amount: 5000 },
+          { id: 'c2', amount: -5000 },
+        ],
+      );
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1], transactions[2]],
+        transactions,
+      );
+
+      expect(result.updated[0]).toMatchObject({
+        id: 'p',
+        amount: 12345,
+        payee: 'payee-parent',
+      });
+    });
+
+    test('still returns each split-out row with its own payee', () => {
+      // The over-correction the payee fix invites. The obvious wrong version —
+      // stamping the parent's payee on every row — would pass every case above
+      // and break this one, because `makeChild` gives a child the parent's
+      // payee only as a DEFAULT: a leg the user retyped carries its own, and a
+      // correct split-out must return that leg's payee. This branch already
+      // worked; the fix is scoped to the survivor and must leave it alone.
+      const transactions = makeOpenedSplit(
+        { id: 'p', amount: 12345, payee: 'payee-parent' },
+        [
+          { id: 'c1', amount: 5000, payee: 'payee-retyped-1' },
+          { id: 'c2', amount: 7345, payee: 'payee-retyped-2' },
+        ],
+      );
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1], transactions[2]],
+        transactions,
+      );
+
+      expect(result.updated).toHaveLength(2);
+      expect(result.updated[0]).toMatchObject({
+        id: 'c1',
+        payee: 'payee-retyped-1',
+      });
+      expect(result.updated[1]).toMatchObject({
+        id: 'c2',
+        payee: 'payee-retyped-2',
       });
     });
   });
