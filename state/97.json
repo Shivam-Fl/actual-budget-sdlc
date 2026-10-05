@@ -346,7 +346,8 @@
         "detail": "The two test files duplicate ~35 lines of fixture scaffolding verbatim — `groupEntity`, `dataEntity`, `renderRow`, the `console.error` reader and the `afterEach` block are byte-identical between them. The split-by-file is forced by the warning budget and is correct; the copy of everything around it is incidental to it and will drift the moment a fixture field changes.\n\n`packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.missingKey.test.tsx:22`\n\nEvidence: A line-level diff of the two files reports identical blocks at missingKey lines 18-43 (`groupEntity` + `dataEntity`, 26 lines), 44-46 (`renderRow`), 48-50 (the `vi.mocked(console.error).mock.calls.map(...)` reader), and 54-56 (`afterEach`). The work order prescribed this explicitly ('Copy the groupEntity and dataEntity fixture helpers verbatim'), so it is a designed cost rather than an accident — but the duplication is incidental to the actual constraint, which is only that the missing-key render live in its own file.\n\nFix: Extract the shared scaffolding into a small `ReportTableList.fixtures.tsx` (or a `__fixtures__` module beside the component) imported by both test files. Keep the two `*.test.tsx` files separate — that separation is load-bearing — but stop duplicating the helpers, so the `totalDebts`/`netDebts` spelling fixed by this PR cannot drift back in one copy."
       }
     ],
-    "pr": "103"
+    "pr": "103",
+    "filed": 104
   },
   "qa": {
     "verdict": "pass",
