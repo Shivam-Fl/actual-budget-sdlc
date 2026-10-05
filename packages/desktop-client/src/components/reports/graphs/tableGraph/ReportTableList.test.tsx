@@ -1,11 +1,15 @@
 import React from 'react';
 
-import type { DataEntity, GroupedEntity } from '@actual-app/core/types/models';
 import { render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { renderRowProps } from './ReportTable';
 import { ReportTableList } from './ReportTableList';
+import {
+  consoleErrors,
+  dataEntity,
+  groupEntity,
+  renderRow,
+} from './ReportTableList.fixtures';
 
 // React phrases the collision 'Encountered two children with the same key,
 // `%s`'. Matching only the stable tail catches any wording of that sentence, so
@@ -15,41 +19,12 @@ import { ReportTableList } from './ReportTableList';
 // string it matches also contains 'same key': it was strictly subsumed and
 // could never match something this pattern rejects.
 //
-// This file guards the COLLISION half of
-// `key={category.uncategorizedId ?? category.id}` only. React emits the
-// missing-key sentence at most once per test FILE, so it cannot be asserted
-// from two tests here without one of them going silently vacuous whichever
-// way the tests are ordered. ReportTableList.missingKey.test.tsx owns that half
-// in a file of its own.
+// The missing-key sentence is the other half of the key expression's failure
+// mode, and this fixture can produce it too — see the note on the test below.
+// It gets its own tail-anchored filter, kept deliberately separate from the one
+// above so a failure stays attributable to the half that broke.
 const DUPLICATE_KEY_WARNING = /same key/i;
-
-function groupEntity(entity: Partial<GroupedEntity>): GroupedEntity {
-  return {
-    id: '',
-    name: '',
-    intervalData: [],
-    totalAssets: 0,
-    totalDebts: 0,
-    totalTotals: 0,
-    netAssets: 0,
-    netDebts: 0,
-    totalBudgeted: 0,
-    ...entity,
-  };
-}
-
-function dataEntity(groupedData: GroupedEntity[]): DataEntity {
-  return {
-    intervalData: [],
-    groupedData,
-    totalAssets: 0,
-    totalDebts: 0,
-    totalTotals: 0,
-    netAssets: 0,
-    netDebts: 0,
-    totalBudgeted: 0,
-  };
-}
+const MISSING_KEY_WARNING = /unique .?key.? prop/i;
 
 // The three rows categoryLists() appends to the 'Uncategorized & Off budget'
 // group. They deliberately share `id: ''` — the query layer and the filters
@@ -74,18 +49,20 @@ const uncategorizedGroup = groupEntity({
   id: 'uncategorized',
   name: 'Uncategorized & Off budget',
   uncategorizedId: 'all',
-  categories: [uncategorizedRow, transferRow, offBudgetRow],
+  categories: [
+    groupEntity({ id: 'uuid-1', name: 'Rent' }),
+    uncategorizedRow,
+    transferRow,
+    offBudgetRow,
+  ],
 });
 
-function renderRow({ item }: renderRowProps) {
-  return <div>{item.name}</div>;
+function duplicateKeyWarnings(): string[] {
+  return consoleErrors().filter(message => DUPLICATE_KEY_WARNING.test(message));
 }
 
-function duplicateKeyWarnings(): string[] {
-  return vi
-    .mocked(console.error)
-    .mock.calls.map(args => args.map(String).join(' '))
-    .filter(message => DUPLICATE_KEY_WARNING.test(message));
+function missingKeyWarnings(): string[] {
+  return consoleErrors().filter(message => MISSING_KEY_WARNING.test(message));
 }
 
 describe('ReportTableList', () => {
@@ -93,10 +70,24 @@ describe('ReportTableList', () => {
     vi.restoreAllMocks();
   });
 
-  // Guards the `category.uncategorizedId` half of the key expression: the
-  // three synthetic rows all share `id: ''`, so `key={category.id}` keys all
-  // three to the same value and React reports the collision.
-  it('renders the three synthetic rows without logging a duplicate-key error', () => {
+  // Two shapes share this one render.
+  //
+  // The three id:'' rows are what categoryLists() actually builds: they are
+  // their own top-level group, with no real category beside them (see
+  // ReportOptions.ts, where uncategorizedGroup.categories is hardcoded to
+  // exactly those three). They collide on `id` under key={category.id}, which
+  // is the `category.uncategorizedId` half of the key expression this guards.
+  //
+  // The uuid-1 row is deliberately adversarial, and is NOT a production shape.
+  // It is here to prove the expression stays collision-free when a real uuid
+  // sits alongside distinct uncategorizedIds, and — because it has no
+  // uncategorizedId — it makes this fixture capable of the missing-key
+  // sentence too. A fixture that can produce a sentence must assert it, which
+  // is why the missing-key filter is checked here as well as in
+  // ReportTableList.missingKey.test.tsx. That file's render spends the
+  // once-per-file missing-key budget on its own fixture; this one never
+  // contests it.
+  it('renders synthetic and real sibling rows without logging a key error', () => {
     vi.spyOn(console, 'error');
 
     render(
@@ -108,47 +99,13 @@ describe('ReportTableList', () => {
       />,
     );
 
-    // Asserting the names matters as much as the warning: on an empty render
-    // the warning assertion below passes vacuously.
+    // Asserting the names matters as much as the warnings: on an empty render
+    // the assertions below pass vacuously.
+    expect(screen.getByText('Rent')).toBeInTheDocument();
     expect(screen.getByText('Uncategorized')).toBeInTheDocument();
     expect(screen.getByText('Transfers')).toBeInTheDocument();
     expect(screen.getByText('Off budget')).toBeInTheDocument();
     expect(duplicateKeyWarnings()).toEqual([]);
-  });
-
-  // Guards the shape where a real category shares one parent with synthetic
-  // rows. The second synthetic sibling is what gives this test discriminating
-  // power: with only one, no key expression makes it fail, because a lone
-  // `id: ''` row cannot collide with anything. It is killed by
-  // `key={category.id}`, where the two synthetic rows collide on the empty id.
-  // It is deliberately NOT credited with detecting a deleted `?? category.id`
-  // fallback — that produces React's missing-key sentence, which is a
-  // once-per-file event owned by ReportTableList.missingKey.test.tsx.
-  it('logs no duplicate-key error when real categories and synthetic rows are siblings', () => {
-    vi.spyOn(console, 'error');
-
-    render(
-      <ReportTableList
-        data={dataEntity([
-          groupEntity({
-            id: 'group-bills',
-            name: 'Bills',
-            categories: [
-              groupEntity({ id: 'uuid-1', name: 'Rent' }),
-              uncategorizedRow,
-              transferRow,
-            ],
-          }),
-        ])}
-        mode="total"
-        groupBy="Category"
-        renderRow={renderRow}
-      />,
-    );
-
-    expect(screen.getByText('Rent')).toBeInTheDocument();
-    expect(screen.getByText('Uncategorized')).toBeInTheDocument();
-    expect(screen.getByText('Transfers')).toBeInTheDocument();
-    expect(duplicateKeyWarnings()).toEqual([]);
+    expect(missingKeyWarnings()).toEqual([]);
   });
 });
