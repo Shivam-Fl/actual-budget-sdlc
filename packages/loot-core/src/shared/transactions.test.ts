@@ -1081,6 +1081,148 @@ describe('Transactions', () => {
         payee: 'payee-retyped-2',
       });
     });
+
+    test('keeps the payee when deleting every leg collapses the split', () => {
+      // The sibling defect, in `deleteTransaction`. `splitTransaction` moves the
+      // payee down onto the legs, so the parent this collapses from carries
+      // `payee: null` and the survivor inherited it. Selecting both legs and
+      // deleting them is the shape that reaches it: one row at the right
+      // amount, rendering blank, dropped from any view filtered by the payee.
+      const { data: opened } = splitTransaction(
+        [makeTransaction({ id: 'p', amount: 12345, payee: 'payee-parent' })],
+        'p',
+        p => [
+          makeChild(p, { id: 'c1', amount: 5000 }),
+          makeChild(p, { id: 'c2', amount: 7345 }),
+        ],
+      );
+
+      const { data } = deleteTransaction(
+        deleteTransaction(opened, 'c1').data,
+        'c2',
+      );
+
+      expect(data).toEqual([
+        expect.objectContaining({
+          id: 'p',
+          amount: 12345,
+          payee: 'payee-parent',
+          is_parent: false,
+        }),
+      ]);
+    });
+
+    test('gives the survivor the payee of the leg it absorbs, not the first promoted one', () => {
+      // The two provenances diverge here, which is why the survivor reads a
+      // third argument rather than `data`: `data` is the row the CATEGORY comes
+      // from, and this split's first leg's payee was cleared while the only
+      // payee left sits on the leg staying behind — the one the call site folds
+      // into the survivor. Reading `data` alone returns null here.
+      const transactions = makeOpenedSplit(
+        { id: 'p', amount: 12345, payee: 'payee-parent' },
+        [
+          { id: 'c1', amount: 5000, payee: null },
+          { id: 'c2', amount: 0, payee: 'payee-other' },
+        ],
+      );
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1]],
+        transactions,
+      );
+
+      expect(result.updated).toHaveLength(1);
+      expect(result.updated[0]).toMatchObject({
+        id: 'p',
+        amount: 12345,
+        payee: 'payee-other',
+      });
+    });
+
+    test('gives the survivor the parent payee when every leg has been cleared', () => {
+      // Neither leg carries a payee and the parent keeps one, so the
+      // `?? parent.payee` fallback is the only thing that returns it. Pinned on
+      // this shape and NOT on the #8207 conversion, where `makeChild` copies
+      // the parent's payee onto the child as a DEFAULT: there the promoted row
+      // already carries it, so the case passes with or without the fallback and
+      // pins nothing. Dropping the fallback turns this survivor payee-less.
+      const transactions = makeSplitTransaction(
+        { id: 'p', amount: 12345, payee: 'payee-original' },
+        [
+          { id: 'c1', amount: 1000, payee: null },
+          { id: 'c2', amount: 0, payee: null },
+        ],
+      );
+
+      const result = makeAsNonChildTransactions(
+        [transactions[1]],
+        transactions,
+      );
+
+      expect(result.updated).toHaveLength(1);
+      expect(result.updated[0]).toMatchObject({
+        id: 'p',
+        amount: 12345,
+        payee: 'payee-original',
+      });
+    });
+
+    test('leaves the surviving parent Amount left equal to its amount less the legs still behind', () => {
+      // Built the way the register builds a split — opened, a third leg added,
+      // every leg typed through `updateTransaction` — so the parent's error is
+      // the one a recalculating writer leaves behind. Deliberately NOT
+      // `makeOpenedSplit`, whose parent keeps the error `splitTransaction`
+      // computes as if the children totalled zero: on that helper this case
+      // would assert a manufactured 12345 and pass for the wrong reason.
+      const { data: opened } = splitTransaction(
+        [makeTransaction({ id: 'p', amount: 12345, payee: 'payee-parent' })],
+        'p',
+        p => [
+          makeChild(p, { id: 'c1', amount: 0, sort_order: -1 }),
+          makeChild(p, { id: 'c2', amount: 0, sort_order: -2 }),
+        ],
+      );
+
+      const withThirdLeg = addSplitTransaction(opened, 'p').data;
+      const thirdLeg = withThirdLeg.filter(t => t.is_child).at(-1);
+
+      let typed = withThirdLeg;
+      for (const { id, amount } of [
+        { id: 'c1', amount: 5000 },
+        { id: 'c2', amount: 4345 },
+        { id: thirdLeg.id, amount: 2500 },
+      ]) {
+        typed = updateTransaction(typed, {
+          ...typed.find(t => t.id === id),
+          amount,
+        } as TransactionEntity).data;
+      }
+
+      // 5000 + 4345 + 2500 falls 500 short of 12345, which is the figure the
+      // parent carries before anything is promoted. Promoting a leg of amount
+      // `a` gives `(12345 - a) - (11845 - a)`, the same 500 — the split opened
+      // short and survives short, so 'Amount left:' is correct at 7345.
+      const result = makeAsNonChildTransactions(
+        [typed.find(t => t.id === 'c1')],
+        typed,
+      );
+
+      // A surviving parent keeps `payee: null`, because the register renders a
+      // split parent's payee from its children and there is nothing on a parent
+      // still standing as a parent to render. That null is correct and is NOT
+      // the defect the two cases above close. The promoted leg carries its own.
+      expect(result.updated[0]).toMatchObject({
+        id: 'p',
+        amount: 7345,
+        payee: null,
+        error: splitError(500),
+      });
+      expect(result.updated[1]).toMatchObject({
+        id: 'c1',
+        amount: 5000,
+        payee: 'payee-parent',
+      });
+    });
   });
 
   test('converting a simple transaction into a split stamps children with the parent account (#8207)', () => {

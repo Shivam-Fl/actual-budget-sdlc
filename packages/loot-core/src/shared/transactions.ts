@@ -110,22 +110,27 @@ function makeNonChild<T extends GenericTransactionEntity>(
 function makeTransactionWithChildCategory<T extends GenericTransactionEntity>(
   parent: T,
   data: Partial<TransactionEntity>,
+  promotedRows: readonly Partial<TransactionEntity>[] = [data],
 ) {
   return {
     ...parent,
     is_parent: false,
     category: data.category || null,
-    // The payee cannot be inherited from the parent, the way the fields the
-    // spread above carries can: `splitTransaction` sets `payee: null` on a
-    // parent when the split opens, because it moves the payee down onto the
-    // children. A survivor built from the parent alone therefore comes back
-    // payee-less — the row is not lost and its amount is right, but it renders
-    // blank and drops out of any view filtered by payee. Taken from the same
-    // promoted row the category comes from so both share one provenance.
-    // `data` is that row, except on the degenerate path where nothing was
-    // promoted and the caller passed the parent itself; the parent's payee is
-    // null there too, so the fallback cannot make it worse.
-    payee: data.payee ?? parent.payee,
+    // A survivor rebuilt from a split parent carries that parent's `payee:
+    // null`, which `splitTransaction` sets on every parent when the split opens
+    // because it moves the payee down onto the children. The row is not lost and
+    // its amount is right, but it renders blank and drops out of any view
+    // filtered by payee. So the payee comes from the rows this survivor actually
+    // absorbs — the first of them that carries one.
+    //
+    // Not from `data`. `data` is the row the CATEGORY comes from, and the two
+    // provenances genuinely differ: a leg whose payee was deliberately cleared
+    // can be the first promoted row while the leg folded in beside it is the
+    // only one carrying a payee. Reading `data` alone returns null on that
+    // shape. The parent fallback is not dead code either — a parent can keep a
+    // non-null payee beneath children that were explicitly cleared, and on that
+    // shape the scan finds nothing and this is what returns the parent's payee.
+    payee: promotedRows.find(t => t.payee)?.payee ?? parent.payee,
   } as unknown as T;
 }
 
@@ -380,6 +385,14 @@ export function deleteTransaction(
           ...rest,
           is_parent: false,
           error: null,
+          // The row that survives is the one leg this collapse leaves behind,
+          // so it takes that leg's payee. The parent spread above cannot supply
+          // it: `splitTransaction` moved the payee down onto the children when
+          // the split opened and set the parent's own to null, so without this
+          // the survivor comes back payee-less at the right amount — rendering
+          // blank and dropping out of any view filtered by the payee. There is
+          // exactly one leg here, so `??` rather than a scan.
+          payee: _subtransactions[0].payee ?? rest.payee,
         } satisfies TransactionEntity;
       } else {
         const sub = trans.subtransactions?.filter(t => t.id !== id);
@@ -471,6 +484,7 @@ export function makeAsNonChildTransactions(
           ...makeTransactionWithChildCategory(
             parentTransaction,
             childTransactionsToUpdate[0],
+            childTransactionsToUpdate,
           ),
           // The row is no longer part of a split, so it must not keep the
           // split error its child earned — the same clearing the branch below
@@ -530,6 +544,7 @@ export function makeAsNonChildTransactions(
           ...makeTransactionWithChildCategory(
             parentTransaction,
             newNonChildTransactions[0] ?? parentTransaction,
+            nonChildTransactionsToUpdate,
           ),
           // The row is no longer part of a split and now carries the full
           // amount, so it must not keep the split error its children earned.
