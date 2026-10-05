@@ -415,5 +415,37 @@
       }
     ],
     "pr": "105"
-  }
+  },
+  "qa": {
+    "verdict": "fail",
+    "introduced_bugs": 3,
+    "ac_ids": [
+      "AC-1",
+      "AC-2",
+      "AC-3",
+      "AC-4",
+      "AC-5",
+      "AC-6",
+      "AC-7",
+      "AC-8"
+    ],
+    "sha": "d4684c80c47dc37f83228842574868925feeefb4",
+    "run_id": "37288116307",
+    "work_order_version": 1,
+    "at": "2026-10-05T09:48:39.974Z"
+  },
+  "qa_open_bugs": [
+    {
+      "id": "BUG-1",
+      "title": "parseReleaseNotes throws an unhandled TypeError on any release note without an authors list, and the new recursive walk routes nested files into it"
+    },
+    {
+      "id": "BUG-2",
+      "title": "A single unreadable subdirectory suppresses every other release-note failure in the directory"
+    },
+    {
+      "id": "BUG-3",
+      "title": "The new missing-directory guard does not stop release-notes-check.mjs when GITHUB_STEP_SUMMARY is set"
+    }
+  ]
 }
