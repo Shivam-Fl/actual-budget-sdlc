@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "tsx": "bin/tsx",
+    "release-notes": "node bin/release-notes-gate.mjs",
     "test": "vitest --run",
     "typecheck": "tsgo -b"
   },
