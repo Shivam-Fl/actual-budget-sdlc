@@ -443,28 +443,22 @@
   "failure_packet": {
     "issue": 98,
     "pr": 101,
-    "head": "942727ff6f1c42aeb4572ed8952e3bd3f3df2142",
-    "stage": "ci",
-    "attempt": 2,
+    "head": "9688631fe44a27082e9f6a42e87831985b678c3a",
+    "stage": "qa",
+    "attempt": 1,
     "occurrences": 1,
     "error_type": "unknown",
-    "error_signature": "e422f093ff6c2d90",
-    "raw_excerpt": "verify\tFail if any check failed\t﻿2026-10-05T04:47:58.2702866Z ##[group]Run exit 1\nverify\tFail if any check failed\t2026-10-05T04:47:58.2703001Z ^[[36;1mexit 1^[[0m\nverify\tFail if any check failed\t2026-10-05T04:47:58.2753122Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}\nverify\tFail if any check failed\t2026-10-05T04:47:58.2753315Z ##[endgroup]\nverify\tFail if any check failed\t2026-10-05T04:47:58.2821264Z ##[error]Process completed with exit code 1.",
-    "digest": "The ci stage failed and no known error pattern matched. The raw output is below.",
+    "error_signature": "31efb1ed908ef49e",
+    "raw_excerpt": "sdlc: the QA report's evidence does not hold up:\n  - cited but not under /home/runner/work/actual-budget-sdlc/actual-budget-sdlc/_pr/qa-evidence: qa-evidence/zz-alert-overlay.png, qa-evidence/zz-alert-dismissed.png, qa-evidence/zz-toast-overlay-probe.log, qa-evidence/T-1-summary-card-click.png, qa-evidence/T-2-chart-click.png, qa-evidence/T-3-context-menu.png, qa-evidence/T-4-svg-click-navigates.png, qa-evidence/T-5-svg-enter-no-nav.png, qa-evidence/T-6-enter-navigates.png, qa-evidence/T-7-space-navigates.png, qa-evidence/T-8-calendar-day-cell.png, qa-evidence/T-20-calendar-heading-navigates.png, qa-evidence/T-9-selector-audit.png, qa-evidence/T-10-all-cards-navigate.png, qa-evidence/results.json, qa-evidence/T-11-renamed.png, qa-evidence/T-11-restored.png, qa-evidence/T-12-bare-custom-report.png, qa-evidence/T-13-saved-custom-report.png, qa-evidence/T-13-custom-report-loaded.png, qa-evidence/T-13-cleanup.png, qa-evidence/T-14-double-click.png, qa-evidence/T-15-after-escape.png, qa-evidence/T-16-reports-loaded.png, qa-evidence/T-17-rename-persisted.png, qa-evidence/T-17-restored.png, qa-evidence/T-17-cleanup.png, qa-evidence/T-18-chart-roles.png, qa-evidence/T-19-below-fold-context-menu.png\n  - no HAR under /home/runner/work/actual-budget-sdlc/actual-budget-sdlc/_pr/qa-evidence — nothing shows where the page sent data\nEverything QA keeps must be written under /home/runner/work/actual-budget-sdlc/actual-budget-sdlc/_pr/qa-evidence (QA_EVIDENCE_DIR), be what its name says, and a pass needs a HAR of the run — a pass is what merges.\nsdlc: Error: gh api failed (1): unexpected end of JSON input\n    at ChildProcess.<anonymous> (file:///home/runner/work/actual-budget-sdlc/actual-budget-sdlc/.sdlc/bin/lib/actions.js:103:19)\n    at ChildProcess.emit (node:events:519:28)\n    at maybeClose (node:internal/child_process:1101:16)\n    at ChildProcess._handle.onexit (node:internal/child_process:304:5)\nsdlc: could not record \"qa-pass\" on the ledger for issue #98:     at ChildProcess._handle.onexit (node:internal/child_process:304:5)\nThis is a result, not a stage announcement — the label is deliberately left alone rather than claiming something the ledger does not hold.",
+    "digest": "The qa stage failed and no known error pattern matched. The raw output is below.",
     "decision": "triage",
     "decision_reason": "an agent reads the failed run's full log and decides what happens next — this script cannot see that log from inside the run that produced it",
     "context": {
       "work_order_version": 1,
-      "failed_checks": [
-        "ci-verify"
-      ],
-      "run_url": "https://github.com/Shivam-Fl/actual-budget-sdlc/actions/runs/37264700272",
-      "prior_signatures": []
-    },
-    "triage": {
-      "verdict": "repair",
-      "diagnosis": "The ci stage's red step \"Fail if any check failed\" only reports the non-zero exit of the step before it. The real failure is the @actual-app/ci-actions `release-notes` task, and it is a defect in this PR's own deliverable, not in the product code: the release note this branch adds, upcoming-release-notes/report-card-click-guard-and-hook-return.md, has a three-line body (two paragraphs separated by a blank line). packages/ci-actions/bin/release-notes-gate.mjs:111-114 requires the trimmed body to be non-empty and free of any newline, and it failed that note and nothing else. Every other check in the run was green — all 8 test suites passed (@actual-app/web 2m31s, @actual-app/core 2m10s, @actual-app/sync-server 620 tests, plus api, components, cli, crdt, eslint-plugin-actual) and all 16 typechecks succeeded. The fix is one edit to the note body on the existing branch: collapse it to a single line that still covers both changes the note describes (the report card click guard now covering the activatable controls its keydown guard already handled, and the duplicated readOwnSource test helper consolidated to one home). The branch and PR survive — PR #101, head 942727f, with the seven source and test files already implemented — so this is a repair on top of that work, not a re-plan and not a re-run.",
-      "evidence": "failed-run.log:2442 `##[error]::error::report-card-click-guard-and-hook-return.md body should contain exactly one line`, from `##[error]Running yarn run release-notes, pid: 5570`; failed-run.log:2435 `INFO: @actual-app/ci-actions release-notes failed, took 0.59s` against `[Tasks Count] success: 8, skipped: 0, pending: 1, aborted: 0`. Rule at packages/ci-actions/bin/release-notes-gate.mjs:111-114 (`const trimmed = content.trim(); if (!trimmed || trimmed.includes('\\n'))`). Reproduced locally against the PR's own tree: `git archive pr101 upcoming-release-notes` into /tmp/notes, then `collectFailures('/tmp/notes')` returns exactly one failure — `report-card-click-guard-and-hook-return.md body should contain exactly one line`. File body from `git show pr101:upcoming-release-notes/report-card-click-guard-and-hook-return.md`: front matter `category: Maintenance` / `authors: [Shivam-Fl]`, then three non-empty lines. prior_signatures is empty and occurrences is 1; the cause is deterministic, not environmental."
+      "run_url": "https://github.com/Shivam-Fl/actual-budget-sdlc/actions/runs/37271813569",
+      "prior_signatures": [
+        "ci:unknown:e422f093ff6c2d90"
+      ]
     }
   },
   "triage_history": [
