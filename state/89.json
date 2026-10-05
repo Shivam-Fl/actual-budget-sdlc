@@ -587,7 +587,56 @@
         "detail": "`main()` is exported but never imported by anything, and it is called from exactly one place inside its own module. It is the module's own CLI entry, not a public API, and no test drives it.\n\n`packages/ci-actions/bin/release-notes-gate.mjs:126`\n\nEvidence: Grep for an import of `main` from release-notes-gate across *.mjs, *.js and *.mts returns nothing; the only call is `main()` at :152 inside the `isMain` guard. The test file imports `{ collectFailures, listNotePaths }` and nothing else. Coverage of main's own body comes only from running the CLI as a subprocess, which no test does.\n\nFix: Drop the `export` keyword. If the intent was to test main() directly, that intent is not realised anywhere — the two behaviours worth covering (success line, exit 1) are already covered through collectFailures."
       }
     ],
-    "pr": "91"
+    "pr": "91",
+    "qa": [
+      {
+        "id": "BUG-3",
+        "severity": "major",
+        "area": "release notes",
+        "title": "a release note in a subdirectory is validated and then silently dropped from the changelog and the docs page",
+        "expected": "a note the gate certifies as publishable — the gate prints 'Validated N release note(s).' and exits 0 — is actually published, since release-notes-generate.mjs lists it with 'git ls-tree -r' and count-points.mjs counts it under 'upcoming-release-notes/**/*'",
+        "actual": "parseReleaseNotes() (packages/ci-actions/src/release-notes/util.mjs:160) enumerates with a non-recursive fs.readdir(dir) and filters on the flat basename, so the recursive list the generator builds is discarded. With a well-formed upcoming-release-notes/qa-nested/good-note.md the gate says 'Validated 95 release note(s).' and exits 0, while parseReleaseNotes reports files: 94, files[] contains no qa-nested entry, and a unique marker in the nested note's body appears nowhere in the changelog. packages/docs/scripts/generate-upcoming-release-notes.mjs calls the same function and drops it too. The note is credited to nobody and ships to no reader.",
+        "repro": [
+          "cd _pr",
+          "mkdir -p upcoming-release-notes/qa-nested",
+          "printf -- '---\\ncategory: Bugfix\\nauthors: [Shivam-Fl]\\n---\\n\\nVALID-NESTED-MARKER-XYZ\\n' > upcoming-release-notes/qa-nested/good-note.md",
+          "node packages/ci-actions/bin/release-notes-gate.mjs   # -> 'Validated 95 release note(s).', exit 0",
+          "node -e 'import(\"./packages/ci-actions/src/release-notes/util.mjs\").then(async m => { const r = await m.parseReleaseNotes(\"upcoming-release-notes\",\"actualbudget\",\"actual\"); const all = Object.values(r.notesByCategory).flat(); console.log(r.files.length, r.files.some(f => f.includes(\"qa-nested\")), all.some(n => n.includes(\"VALID-NESTED-MARKER-XYZ\"))); })'",
+          "# -> 94 false false",
+          "rm -rf upcoming-release-notes/qa-nested"
+        ],
+        "evidence": [
+          "qa-evidence/T-13-nested-reaches-changelog.txt"
+        ],
+        "suspected_cause": "pre-existing divergence, byte-identical on origin/main: parseReleaseNotes readdir()s one level deep while selectReleaseNotePaths is fed by a recursive git diff pathspec. This PR's gate correctly adopted selectReleaseNotePaths' rule, so it now validates nested notes that the publish path still drops — the gate is honest and the publisher is not. Worth noting that the PR's own comments assert nested notes ARE published, which the measurement contradicts.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      },
+      {
+        "id": "BUG-4",
+        "severity": "minor",
+        "area": "release notes",
+        "title": "deleting upcoming-release-notes/ produces a raw ENOENT stack trace instead of a message naming what to fix",
+        "expected": "a tool aimed at a contributor reports the condition rather than throwing past its own error handling — release-notes-check.mjs's own comment calls the notes directory 'the file a PR is most likely to delete' and gives its reportError the contract 'to report an error rather than throw one'",
+        "actual": "release-notes-gate.mjs:40 (readdirSync in walk) throws ENOENT and the process dies on a nine-line stack trace that names no file to restore. The pre-existing release-notes-check.mjs does exactly the same thing at its line 20 (realpathSync), so this is the repository's established behaviour rather than a regression, and the gate's own design comment elsewhere promises YAML parse errors are reported rather than thrown.",
+        "repro": [
+          "cd _pr",
+          "mv upcoming-release-notes /tmp/notes-backup",
+          "node packages/ci-actions/bin/release-notes-gate.mjs",
+          "# -> Error: ENOENT: no such file or directory, scandir '.../upcoming-release-notes', exit 1",
+          "BASE_REF=main node packages/ci-actions/bin/release-notes-check.mjs",
+          "# -> Error: ENOENT: ... lstat '.../upcoming-release-notes', exit 1  (identical behaviour, unchanged file)",
+          "mv /tmp/notes-backup upcoming-release-notes"
+        ],
+        "evidence": [
+          "qa-evidence/T-18-missing-notes-dir.txt",
+          "qa-evidence/T-18b-missing-dir-vs-existing-checker.txt"
+        ],
+        "suspected_cause": "both scripts assume the tracked directory exists; neither guards the enumeration with an existsSync, so the graceful-degradation contract stated in the surrounding comments is not implemented for this one input.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "pass",
