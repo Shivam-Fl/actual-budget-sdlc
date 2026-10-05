@@ -362,5 +362,26 @@
   "work_order_posted_at": "2026-10-05T02:31:01.206Z",
   "work_order_from": "plan",
   "work_order_comment": "5987093422",
-  "implemented_version": 1
+  "implemented_version": 1,
+  "failure_packet": {
+    "issue": 93,
+    "pr": 100,
+    "head": "5470fbde887ee6dae12315732fb9981c13ee1f07",
+    "stage": "ci",
+    "attempt": 2,
+    "occurrences": 1,
+    "error_type": "unknown",
+    "error_signature": "1a421995e68706a6",
+    "raw_excerpt": "## CI failed\n\nCI failed but no recognised error pattern was found in the log. A human should read the raw output.\n\n_Digest produced by regex, not a model._",
+    "digest": "The ci stage failed and no known error pattern matched. The raw output is below.",
+    "decision": "triage",
+    "decision_reason": "an agent reads the failed run's full log and decides what happens next — this script cannot see that log from inside the run that produced it",
+    "context": {
+      "work_order_version": 1,
+      "failed_checks": [
+        "ci-verify"
+      ],
+      "prior_signatures": []
+    }
+  }
 }
