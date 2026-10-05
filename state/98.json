@@ -532,5 +532,6 @@
     "work_order_version": 1,
     "at": "2026-10-05T09:48:35.179Z"
   },
-  "qa_open_bugs": []
+  "qa_open_bugs": [],
+  "stall_reported_for": "2026-10-05T09:48:37.205Z"
 }
