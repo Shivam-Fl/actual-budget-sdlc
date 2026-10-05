@@ -281,5 +281,214 @@
   },
   "validated_from": "plan",
   "validated_at": "2026-10-05T14:42:23.615Z",
-  "validated_ac_changes": []
+  "validated_ac_changes": [],
+  "approved_work_order": {
+    "issue": 84,
+    "version": 1,
+    "kind": "bug",
+    "understanding": "Two report spreadsheets narrow their category axis in JS with a plain substring test, `name.toLowerCase().includes(value.toLowerCase())`, while the query they sit on top of compiles `contains` to `$like '%' + value + '%'` and the AQL compiler emits that as `UNICODE_LIKE(<normalised pattern>, NORMALISE(name))` (aql/compiler.ts:735). UNICODE_LIKE speaks a PATTERN language, not a substring language: `%` and `?` are wildcards, a backslash escapes exactly those two, and both sides are diacritic-folded. budgetDataQuery.ts:246-265 already routes `contains` / `doesNotContain` through `likePatternToRegex(getNormalisedString('%' + value + '%')).test(getNormalisedString(textValue))` and the Custom and Grouped reports inherit that. The two sites named by the ticket never got the fix, so they disagree with Custom/Grouped about what a filter value means. I ran both code paths side by side over the fixture names Food, Groceries, 100% Off, Café, C_Sharp and 5 of 16 operator/value pairs diverge — including three the ticket does not even mention: `?`, `\\\\%`, and the diacritic case `cafe` (which today drops `Café`). The ordinary-substring case agrees, which is why this survives in the shipped product.",
+    "root_cause": "sankey-spreadsheet.ts:459-470 (`matchesStringCondition`, reached from `filterCategoryGroups`) and budget-analysis-spreadsheet.ts:246-255 (the `contains` / `doesNotContain` arms of the per-condition filter inside `createBudgetAnalysisSpreadsheet`) each reimplement the LIKE-pattern translation as a substring test. The pattern language the query actually speaks is defined once, in loot-core/src/shared/likePattern.ts, and the desktop client already has the reference implementation of the correct routing in budgetDataQuery.ts — the two sites just never call it.\n\nOne correction to the ticket's description, which matters because the implementer must not invent a screen that does not exist: Budget Analysis is **not** a per-category grid. `BudgetAnalysis.tsx` renders `BudgetAnalysisGraph` over `BudgetAnalysisData.intervalData`, which is one point per MONTH (budgeted / spent / balance / overspendingAdjustment). There are no per-category rows or cells. What the ticket calls \"the filtered list decides which categories get a cell in the grid\" is, in this code, that `categoriesToInclude` is the exact set every month's totals are summed over by `summarizeMonthCategories` (budget-analysis-spreadsheet.ts:88-151, called at :314 and :339). So the money risk the ticket names is real and correctly identified — an excluded category contributes nothing to `totalBudgeted` / `totalSpent` / `intervalData[].balance`, silently and with no error — but it arrives through the totals, not through a missing row. AC-4 and AC-5 below are written against what the code does; QA must not go looking for grid cells.",
+    "approach": "Route both sites' `contains` and `doesNotContain` arms through the two primitives the query itself uses, `likePatternToRegex` and `getNormalisedString` from `@actual-app/core/shared`, copying budgetDataQuery.ts:246-265 including the comments that explain why `matches` is deliberately excluded and why the `$notlike` `OR IS NULL` disjunct never fires for a category name. Two changes, both local, no new shared module: (1) in sankey-spreadsheet.ts add a file-local `containsLikePattern(textValue, pattern)` helper and rewrite the two arms of `matchesStringCondition` to call it — no other function in that file changes; (2) in budget-analysis-spreadsheet.ts lift the existing `relevantConditions` → `categoriesToInclude` block out of the `createBudgetAnalysisSpreadsheet` closure verbatim into a new exported pure `filterCategoriesForConditions(baseCategories, categoryGroups, conditions, conditionsOp)`, rewrite its two text arms to call the same local helper, and have the closure call the new function in one line. The extraction exists only because AC-6 requires unit-level differential cases in budget-analysis-spreadsheet.test.ts and that logic is currently unreachable from outside an async closure that talks to the server; `isBaseCategory`, `summarizeMonthCategories` and `getNextRunningBalance` were extracted from that same closure for the same reason, so it is the file's established shape. `matches`, the query side, `UNICODE_LIKE` and rule evaluation are untouched.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/sankey-spreadsheet.ts",
+        "action": "edit",
+        "change": "Add two imports alongside the existing `@actual-app/core/shared/*` imports, in that block's existing order: `import { likePatternToRegex } from '@actual-app/core/shared/likePattern';` and `import { getNormalisedString } from '@actual-app/core/shared/normalisation';`. Then, inside `filterCategoryGroups`, immediately after the `if (categoryConditions.length === 0 && categoryGroupConditions.length === 0) return categoryGroups;` early return at :441-443 and before `const matchesStringCondition = (` at :445, add a file-local helper:\n\n```ts\n  // `contains` reaches the query as `$like '%' + value + '%'`\n  // (transaction-rules.ts), which the compiler emits as\n  // `UNICODE_LIKE(<normalised pattern>, NORMALISE(name))` (aql/compiler.ts).\n  // UNICODE_LIKE speaks a PATTERN language in which '%' and '?' are wildcards\n  // and a backslash escapes exactly those two - not a substring language.\n  // Reading it as a literal `includes` leaves this axis in a strict subset of\n  // what `api/budget-month` returned, and a category the query kept would have\n  // no node to render its value on. So the two arms below run the query's own\n  // two primitives, in the same order budgetDataQuery.ts runs them.\n  const containsLikePattern = (textValue: string, pattern: string): boolean =>\n    likePatternToRegex(getNormalisedString('%' + pattern + '%')).test(\n      getNormalisedString(textValue),\n    );\n```\n\nReplace the bodies at :459-470 (keep the `if (op === ...)` lines and the `typeof value === 'string'` guard, drop the `.toLowerCase().includes(...)` calls) with:\n\n```ts\n    if (op === 'contains') {\n      return typeof value === 'string' && containsLikePattern(name, value);\n    }\n    // The query's `$notlike` also carries an `OR left IS NULL` disjunct\n    // (aql/compiler.ts), which never fires for a category name - `name` is not\n    // nullable - so the exact negation is the whole of it.\n    if (op === 'doesNotContain') {\n      return typeof value === 'string' && !containsLikePattern(name, value);\n    }\n```\n\nChange nothing else in the file. `matches` (:471-483, including its `/re/flags` special case), the `is` / `isNot` / `oneOf` / `notOneOf` arms (:455-458), the `typeof cond.op !== 'string'` throw, the `return false` fallthrough at :484, the OR/AND combination at :498-510, and the empty-group `.filter` at :520 are all unchanged.",
+        "why": "The ticket's Sankey surface. `matchesStringCondition` is already called with the right text for both fields — `cat.name` for a category condition, `group.name` for a category_group condition (via `categoryMatchesConditions` at :487-511) — so fixing the two text arms fixes both fields at once."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/budget-analysis-spreadsheet.ts",
+        "action": "edit",
+        "change": "Add two imports alongside the existing `@actual-app/core/shared/*` imports, in that block's existing order: `import { likePatternToRegex } from '@actual-app/core/shared/likePattern';` and `import { getNormalisedString } from '@actual-app/core/shared/normalisation';`.\n\nAbove `export function createBudgetAnalysisSpreadsheet(` (:174), add a file-local helper and a new exported pure function:\n\n```ts\nfunction containsLikePattern(textValue: string, pattern: string): boolean {\n  return likePatternToRegex(getNormalisedString('%' + pattern + '%')).test(\n    getNormalisedString(textValue),\n  );\n}\n\n/**\n * The expense categories a Budget Analysis report is built from.\n *\n * `envelope-budget-month` is fetched with no conditions, so - like the Sankey\n * report's `filterCategoryGroups` - this axis is narrowed in JS rather than by\n * the query. `contains` / `doesNotContain` therefore have to be read the way\n * the query reads them: `$like '%' + value + '%'` compiles to\n * `UNICODE_LIKE(<normalised pattern>, NORMALISE(name))` (aql/compiler.ts), a\n * PATTERN language in which '%' and '?' are wildcards and a backslash escapes\n * exactly those two. A bare `toLowerCase().includes()` is a substring test and\n * keeps a strict subset of what the month data holds - and this list is exactly\n * what `summarizeMonthCategories` sums every month's totals over, so a category\n * the filter drops leaves the report's totals with no error and no empty state.\n * budgetDataQuery.ts carries the same translation for the Custom and Grouped\n * reports.\n */\nexport function filterCategoriesForConditions(\n  baseCategories: CategoryEntity[],\n  categoryGroups: Array<{ id: string; name: string }>,\n  conditions: RuleConditionEntity[],\n  conditionsOp: 'and' | 'or',\n): CategoryEntity[] {\n```\n\nIts body is the code currently at :189-293 moved verbatim, with these three edits and no others:\n\n1. Keep `const groupNameById = new Map<string, string>(...)` exactly as written at :191-195, taking `categoryGroups` (the new parameter) as its source.\n2. `baseCategories` is now the first parameter, so drop its construction from the extracted code; the caller keeps lines :204-208 (`allCategories.filter(cat => isBaseCategory(cat, showHiddenCategories))`) and passes the result in.\n3. Replace the two text arms at :246-255 with:\n\n```ts\n          } else if (cond.op === 'contains') {\n            return (\n              typeof cond.value === 'string' &&\n              containsLikePattern(textValue, cond.value)\n            );\n          } else if (cond.op === 'doesNotContain') {\n            return (\n              typeof cond.value === 'string' &&\n              !containsLikePattern(textValue, cond.value)\n            );\n```\n\nKeep verbatim: the `!cond.customName` + field filter at :198-202, the per-condition `matchesRegex` IIFE at :217-228, the `is` / `isNot` / `oneOf` / `notOneOf` arms at :238-245, the `matches` arm at :256-258, the `return false` fallthrough at :259, the OR union at :264-269, the AND intersection at :270-289 (including the mutate-while-iterating `firstSet` loop, which is correct and not this ticket's business), and the no-relevant-conditions branch at :290-293 that returns `baseCategories` untouched.\n\nFinally, replace lines :189-293 inside `createBudgetAnalysisSpreadsheet` with a single call, keeping the `send('get-categories')` destructure at :186-187 and the `baseCategories` construction at :204-208:\n\n```ts\n    const categoriesToInclude = filterCategoriesForConditions(\n      baseCategories,\n      allCategoryGroups,\n      conditions,\n      conditionsOp,\n    );\n```\n\nEverything from :295 (`monthUtils.rangeInclusive`) to the end of the file is unchanged. Do not add `// @ts-strict-ignore` to anything new and do not remove the file's existing `// @ts-strict-ignore` at :01 — write the extracted function type-clean regardless.",
+        "why": "The ticket's Budget Analysis surface, plus the extraction AC-6 depends on. The logic under repair is currently only reachable from inside an async closure that calls `send(...)`, so no unit test can reach it; the three helpers the existing test file already imports from this module were extracted for the same reason."
+      },
+      {
+        "path": "upcoming-release-notes/category-text-filters-mean-the-same-in-sankey-and-budget-analysis.md",
+        "action": "create",
+        "change": "Create the file with exactly this content — YAML frontmatter, blank line, then a single-line body (the gate rejects a second paragraph, and rejects `claude` / `github-actions` as authors):\n\n```\n---\ncategory: Bugfixes\nauthors: [Shivam-Fl]\n---\n\nMake a category text filter read `%` and `?` as wildcards in the Sankey and Budget Analysis reports, as it already does in Custom and Grouped\n```\n",
+        "why": "conventions.md records the release-note check as a hard gate that fails a PR touching none of `upcoming-release-notes/`. Nothing else in the repo needs it, but a release note is a mandatory artefact here, not scope."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/sankey-spreadsheet.test.ts",
+        "action": "edit",
+        "cases": [
+          "Add a second fixture inside the existing `describe('filterCategoryGroups')` block (:354) built on the block's own `createCategoryGroup` helper (:355-371), carrying the wildcard-shaped names `Food`, `Groceries`, `100% Off`, `Café` and `C_Sharp` across at least three groups (`Fun Money`, `Bills`, `Savings`), plus a local `flattenIds = (groups) => groups.flatMap(g => g.categories.map(c => c.id))` helper. The existing fixture is plain ASCII and cannot tell an over-broad fix from an over-escaping one; this one can.",
+          "DIFFERENTIAL, `contains '%'`: `flattenIds(filterCategoryGroups(fixture, [{ field: 'category', op: 'contains', value: '%' }], 'and'))` equals the id list `filterCategoriesByConditions(categories, categoryGroups, [same condition], 'and')` returns, and is not the empty list. Import `filterCategoriesByConditions` from './budgetDataQuery'.",
+          "DIFFERENTIAL, `contains '?'`: the same equality against `filterCategoriesByConditions`, and the result is every category, not zero.",
+          "DIFFERENTIAL, `contains 'o%'`: the same equality against `filterCategoriesByConditions`, and the result is exactly `Food`, `Groceries`, `100% Off` — the names containing an `o`, not every category and not zero. This is the case the ticket names and the one a `startsWith`-style guess gets wrong.",
+          "DIFFERENTIAL, `contains '\\\\\\\\%'` (the two-character string backslash-percent): equals `filterCategoriesByConditions`, and is exactly `100% Off`. A fix that escaped the user's own wildcards would pass the bare-`%` case and fail here.",
+          "`contains '_'` and `contains 'C_'` both select only `C_Sharp`, matching `filterCategoriesByConditions`. `_` is not a wildcard in UNICODE_LIKE; escaping it here would invent a divergence that does not exist.",
+          "DIACRITICS: `contains 'cafe'` and `contains 'café'` both select `Café`, matching `filterCategoriesByConditions`. A bare `toLowerCase()` drops `Café` today; pin the corrected behaviour so it cannot regress silently.",
+          "NEGATION: for each of `%`, `?`, `o%` and `cafe`, the `doesNotContain` result is the exact complement of the `contains` result at the same value, over the same fixture, with no category appearing in both or neither.",
+          "NEGATIVE CONTROL, ordinary substring: `contains 'oo'` selects exactly `Food` and `contains 'BILL'` selects none, matching `filterCategoriesByConditions`. A fix that turned every text condition into a no-op would pass the wildcard cases and fail here.",
+          "CATEGORY_GROUP FIELD: `contains '%'` on `field: 'category_group'` selects every category, matching `filterCategoriesByConditions` on the same field; and `contains 'Fun'` selects exactly `Food` and `Groceries`.",
+          "UNCHANGED PATHS: `is` / `isNot` on ids, `oneOf` / `notOneOf` on id arrays, and the `matches` behaviour including its `/re/flags` special case, all return what they returned before this change. Pin them so the ticket's AC-7 is checkable rather than argued.",
+          "FALSIFIABILITY: prove the differential cases can fail by temporarily reverting the `contains` arm to `name.toLowerCase().includes(value.toLowerCase())`, running the file, and recording that the `%`, `?`, `o%`, `\\\\%` and `cafe` cases fail. Record the failing run in the PR. Then restore the fix."
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/budget-analysis-spreadsheet.test.ts",
+        "action": "edit",
+        "cases": [
+          "Add a new top-level `describe('filterCategoriesForConditions')` inside the existing `describe('createBudgetAnalysisSpreadsheet')`, reusing the file's `makeCategory` helper (:12-19) and its `all` fixture (:21-39) but adding a wildcard-shaped fixture: `Food`, `Groceries`, `100% Off`, `Café`, `C_Sharp` as expense categories in groups `Fun Money`, `Bills`, `Savings`, plus the matching `CategoryGroupEntity[]`. Import `filterCategoriesForConditions` from './budget-analysis-spreadsheet' and `filterCategoriesByConditions` from './budgetDataQuery'.",
+          "DIFFERENTIAL: for each of `%`, `?`, `o%`, `\\\\%`, `_`, `C_`, `oo`, `cafe`, `café` and `Fun`, `filterCategoriesForConditions` returns exactly the id list `filterCategoriesByConditions` returns for the identical condition, on both `field: 'category'` and `field: 'category_group'`. One `it.each`-style case per value, so a single regression names itself.",
+          "`contains '%'` and `contains '?'` each return every base category - the full set the month data holds - not an empty list.",
+          "`contains 'o%'` returns exactly `Food`, `Groceries`, `100% Off`.",
+          "`contains '\\\\\\\\%'` returns exactly `100% Off`.",
+          "NEGATION: for `%`, `?` and `o%`, the `doesNotContain` result is the exact complement of the `contains` result at the same value.",
+          "TOTALS ARE SUMMED OVER EXACTLY THIS LIST (the ticket's AC-5 invariant, unit-level): build a `BudgetMonthCell[]` with the file's existing `cells(...)` helper giving `Food` a budget of 100, `Groceries` 200, `100% Off` 300, `Café` 400 and `C_Sharp` 500, then assert that `summarizeMonthCategories(cells, filterCategoriesForConditions(..., 'o%', 'and')).budgeted` is 600 and `.spent` is the sum of only those three categories' `sum-amount` cells. Assert the same call with `contains '%'` gives 1700 - the unfiltered total - so a filter that silently became a no-op fails here.",
+          "THE CATEGORY THE FILTER EXCLUDES IS NOT IN THE TOTALS: with the same fixture, `summarizeMonthCategories(cells, filterCategoriesForConditions(..., 'cafe', 'and')).budgeted` is 400 and nothing else. An excluded category contributes exactly 0 to `budgeted`, `spent`, `carryoverToNextMonth` and `overspendingThisMonth` - it is not silently present, and not silently absent either.",
+          "UNCHANGED PATHS: `is`, `isNot`, `oneOf` and `notOneOf` on ids, `matches`, the no-conditions branch (returns `baseCategories` untouched), and the hidden/income exclusions from `isBaseCategory` all behave exactly as before. Pin them — this is the ticket's AC-7 at this site.",
+          "OR vs AND: with two category conditions joined by 'or' the result is the union and by 'and' the intersection, unchanged by this fix, and both agree with `filterCategoriesByConditions` at the same values.",
+          "FALSIFIABILITY: prove the new cases can fail by temporarily reverting the `contains` arm to `textValue.toLowerCase().includes(cond.value.toLowerCase())`, running the file, and recording that the `%`, `?`, `o%`, `\\\\%`, `cafe` and both totals cases fail. Record the failing run in the PR. Then restore the fix."
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "source": "IAC-1",
+        "check": "On the Sankey report in Budget mode, a category text filter of `contains \"%\"` produces the same set of category nodes as the very same report with no filter: one node for every category whose budgeted total (expense groups) or received total (income groups) over the selected months is non-zero — the same set `api/budget-month` returned. Today the same filter renders an empty chart. The non-zero qualifier is sankey-spreadsheet.ts:351, which drops zero-valued entries, and it is unchanged by this work; a zero-budgeted category legitimately has no node either before or after.",
+        "how_to_verify": "Reports -> Sankey, set the date range to a month with budgeted amounts, note the category nodes with no filter, then add the filter Category / contains / `%`. The node set is identical. The `contains \"o%\"` case renders exactly the categories whose name contains an `o` — the set a Custom report with the same condition returns — not an empty chart.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "source": "IAC-2",
+        "check": "`doesNotContain` is the exact complement of `contains` at the same value, on the same fixture, for `%`, `?`, `o%` and `cafe`: no category appears in both sets and no category appears in neither. Neither operator reads the value as a literal substring — `contains \"%\"` is not a search for a literal percent sign, and `contains \"o%\"` is not a search for the literal three characters `o%`.",
+        "how_to_verify": "tests[]: the NEGATION case in each of the two test files.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "source": "IAC-3",
+        "check": "`sankey-spreadsheet.test.ts` asserts that `filterCategoryGroups` and `filterCategoriesByConditions` return the same category id set for the identical condition at each of `%`, `?` and `o%`, on the wildcard-shaped fixture added to the existing `describe('filterCategoryGroups')` block, and does so for both `field: 'category'` and `field: 'category_group'`. The existing block's fixtures and its existing cases are kept.",
+        "how_to_verify": "yarn workspace @actual-app/web test — the DIFFERENTIAL cases in sankey-spreadsheet.test.ts. The recorded run in the PR shows them failing against the pre-fix `includes`.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "source": "IAC-4",
+        "check": "On the Budget Analysis report, a category text filter of `contains \"%\"` leaves every reported number exactly as it is with no filter: total budgeted, total spent, and each month's balance and overspending adjustment are identical, because the filtered category list is the full set of the month's expense categories the `envelope-budget-month` data holds. Today the filter selects no category and every total reads 0.00. NOTE FOR QA: the Budget Analysis report is a per-month time series — `BudgetAnalysisGraph` over `intervalData` — and has no per-category rows or cells; the filtered list's effect is entirely on the totals, so verify the totals and do not look for grid cells.",
+        "how_to_verify": "Reports -> Budget Analysis over a month with budgeted and spent amounts. Record total budgeted and total spent with no filter, then add the filter Category / contains / `%`. Both totals are unchanged. (Also available as the TOTALS ARE SUMMED OVER EXACTLY THIS LIST unit case.)",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-5",
+        "source": "IAC-5",
+        "check": "On the Budget Analysis report, a mixed value such as `contains \"o%\"` selects exactly the categories whose name contains an `o`, and the report's totals are summed over exactly that list. The invariant that must hold for any filter value: a category the filter excludes contributes exactly 0 to budgeted, spent, carryover and overspending adjustment — it is not silently present in the totals — and a category it includes contributes all of its own. Every included category is fully counted; no excluded category is counted at all.",
+        "how_to_verify": "tests[]: the TOTALS ARE SUMMED OVER EXACTLY THIS LIST and THE CATEGORY THE FILTER EXCLUDES IS NOT IN THE TOTALS cases in budget-analysis-spreadsheet.test.ts, which pass 100/200/300/400/500 of budget against `o%` (expect 600) and against `cafe` (expect 400). Browser-equivalent: in Reports -> Budget Analysis, total budgeted under `contains \"o%\"` equals the sum of the budgeted amounts of the categories whose name contains an `o`.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "source": "IAC-6",
+        "check": "`budget-analysis-spreadsheet.test.ts` asserts the same differential shape as AC-3, against the same values (`%`, `?`, `o%`, `\\\\%`, `_`, `C_`, `oo`, `cafe`, `café`, `Fun`) and the same reference implementation `filterCategoriesByConditions`, for both `category` and `category_group` fields. The existing hidden-category, month-range, monthly-summary and running-balance cases are kept unchanged.",
+        "how_to_verify": "yarn workspace @actual-app/web test — the DIFFERENTIAL cases in budget-analysis-spreadsheet.test.ts.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-7",
+        "source": "IAC-7",
+        "check": "A filter value with no wildcard in it behaves exactly as it does today, at both sites: `is`, `isNot`, `oneOf`, `notOneOf`, `matches` (including the Sankey report's `/re/flags` special case), an ordinary substring such as `oo`, a value that matches nothing such as `BILL`, and the no-conditions and hidden/income-inclusion paths all produce the same rows, cells and totals as before this change. The only intended behaviour change beyond `%` and `?` is diacritic folding, where a filter value of `cafe` now matches the category named `Café` — which is what Custom and Grouped already do, and is asserted rather than left to chance.",
+        "how_to_verify": "tests[]: the UNCHANGED PATHS case in each test file, plus the ordinary-substring negative controls (`oo` -> `Food`, `BILL` -> none).",
+        "verify": "test"
+      },
+      {
+        "id": "AC-8",
+        "check": "The release note in `upcoming-release-notes/category-text-filters-mean-the-same-in-sankey-and-budget-analysis.md` passes `.github/actions/release-notes/check`: category `Bugfixes`, authors a real GitHub username, and a body of exactly one line.",
+        "how_to_verify": "node packages/ci-actions/bin/release-notes-check.mjs",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "Start the app and pick \"View demo\" on the setup screen — it creates a budget pre-populated with accounts, categories and budgeted amounts. An empty budget shows nothing and would make AC-1 vacuous.",
+      "Open Reports -> Budget Analysis, pick a month range that includes a month with real budgeted and spent amounts. Without any filter, read off total budgeted and total spent, and one month's balance.",
+      "Add the filter Category / contains / `%`. Expect total budgeted and total spent to be UNCHANGED (AC-4). On the pre-fix build this is where it collapses to 0.00.",
+      "Change the filter value to `o%`. Expect the totals to equal the sum of the budgeted amounts of the categories whose name contains an `o`, and to be lower than the unfiltered total (AC-5).",
+      "Change the operator to does not contain, keep `%`. Expect every category to be excluded and the totals to read 0.00 — the exact negation of step 3 (AC-2).",
+      "Open Reports -> Sankey in Budget mode over the same month. Note the category nodes with no filter.",
+      "Add the filter Category / contains / `%`. Expect the identical node set (AC-1). On the pre-fix build the chart is empty.",
+      "Change the value to `o%`. Expect the nodes to be exactly the categories whose name contains an `o`.",
+      "Repeat step 7 with the Category Group field instead of Category — the same behaviour, since both fields share one code path.",
+      "Run the two test files and confirm the DIFFERENTIAL, NEGATION, NEGATIVE CONTROL and UNCHANGED PATHS cases pass: yarn workspace @actual-app/web test.",
+      "Negative control for the whole ticket: retype `oo` as the filter value on both reports and confirm both still narrow to a single category rather than widening to everything — the regression a too-permissive fix would introduce."
+    ],
+    "risks": [
+      "OVER-NARROWING MOVES MONEY. This is the ticket's own stated risk and it is the one to guard. On Budget Analysis the filtered list IS the summand set for every total (:314, :339), so an axis stricter than the month data silently deletes a category's budgeted and spent amounts from the report with no error and no empty state; on Sankey it deletes a node's value. The fix must be at least as permissive as the query, never stricter. The `\\\\%` and `cafe` cases are what catch an over-escaping fix, and the `oo` / `BILL` negative controls are what catch an over-broad one.",
+      "A BEHAVIOUR CHANGE THE TICKET DID NOT NAME: diacritic folding. Today a filter of `contains \"cafe\"` drops a category named `Café` from both reports; after this change it is kept, because `getNormalisedString` folds the accent exactly as `NORMALISE` does on the query side. This is correct — it is what Custom and Grouped have done since budgetDataQuery.ts landed — but it will change rows for anyone filtering on accented category names. It is asserted in tests[] so it cannot drift back silently.",
+      "`filterCategoryGroups` applies conditions whose `customName` is set; `filterCategoriesByConditions` excludes them (its `!cond.customName` guard). That divergence is pre-existing and this change does not touch it, but it means the differential tests must use conditions with a falsy `customName` — the existing Sankey tests already use `customName: ''`, which is falsy and therefore compatible.",
+      "`budget-analysis-spreadsheet.ts` is `// @ts-strict-ignore` at :01. Write the extracted `filterCategoriesForConditions` type-clean anyway, do not add the pragma to anything new, and do not remove it from the file — removing it is out of scope and would surface pre-existing errors unrelated to this ticket.",
+      "Neither report's data fetch changes, so no new host, endpoint or network call is introduced and `env.api_allowlist` is untouched. No path under `docs/spec/**`, `docs/prd.md`, `docs/trd.md`, `docs/ui.md`, `.github/**` or `.sdlc/**` is touched.",
+      "The Sankey report's transaction mode (`createTransactionsSpreadsheet`, :372-409) already hands its conditions to the query via `make-filters-from-conditions` and does NOT go through `filterCategoryGroups`, so it has no version of this bug and needs no change."
+    ],
+    "out_of_scope": [
+      "The age-of-money report's text operators (age-of-money-spreadsheet.ts:341-393). Checked: they build AQL `$like` / `$notlike` clauses and pass them to the query rather than filtering in JS — a grep for `toLowerCase().includes(value.toLowerCase())` across `components/reports/` returns only the two sites this ticket names. There is nothing to fix there.",
+      "Bounding the pattern's wildcard count or length (the ReDoS piece). It changes `likePatternToRegex` itself and would ship on its own; the ticket excludes it.",
+      "Changing `matches`. It compiles to `$regexp`, not `$like`, and is deliberately not routed through `likePatternToRegex` — budgetDataQuery.ts:267-284 documents why, and every divergence is axis-WIDER, which costs an empty row and never money. Its behaviour is pinned in tests[] rather than changed.",
+      "Changing the query side, `UNICODE_LIKE`, `normalise.ts`, or rule evaluation. This slice conforms to the contract `budgetDataQuery.ts` established; it does not redefine it.",
+      "Exporting `containsLikePattern` from `budgetDataQuery.ts` and importing it in both sites instead of duplicating the four-line helper. That would make `budgetDataQuery.ts` define the contract, which is the opposite of what this slice is for, and would touch already-correct code. The helper is duplicated deliberately: each file already carries its own local predicate (`matchesStringCondition` is local to sankey-spreadsheet.ts) and each carries its own comment naming budgetDataQuery.ts as the reference.",
+      "Giving Sankey and Budget Analysis the `isSupportedCategoryCondition` conservative fallback that `filterCategoriesByConditions` has at budgetDataQuery.ts:201-203 — returning the input unfiltered rather than emptying the axis when a condition cannot be interpreted. A genuine soundness gap, but it changes behaviour for malformed conditions beyond the reported defect and would ship on its own.",
+      "Sankey's `matchesStringCondition` returns `false` for an unrecognised `op` (:484) where `budgetDataQuery.ts` returns `true` (:286). Pre-existing divergence, not reachable from the report filter UI, unchanged here.",
+      "Adding per-category rows or cells to the Budget Analysis report. It is a per-month time series by design; the ticket's grid language describes the totals, and this change conforms the filtering, not the report's shape."
+    ],
+    "reproduced": true,
+    "evidence": [
+      "Ran both code paths side by side over the fixture names Food, Groceries, 100% Off, Café, C_Sharp — the query path as `likePatternToRegex(getNormalisedString('%'+v+'%')).test(getNormalisedString(name))` (loot-core/src/shared/likePattern.ts, verbatim) against the axis path as `name.toLowerCase().includes(value.toLowerCase())` (sankey-spreadsheet.ts:462 and budget-analysis-spreadsheet.ts:249, verbatim). 5 of 16 operator/value pairs diverge.",
+      "contains '%'   query=[Food, Groceries, 100% Off, Café, C_Sharp]  axis=[100% Off]            DIVERGES — the ticket's empty-chart case (AC-1)",
+      "contains '?'   query=[Food, Groceries, 100% Off, Café, C_Sharp]  axis=[]                     DIVERGES — not named by the ticket",
+      "contains 'o%'  query=[Food, Groceries, 100% Off]                 axis=[]                     DIVERGES — the ticket's mixed-value case (AC-5)",
+      "contains '\\\\%' query=[100% Off]                                  axis=[]                     DIVERGES — the escaped-wildcard case that catches an over-escaping fix",
+      "contains 'cafe' query=[Café]                                     axis=[]                     DIVERGES — the diacritic case, also not named by the ticket",
+      "contains 'oo'  query=[Food]                                      axis=[Food]                agrees — the ordinary-substring case, which is why this survives shipping",
+      "doesNotContain '%' query=[] axis=[Food, Groceries, Café, C_Sharp] DIVERGES — the exact negation of the `contains '%'` divergence (AC-2)",
+      "Read budget-analysis-spreadsheet.ts:174-379 end to end: `categoriesToInclude` is the sole argument to `summarizeMonthCategories` at :314 and :339, and every figure in `BudgetAnalysisData` is accumulated from those calls — so an excluded category contributes 0 to totalBudgeted, totalSpent and each intervalData balance with no error and no empty state. That is the money risk the ticket names, arriving through the totals.",
+      "Read BudgetAnalysis.tsx:1-90 and the BudgetAnalysisData type (budget-analysis-spreadsheet.ts:21-29): `intervalData` is one entry per MONTH, and the report renders BudgetAnalysisGraph over it. There are no per-category rows or cells — the ticket's 'a cell in the grid' does not correspond to anything in this code, so AC-4 and AC-5 are written against the totals.",
+      "Grepped `toLowerCase().includes(value.toLowerCase())` across packages/desktop-client/src/components/reports/: exactly two hits, sankey-spreadsheet.ts:462 and :468. No third site. age-of-money-spreadsheet.ts has no such filter — it builds AQL `$like` clauses and lets the query do the work, so the ticket's out-of-scope note about it is correct.",
+      "Grepped all callers of `filterCategoryGroups` (one: sankey-spreadsheet.ts:328) and of `filterCategoriesByConditions` (spending-spreadsheet.ts:60, and budgetDataQuery.ts:141 and :321). No caller outside the two named files is affected by either edit."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Escape the user's wildcards at the axis site — treat `contains` as a literal substring match by regex-escaping `value` before the `includes`, so `%` matches only a literal percent sign.",
+        "rejected_because": "It inverts the bound direction the ticket names. The query sends `%` to UNICODE_LIKE as a wildcard, so escaping at the axis makes the axis STRICTER than the set that was fetched — on Budget Analysis that deletes a category's budgeted and spent amounts from every total, which is the money-moving case the ticket singles out. It would also leave the two reports disagreeing with Custom and Grouped, which is the ticket's actual subject."
+      },
+      {
+        "approach": "Stop narrowing the axis at these two sites entirely — drop the JS filter from `filterCategoryGroups` and from the Budget Analysis closure and let both reports show every category, the way the unfiltered report does.",
+        "rejected_because": "It fixes the loss by making the filter a no-op, which is a worse lie: the user asks for a filter and the report answers a different question with no indication. AC-7 explicitly requires ordinary substrings to keep narrowing, and the negative controls in tests[] would fail."
+      },
+      {
+        "approach": "Change `likePatternToRegex` or `UNICODE_LIKE` so a bare `%` is treated as a literal.",
+        "rejected_because": "It changes the contract every report and the rules engine already agree on, to fix two call sites that had not conformed to it. The ticket puts this out of scope, and budgetDataQuery.ts:246-265 already documents the correct direction."
+      },
+      {
+        "approach": "Extract one shared `categoryMatchesTextCondition` into budgetDataQuery.ts and route all three sites through it, so the LIKE-pattern translation lives in exactly one place.",
+        "rejected_because": "It would make budgetDataQuery.ts define the contract, which is the opposite of what this slice is for ('this slice conforms to it, it does not define it'), and would rewrite already-correct, already-tested code inside that file. The duplicated helper is four lines, each copy carries a comment naming budgetDataQuery.ts as its reference, and budgetDataQuery.ts's own `evaluateCondition` closure stays untouched. Noted in out_of_scope in case a human wants the consolidation as its own ticket."
+      },
+      {
+        "approach": "Fix only `contains`, leaving `doesNotContain` as the current negated substring test.",
+        "rejected_because": "It would make the two operators disagree with each other rather than with the query: `doesNotContain '%'` would then exclude every category the query fetched. The ticket's AC-2 requires them to be exact complements at the same value, which only holds if both read the pattern the same way."
+      }
+    ],
+    "assumptions": [
+      "`api/budget-month` (Sankey) and `envelope-budget-month` (Budget Analysis) are still fetched with no conditions, as sankey-spreadsheet.ts:425-428 and budget-analysis-spreadsheet.ts:331 state. If a later change starts passing conditions down, both filters in this plan become dead weight rather than wrong — but that is a later change's ticket, not this one.",
+      "`allCategoryGroups` from `send('get-categories')` is structurally assignable to `Array<{ id: string; name: string }>`. If the implementer hits a type error, widen the parameter to `CategoryGroupEntity[]` — either compiles, and neither changes behaviour.",
+      "The report filter UI accepts a bare `%` or `?` in the value field without escaping it. It is a plain text input feeding `RuleConditionEntity.value` verbatim, and the existing code already stores raw values, so this holds.",
+      "`filterCategoriesByConditions` is a sound reference to hold the two sites to: it is the implementation Custom and Grouped reports actually ship, it is already covered by budgetDataQuery.test.ts, and it is the code the ticket cites as the contract."
+    ],
+    "unknowns": [
+      "Whether any existing Sankey or Budget Analysis widget in the wild has a saved `conditions` payload with a category `contains` value containing `%`, `?` or a backslash. Such a widget's node set and totals will change on upgrade. Nothing in the repo can answer this, and no migration is warranted — the old behaviour was the bug — but it is the one thing a person might want to know before shipping.",
+      "Whether the Sankey report's zero-value `.filter` at :351 ever interacts badly with a `%` filter in a way QA will see as a regression. It should not (a zero-budgeted category had no node before either), but AC-1 states the non-zero qualifier explicitly so QA does not read it as a miss."
+    ],
+    "confidence": 87,
+    "confidence_rationale": "The defect is reproduced rather than inferred, the reference implementation and its tests exist in the same directory and are quoted in the ticket, and the two sites are the only two matches for the buggy expression across the whole reports tree. The 13-point haircut is for three things I could not execute: node_modules is absent so I could not run the suite or the typechecker; `budget-analysis-spreadsheet.ts` carries `// @ts-strict-ignore`, so the type story on the extracted function is reasoned rather than checked; and the one place where the ticket and the code genuinely disagree — Budget Analysis has no per-category grid — means AC-4 and AC-5 as the ticket wrote them are not literally checkable, and I have rewritten them against what the code does. A human reading root_cause should see that correction before the implementer starts.",
+    "residual_risks": [
+      "The 256-character guard on `matches` at sankey-spreadsheet.ts:473 and budget-analysis-spreadsheet.ts:219 is untouched and still disagrees with budgetDataQuery.ts:274-284 in the same direction as before — the ticket puts `matches` out of scope. Pinned in tests[], not fixed.",
+      "Sankey and Budget Analysis still apply `customName` conditions that `filterCategoriesByConditions` excludes, and Sankey still returns `false` for an unrecognised `op` where budgetDataQuery.ts returns `true`. Both are pre-existing divergences from the Custom/Grouped reference, outside this ticket, and neither is reachable from the report filter UI.",
+      "Neither site has the `isSupportedCategoryCondition` conservative fallback, so a malformed condition (say `contains` with a non-string value) still empties the Budget Analysis axis rather than widening it. Pre-existing, out of scope, and named in out_of_scope.",
+      "If QA's browser run cannot reach a report filter whose value is a bare `%` — for instance because the filter input trims or escapes it — AC-1 and AC-4 fall back to the unit cases named in how_to_verify. Both are pinned so neither browser path can fail the ticket on its own."
+    ]
+  },
+  "approved_too_high": false
 }
