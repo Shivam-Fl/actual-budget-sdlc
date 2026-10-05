@@ -309,5 +309,183 @@
       "Hoisting two helpers into the 'custom reports' describe body changes when they are constructed relative to the nested describes. They close over only `page` and `customReportPage`, both assigned by beforeEach hooks, so the closure reads them at call time exactly as before - but it is why the diff touches three regions of a 723-line file."
     ],
     "mode": "committed"
-  }
+  },
+  "approved_work_order": {
+    "issue": 86,
+    "version": 5,
+    "understanding": "A custom report's conditions button is icon-only. CompactFiltersButton renders a bare Button whose only child is SvgFilter, with no text node and no aria-label, so its accessible name is empty (CompactFiltersButton.tsx:8-14). The e2e page model works around that by enumerating every button in the report page, skipping any that carries an aria-label or non-empty text, and clicking the first whose bounding box sits right of x=850 (custom-report-page.ts:55-77). That is the only way the suite reaches the conditions menu, and it is actively fragile rather than merely untidy: the scan skips every NAMED button, so the moment the toolbar gains any named button it silently selects a different control. The fix is to give the button a name and address it by that name, which also retires the geometry. The second half of the ticket is the e2e file's own duplication: selectOnlyBillsGroup and switchToAnyOf each exist twice, byte-identical apart from a comment, so hoisting them is what makes the first change cheap. This is the fifth planning pass; the fourth rejection's single objection is answered point by point in debate_summary, and the shape of every criterion in acceptance[] is now either browser-observable or a named tests[] case that CI runs.",
+    "root_cause": "The control has no accessible name, and the locator that had to compensate for that compensates with geometry. The x>850 threshold is a function of the fixed-width content to the button's left, not of viewport width: ReportTopbar renders nine GraphButtons, three 1px dividers and a SnapshotButton, all flexShrink: 0, then a SpaceBetween with flex:1, flexWrap:'nowrap' and justifyContent:'space-between' (ReportTopbar.tsx:227-233) whose first child is the compact FilterButton (ReportTopbar.tsx:234-235). Inside a space-between row the first child sits at the region's left edge, so narrowing the window pushes SaveReport right rather than moving the filter button left. What does follow from the code is that 850 is a fragile sum of sidebar widths with little slack, and that a control with no name cannot be addressed at all except by such a sum.",
+    "approach": "Add aria-label={t('Filters')} to the existing bare Button in CompactFiltersButton, reusing the translation key the sibling tooltip on this very control already uses (FiltersMenu.tsx:744) and matching the pattern every other icon-only control in the topbar uses (GraphButton.tsx:42, SnapshotButton.tsx:40). An aria-label adds no rendered node, so no VRT snapshot moves. Then reduce openConditionsMenu to a single getByRole('button', { name: 'Filters', exact: true }).click(), which deletes the button scan, the hasName probe, the boundingBox call, the x>850 comparison and the now-unreachable throw, and hoist the two duplicated e2e helpers to the body of the 'custom reports' describe. Because no CI-executed check touches packages/desktop-client/e2e/ (.sdlc/config.yml:172 e2e is empty; vite.config.mts:406 vitest includes only src/**; desktop-client tsconfig.json:33 excludes e2e), the e2e suite is not a gate and is treated throughout as a local-only run in qa_script. Every criterion in acceptance[] is therefore either browser-observable at the live URL or names a case from tests[] that `yarn test` runs; no criterion asks a reader to grep a file, and the source-shape properties the fourth rejection objected to live in files[].why and tests[] where the diff reviewer reads them.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/filters/CompactFiltersButton.tsx",
+        "action": "edit",
+        "change": "Import useTranslation from 'react-i18next' (after the existing `import React from 'react';`, matching FiltersMenu.tsx:6), call `const { t } = useTranslation();` at the top of CompactFiltersButton, and pass aria-label={t('Filters')} to the existing `<Button variant=\"bare\" onPress={onPress} style={{ minWidth: 20 }}>`. Nothing else changes: the SvgFilter child and its width/height/flexShrink, the minWidth, the bare variant and the onPress plumbing stay exactly as they are, and no text node is introduced.",
+        "why": "This is the root of the ticket. 'Filters' is already a translation key in this feature - the tooltip content on this same control at FiltersMenu.tsx:744 - so no new string enters the catalog and generate:i18n output is unaffected. aria-label rather than a visually-hidden span or a title attribute, because aria-label is the pattern the neighbouring icon-only toolbar buttons already use and it adds no DOM node, hence no layout shift and no VRT movement. The component library Button destructures restProps at Button.tsx:136 and spreads them onto the underlying react-aria Button at :169, so aria-label already reaches the DOM through that path in GraphButton and SnapshotButton and no plumbing is needed."
+      },
+      {
+        "path": "packages/desktop-client/e2e/page-models/custom-report-page.ts",
+        "action": "edit",
+        "change": "Replace the entire body of openConditionsMenu with one statement: `await this.pageContent.getByRole('button', { name: 'Filters', exact: true }).click();`. Delete the buttons/count loop, the hasName probe, the boundingBox() call, the box.x > 850 comparison and the unreachable throw at the end of the method. Rewrite the JSDoc at :50-54 to say the button is addressed by its accessible name rather than by its position among the topbar buttons. Keep the method name, the no-arg signature and the this.pageContent receiver - reports.test.ts calls it at :291 and :458 and this is its only definition.",
+        "why": "Once the control has a name, the geometric scan is not just fragile but actively harmful: it skips every named button, so it would silently pick a different control the moment the toolbar gains one. The rewritten body contains NO boundingBox call, NO coordinate comparison and NO loop over the page's buttons, and no try/catch or optional chaining either, so a control that cannot be found fails the click outright rather than falling through to a skip. exact:true keeps the compact and non-compact variants distinguishable - the accounts page's sibling is named 'Filter' (FiltersButton.tsx:13, used at account-page.ts:56) and Playwright's default name matching is substring-based. The tooltip's own 'Filters' text renders in a role=\"tooltip\" element, which getByRole('button') cannot match, so the name is unique on the page."
+      },
+      {
+        "path": "packages/desktop-client/e2e/reports.test.ts",
+        "action": "edit",
+        "change": "Hoist the two duplicated helpers into the body of test.describe('custom reports', ...) between the describe's beforeEach (ends at :135) and the first nested describe (:277): selectOnlyBillsGroup, taking the :479 copy with its `/** Tick only the Bills group, as QA's T-9 does. */` comment at :478; and switchToAnyOf, taking the :343 copy with the two inline lines at :344-345. Delete the duplicates at :311-330, :343-350, :479-498 and :501-506. Leave applyNotesFilter (:290), waitForRows (:333-340) and applyCategoryContains (:457) alone, and all six call sites (:368, :374, :399, :422, :561, :563) untouched. Then add one test as the last test of the describe, after 'show labels' (:678) and before the describe closes (:679): inside a try set the viewport to 1024x720, run selectMode('total') and selectViz('Data Table'), call openConditionsMenu(), assert the filters-select-tooltip popover is visible, and in a finally restore 1280x720. Do NOT touch the pre-existing setViewportSize at :177.",
+        "why": "The duplication is what made openConditionsMenu's two callers expensive to fix. That each helper now exists exactly once, hoisted with the more informative comment kept, is a property of the diff rather than of the product - no browser and no CI-run check can observe the shape of a Playwright helper - so it is specified here for the diff reviewer and checked by the local Playwright run in qa_script. The new 1024px case is a positive assertion that the role-and-name locator resolves at 1024px; it is green before and after and is not claimed as a regression test for the old scan. The finally is defensive tidiness, not protection against leakage: the beforeEach at :23-24 opens a fresh page, afterEach at :35-37 closes it, and playwright.config.ts sets no viewport key."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/components/filters/CompactFiltersButton.test.tsx",
+        "action": "create",
+        "cases": [
+          "exposes the accessible name 'Filters' - render(<CompactFiltersButton onPress={noop} />, { wrapper: TestProviders }) and assert screen.getByRole('button', { name: 'Filters' }) is present. This is the case that fails on main, where the button renders only SvgFilter and its accessible name is empty.",
+          "renders no text node, so its appearance is unchanged - assert the button's text content is empty, proving the fix is an accessible name rather than new visible text that would move the visual-regression snapshots.",
+          "calls onPress when clicked - a vi.fn() passed as onPress, userEvent.setup(), click the button, expect it to have been called once."
+        ]
+      },
+      {
+        "path": "packages/desktop-client/e2e/reports.test.ts",
+        "action": "edit",
+        "cases": [
+          "every conditions scenario reaches the control through openConditionsMenu's single role-and-name locator - the button scan, the aria-label/innerText probe, the boundingBox() call, the x > 850 comparison, the trailing throw and the loop over the page's buttons are all gone, and nothing in that path depends on where the control sits.",
+          "opens the conditions menu by accessible name at Playwright's default 1280px viewport - the existing conditions-menu scenarios keep their assertions and pass unchanged through the new locator.",
+          "opens the conditions menu by accessible name at a 1024px viewport - a positive assertion only: set the viewport inside a try, open the menu, assert the filters-select-tooltip popover is visible, restore the viewport in a finally.",
+          "the six hoisted-helper call sites still pass - :368, :374, :399, :422, :561 and :563 run unchanged after the helpers move to the describe body; they close over only `page` and `customReportPage`, both assigned by beforeEach hooks that run after the describe body is evaluated but before any test body."
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "The compact filters button exposes the accessible name \"Filters\", the string the feature already uses for this control's tooltip.",
+        "how_to_verify": "yarn workspace @actual-app/web run test CompactFiltersButton.test.tsx (run by `yarn test`, which .sdlc/config.yml:170 configures as the unit gate and CI executes). Case \"exposes the accessible name 'Filters'\" passes; it fails on main, where the button's only child is SvgFilter and its accessible name is empty.",
+        "source": "IAC-3",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "Nothing visible changes: the button keeps variant=\"bare\", its 15x15 icon and minWidth 20, and gains no text node.",
+        "how_to_verify": "Same vitest file, case \"renders no text node, so its appearance is unchanged\". That case renders CompactFiltersButton directly, which is the variant ReportTopbar renders for the custom report toolbar (FiltersMenu.tsx:752-758 with compact, selected at ReportTopbar.tsx:234-235), so the compact form itself carries the name and the locator does not depend on the non-compact variant being on the page.",
+        "source": "IAC-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "The control on the custom report page that opens the conditions menu is reached by its accessible name, not by its position among the topbar buttons: activating the button labelled \"Filters\" opens the field-picker menu, and no other topbar control does.",
+        "how_to_verify": "At the live URL, open a custom report. The toolbar's filter control is the only icon-only button there; in DevTools' accessibility tree it reads as a button named 'Filters'. Activate it and the field-picker menu opens. Tab through the other toolbar controls - Total, Time, Data Table, Line Graph, Area Graph, Donut Graph, Show Legend, Show Summary, Show Labels, Download Snapshot - and none of them opens that menu. That the page model itself holds no positional logic is a property of the diff, stated in files[1].why and listed in tests[], because no check CI runs reads packages/desktop-client/e2e/.",
+        "source": "IAC-1",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-4",
+        "check": "The conditions menu opens on every activation of the filters control - on a freshly opened custom report, and again after changing the report's mode and visualisation - so no conditions step can end with the menu silently unopened.",
+        "how_to_verify": "At the live URL on a custom report: activate the Filters control and confirm the field-picker menu appears. Switch the mode to Time, then back to Total, and activate it again - the menu appears. Switch the visualisation to Data Table and activate it again - the menu appears, and choosing a field from it adds a condition to the report. Repeat the whole sequence at 1024px wide. The page-model half of IAC-4 - one unconditional click with no try/catch, no optional chaining and no explicit throw - is a property of the diff stated in files[1].why; no browser and no CI-run check can observe the shape of a Playwright helper.",
+        "source": "IAC-4",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-5",
+        "check": "Both conditions flows the duplicated helpers drove still work now that each helper exists exactly once: choosing only the Bills group in a custom report's category filter narrows the rows to that group, and switching the operator toggle from 'all of' to 'any of' keeps rows from both conditions - a row the Bills-only selection excluded (Food) appears alongside a Bills row (Cell).",
+        "how_to_verify": "On the demo budget (the initial setup screen's \"View demo\" gives a budget with the Bills, Food and Cell categories these rows come from), open a custom report, switch to Total and Data Table, add a Notes contains 'e' condition and a Category is-one-of condition limited to the Bills group: only the Bills categories' rows remain. Then switch the operator toggle from 'all of' to 'any of': Food is present again alongside a Bills row. That each helper exists exactly once is a property of the diff, specified in files[2].change and exercised by the local Playwright run in qa_script.",
+        "source": "IAC-5",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-6",
+        "check": "With the window narrowed to 1024x720 the filters control is still present on the custom report toolbar and still opens the conditions menu by its accessible name, so nothing about the control's position at any width affects whether the menu can be reached.",
+        "how_to_verify": "At the live URL, open a custom report at the default 1280x720 and confirm the button labelled 'Filters' opens the conditions menu. Resize to 1024x720 and confirm the same. Resize back. The suite's half of IAC-6 - it runs green at both widths - is in qa_script as a LOCAL ONLY step, because .sdlc/config.yml:172 leaves e2e empty and nothing CI executes touches packages/desktop-client/e2e/.",
+        "source": "IAC-6",
+        "verify": "browser"
+      }
+    ],
+    "qa_script": [
+      "yarn install && yarn typecheck - must pass with no new errors; this is the check that actually covers the src/ change.",
+      "yarn lint - oxfmt --check and oxlint --type-aware --quiet; this is the only CI check that reaches packages/desktop-client/e2e/, so it must pass on the rewritten page model and reports.test.ts.",
+      "yarn test - the unit gate. Confirm packages/desktop-client/src/components/filters/CompactFiltersButton.test.tsx passes, and confirm the \"exposes the accessible name 'Filters'\" case FAILS when the aria-label is temporarily removed - a real failing-before check, not a re-read of the diff.",
+      "yarn workspace @actual-app/web run playwright test e2e/reports.test.ts --browser=chromium - LOCAL ONLY, no CI job runs it. Confirm the notes-filter and category-contains conditions scenarios open the menu through the new locator, that all six hoisted-helper call sites still pass, and that the new 1024px case passes.",
+      "yarn workspace @actual-app/web run vrt - LOCAL ONLY. Confirm no visual-regression snapshot moved; an aria-label should leave every pixel unchanged.",
+      "In a browser at 1280x720 on a custom report, tab to the filters icon button and confirm a screen reader (or DevTools' accessibility tree) reports it as a 'Filters' button rather than an unnamed button."
+    ],
+    "risks": [
+      "The e2e suite is not a gate. Nothing CI executes touches packages/desktop-client/e2e/ - config.yml:172 has e2e: \"\", vite.config.mts:406 includes only src/**, and tsconfig.json:33 excludes e2e. If a red e2e suite appears after this lands, it is invisible to the pipeline's own checks. Enabling an e2e check is a .sdlc/config.yml change, which is in forbidden_paths (config.yml:220); it is a maintainer decision, not this ticket's work.",
+      "This checkout has no node_modules, so no test, lint, typecheck or Playwright run was executed while planning. Every claim about current behaviour is read from source, and the two behaviours that could not be checked by running are in unknowns[] rather than asserted.",
+      "exact:true on the name means a translation of 'Filters' in a non-English locale no longer matches. Playwright runs against the dev server's default locale; if e2e is ever run under a translated locale this needs the English string or a test id.",
+      "Hoisting two helpers into the 'custom reports' describe body changes when they are constructed relative to the nested describes. They close over only `page` and `customReportPage`, both assigned by beforeEach hooks, so the closure reads them at call time exactly as before. This is a scoping change only, but it is why the diff touches three regions of a 723-line file."
+    ],
+    "out_of_scope": [
+      "Normalising the pre-existing setViewportSize at reports.test.ts:177. It is left exactly as it is, and the new 1024px case is written not to depend on it.",
+      "No release note in upcoming-release-notes/. The change alters no rendered output and the ticket asks for none.",
+      "Adding a Playwright check to CI. .sdlc/config.yml is in forbidden_paths (config.yml:220), so this cannot be planned here. See risks[0].",
+      "Naming the non-compact FiltersButton. It already shows the word 'Filter' as visible text and needs no aria-label.",
+      "Any change to ReportTopbar's layout, to ReportSidebar, or to the isNarrowWidth gate at CustomReport.tsx:930 (width < 512)."
+    ],
+    "kind": "bug",
+    "confidence": 85,
+    "confidence_rationale": "Every change is read from source and each is a deletion or a single added prop against a component with exactly one caller (FiltersMenu.tsx:753, confirmed by grep). The aria-label's blast radius was enumerated - CompactFiltersButton is imported only at FiltersMenu.tsx:47 and rendered only at :753. The fourth rejection's objection was verified against the files rather than argued: config.yml:168-170 confirms the only CI checks are typecheck, lint and unit; vite.config.mts:406 and tsconfig.json:33 confirm none of the three reads e2e/, so AC-3 and AC-6 were rewritten as browser-observable properties and AC-4 and AC-5 were given browser-observable forms of their own; the two source-shape properties now live in files[1].why, files[2].change and tests[]. Three off-by-one citations carried in the previous version were corrected against the files this pass (SnapshotButton's aria-label is at :40, not :42-43; the :501 copy of switchToAnyOf carries the one-liner at :500 while the :343 copy carries the two inline lines at :344-345). Confidence is held below the high 80s because this checkout has no node_modules, so nothing was executed. 'reproduced' is false because that field is true only when the failure was made to happen: both defects were reproduced by reading the exact lines, not by running anything.",
+    "reproduced": false,
+    "evidence": [
+      "packages/desktop-client/src/components/filters/CompactFiltersButton.tsx (16 lines, read in full) renders <Button variant=\"bare\" onPress={onPress} style={{ minWidth: 20 }}><SvgFilter .../></Button> - no text node, no aria-label, no title, so the accessible name is empty.",
+      "packages/desktop-client/e2e/page-models/custom-report-page.ts:55-77 openConditionsMenu enumerates getByRole('button') (:56), counts it (:57), skips anything with an aria-label or non-empty innerText (:61-66), and clicks the first whose boundingBox().x exceeds 850 (:68-73), else throws 'Could not find the report conditions button' (:76). Every line number verified against the file this pass.",
+      "packages/desktop-client/src/components/filters/FiltersMenu.tsx:744 renders <Text><Trans>Filters</Trans></Text> as the tooltip content for this same control; :752-758 is the only place CompactFiltersButton is rendered, and compact is set by ReportTopbar.tsx:234-235. grep for CompactFiltersButton across packages/ returns exactly three hits: the import at FiltersMenu.tsx:47, the render at :753, and its own definition.",
+      "GraphButton.tsx:42 and SnapshotButton.tsx:40 both put aria-label={title} on the Button. packages/component-library/src/Button.tsx:136 destructures restProps and :169 spreads them onto the underlying react-aria button, so the attribute needs no plumbing.",
+      "grep -n 'setViewportSize' packages/desktop-client/e2e/reports.test.ts returns exactly ONE hit today, line 177: `await page.setViewportSize({ width: 1280, height: 700 });`, inside the ['Bar Graph', 'Line Graph'].forEach legend-height test and not in a try. The new 1024px case adds two more, both inside itself.",
+      ".sdlc/config.yml:157-172 verify block: typecheck 'yarn typecheck' (:168), lint 'yarn lint' (:169), unit 'yarn test' (:170), build \"\" (:171), e2e \"\" (:172). .sdlc/config.yml:220 is in forbidden_paths.",
+      "packages/desktop-client/vite.config.mts:406 vitest include ['src/**/*.{test,spec}.?(c|m)[jt]s?(x)'] and packages/desktop-client/tsconfig.json:33 exclude [\"node_modules\",\"build\",\"**/service-worker/**\",\"e2e\"] - neither reaches e2e/. This is the fact the fourth rejection turned on, re-verified this pass.",
+      "reports.test.ts:23-24 beforeEach does page = await browser.newPage(); :35-37 afterEach does await page?.close(); playwright.config.ts use: (:16-24) sets no viewport key - so every test starts at Playwright's default 1280x720 and no viewport set in one test can reach another.",
+      "reports.test.ts:479-498 hold the selectOnlyBillsGroup copy carrying the `/** Tick only the Bills group, as QA's T-9 does. */` comment at :478, and :501-506 the switchToAnyOf copy whose only comment is the one-liner at :500; the :311-330 and :343-350 copies are the same bodies, with :343 the one carrying the two inline lines at :344-345. Six call sites: :368, :374, :399, :422, :561, :563. openConditionsMenu is called at :291 and :458.",
+      "reports.test.ts:127 describe('custom reports'), its beforeEach ends at :135, the first nested describe is at :277, the 'show labels' case ends at :678 and that describe closes at :679 - re-read off the file this pass after the previous version's line numbers drifted.",
+      "ReportTopbar.tsx:227-233 is the SpaceBetween (flexWrap 'nowrap', justifyContent 'space-between', flex 1) whose first child at :234-235 is <FilterButton compact hover .../>; the nine GraphButtons (:95-201) and the SnapshotButton (:211-217) precede it, all flexShrink: 0.",
+      "t() returns its key verbatim under the unit-test wrapper: TestProviders (packages/desktop-client/src/mocks.tsx:42-61) supplies no I18nextProvider and setupTests.ts initialises none, and CategorySelector.test.tsx:104 asserts getByRole('button', { name: 'Select All' }) against CategorySelector.tsx:123 title={t('Select All')} with no wrapper at all.",
+      "account-page.ts:56 uses getByRole('button', { name: 'Filter' }) for the non-compact variant on the accounts page, where the name comes from visible text (FiltersButton.tsx:13 renders <Trans>Filter</Trans>) - hence exact: true on the new locator, since Playwright's default name matching is substring-based. The 'Filters' tooltip text renders in a role=\"tooltip\" element, which getByRole('button') cannot match, and no other control on the custom report page carries that name (grep for Trans>Filters< and 'Filters' across desktop-client/src returns only FiltersMenu.tsx:744).",
+      "CustomReport.tsx:930 renders ReportTopbar only when !isNarrowWidth, and isNarrowWidth is width < breakpoints.small = 512 (packages/component-library/src/tokens.ts:12) - so 1024px is well inside the toolbar's range. FiltersMenu.tsx:767 defines data-testid=\"filters-select-tooltip\", the popover the new 1024px case asserts on.",
+      "reports.test.ts is 723 lines; custom-report-page.ts is 98; CompactFiltersButton.tsx is 16."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Give the button a visually hidden text node instead of an aria-label (a <Text> with a screen-reader-only style).",
+        "rejected_because": "It adds a DOM node to a bare button with an explicit minWidth: 20, which is the kind of thing that moves pixels and invalidates visual-regression snapshots for no accessibility gain over aria-label. aria-label is what the neighbouring GraphButton and SnapshotButton already do."
+      },
+      {
+        "approach": "Keep the positional scan but widen or recompute the threshold, or scan for the button next to a known landmark.",
+        "rejected_because": "It leaves the control without an accessible name, which is the actual defect: the button is announced to a screen reader as just \"button\". Fixing the locator instead of the name treats the symptom. It also leaves the scan's skip-named-buttons logic in place, which would silently pick a different control as soon as the toolbar gains one."
+      },
+      {
+        "approach": "Add a data-testid to CompactFiltersButton and point the page model at it.",
+        "rejected_because": "It leaves the accessible name empty. The repo's convention for icon-only toolbar controls is aria-label, and there are already established name-based e2e locators (account-page.ts:56). The ticket explicitly prefers a hook a person benefits from, and permits a test id only if no name can be given - a name can."
+      },
+      {
+        "approach": "Also wrap the pre-existing setViewportSize at reports.test.ts:177 in a try/finally while the file is being edited.",
+        "rejected_because": "It is unrelated to the ticket, and every criterion that claimed a file-wide property the diff did not establish has now been rejected twice. Leaving :177 untouched and describing only what this change controls is the honest version."
+      },
+      {
+        "approach": "Restate the four rejected criteria as verify:'test' with grep instructions, since their properties really do hold.",
+        "rejected_because": "This is what the fourth rejection refused and it is correct: no check CI runs can prove a source-shape claim. vite.config.mts:406 and tsconfig.json:33 exclude e2e/, so a grep is the reader, not a check. The properties are kept - in files[1].why, files[2].change and tests[] - and each affected IAC was given a browser-observable criterion of its own instead."
+      },
+      {
+        "approach": "Defer IAC-4 and IAC-5 in out_of_scope on the grounds that neither is observable, rather than writing browser criteria for them.",
+        "rejected_because": "A deferral is filed as its own blocked follow-up issue, so deferring a requirement this change actually satisfies would state on the record that it was not done. Both are observable at the live URL in the form a person gets them. Only the literal page-model shape, which no browser can see, moved into the plan's prose."
+      }
+    ],
+    "assumptions": [
+      "t('Filters') returns the literal string 'Filters' under the desktop-client vitest environment, because TestProviders (src/mocks.tsx:42-61) supplies no I18nextProvider and react-i18next falls back to the key. Supported directly by CategorySelector.test.tsx:104 asserting the t('Select All') button name under a bare render with no wrapper.",
+      "The dev server used by Playwright runs in English; the suite already asserts literal English strings, and account-page.ts:56 is an existing name-based locator of exactly this kind.",
+      "'Filters' is a better name than the sibling's singular 'Filter' because the control opens a list of filters and because the tooltip on this very control already says 'Filters'."
+    ],
+    "unknowns": [
+      "Whether the old x>850 scan actually failed at any narrower width. It does not follow from the source: the button is the first child of a flex:1, flexWrap:'nowrap', space-between SpaceBetween (ReportTopbar.tsx:227-233), so its left edge is fixed by the flexShrink:0 siblings to its left. Relatedly, isNarrowWidth is width < 512 and gates the whole ReportTopbar at CustomReport.tsx:930, so a genuinely narrow width removes the button instead of relocating it. Until a checkout with node_modules and a browser exists, the new 1024px case is claimed only as a positive assertion.",
+      "Whether the VRT snapshots in reports.test.ts are byte-identical after adding an aria-label. They should be - aria-label renders nothing - but only a local `yarn workspace @actual-app/web run vrt` confirms it, and VRT is not a CI gate either."
+    ],
+    "debate_summary": "Single-agent planning pass on the fifth attempt, with no other agents reporting. The fourth rejection raised one objection and it is upheld: AC-3, AC-4, AC-5 and AC-6 were all marked verify:'test' while their how_to_verify fields were instructions to read or grep a file, and nothing CI runs - typecheck, lint, unit (config.yml:168-170) - can prove them, because vite.config.mts:406 and tsconfig.json:33 both exclude e2e/. Each of the four was answered directly. (1) AC-3 is replaced with the browser-observable form the objection specified: the control that opens the conditions menu is reached by its accessible name, not by its position among the topbar buttons - provable at the live URL by activating the button labelled 'Filters' and by tabbing the other ten toolbar controls and showing none of them opens that menu. The 'no boundingBox, no coordinate comparison, no loop' property did not vanish: it is now in files[1].why and in tests[1]'s first case, which is exactly where the objection said a reviewer reads it. (2) AC-4 ('the failure stays loud') is deleted as written, and IAC-4 is answered by a new criterion in the form a person gets it: the conditions menu opens on every activation - fresh report, after changing mode and visualisation, and at 1024px - so no step can end with the menu silently unopened. The literal page-model half (one unconditional click, no try/catch, no optional chaining, no explicit throw) stays in files[1].why, flagged there as something no browser can observe. (3) AC-5 is deleted from acceptance[] as a source-shape claim, and IAC-5 is answered by the product behaviour the hoisted helpers drive: the Bills-group selection still narrows the rows, and switching the operator to 'any of' still keeps rows from both conditions. The single-copy property itself is specified in files[2].change for the diff reviewer. (4) AC-6 is deleted and IAC-6 is answered by the criterion the ticket's own title promises: at 1024x720 the control is still on the toolbar and still opens the menu by name. The suite-runs-green half is in qa_script as local-only, with the reason spelled out. One judgement call worth naming: IAC-4 and IAC-5 could have been deferred in out_of_scope, which is the sanctioned way to drop an unobservable requirement - but a deferral is filed as its own blocked follow-up issue, so that would have recorded on the repository that work this change does was not done. Both were given browser-observable criteria instead. While re-reading the files to verify every citation this pass I also found three off-by-one references carried in the previous version, all now corrected: SnapshotButton's aria-label is at :40 (it was cited as :42-43), and the two switchToAnyOf copies had their comments attributed to the wrong copy (:500 carries the one-liner on the :501 copy, :344-345 carry the two inline lines on the :343 copy). No count of grep hits survives anywhere in this work order.",
+    "residual_risks": [
+      "The e2e suite is not a gate. Nothing CI executes touches packages/desktop-client/e2e/ - config.yml:172 has e2e: \"\", vite.config.mts:406 includes only src/**, and tsconfig.json:33 excludes e2e - so the page-model and reports.test.ts changes can only be validated by a local playwright run. Enabling an e2e check is a .sdlc/config.yml change, which is in forbidden_paths; it is a maintainer decision.",
+      "This checkout has no node_modules, so no test, lint, typecheck or Playwright run was executed while planning. The two behaviours that could not be checked by running are in unknowns[] rather than asserted.",
+      "exact:true on the name means a translation of 'Filters' in a non-English locale no longer matches.",
+      "Hoisting two helpers into the 'custom reports' describe body changes when they are constructed relative to the nested describes. They close over only `page` and `customReportPage`, both assigned by beforeEach hooks, so the closure reads them at call time exactly as before - but it is why the diff touches three regions of a 723-line file."
+    ],
+    "mode": "committed"
+  },
+  "approved_too_high": false
 }
