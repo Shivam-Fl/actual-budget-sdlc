@@ -412,7 +412,32 @@
         "detail": "The third new unit test exercises Button's onPress plumbing rather than anything this PR changed, so it passes identically on the unfixed component and would keep passing if CompactFiltersButton were replaced by any other bare button.\n\n`packages/desktop-client/src/components/filters/CompactFiltersButton.test.tsx:40`\n\nEvidence: The diff to CompactFiltersButton.tsx adds only useTranslation and aria-label={t('Filters')}; onPress={onPress} and the <Button> wrapper already existed on origin/main. Of the three new cases, the accessible-name case fails before the fix, the empty-textContent case is a deliberate guard on AC-2 (that the name came from aria-label rather than visible text, which would move VRT snapshots), and only the onPress case is purely inherited behaviour.\n\nFix: Drop the onPress case, or keep it and assert something the PR introduced — e.g. that the label is translated, by rendering under a locale where 'Filters' is not the string."
       }
     ],
-    "pr": "102"
+    "pr": "102",
+    "qa": [
+      {
+        "id": "BUG-1",
+        "severity": "minor",
+        "area": "a11y",
+        "title": "Icon toolbar buttons announce their label twice: once as name, once as tooltip description",
+        "expected": "A control whose visible content is only an icon should announce its label once. Either the tooltip supplies the name (pre-PR behaviour for the Filters button) or aria-label supplies it, but not both at the same time.",
+        "actual": "GraphButton.tsx and SnapshotButton.tsx each render <Tooltip content={title}><Button aria-label={title}/></Tooltip>. React Aria's useTooltipTrigger sets 'aria-describedby' to the tooltip id whenever the tooltip is open (node_modules/react-aria/dist/private/tooltip/useTooltipTrigger.mjs:105), on hover and on keyboard focus alike, regardless of whether the trigger already has its own accessible name. Every icon button in the reports topbar therefore has an accessible description identical to its accessible name, and a screen reader says \"Data Table, Data Table, button\". This PR adds the Filters button to that set: it previously had no accessible name at all, and now has the name \"Filters\" plus the description \"Filters\".",
+        "repro": [
+          "Open Reports and add a custom report.",
+          "Tab to the icon buttons in the topbar, or hover any of them.",
+          "Inspect the button: aria-label and the element referenced by aria-describedby carry the same string.",
+          "With a screen reader attached, the label is announced twice.",
+          "Before this PR the same inspection on \"Data Table\", \"Show Legend\" and \"Download Snapshot\" produced the identical result - the defect is the shared pattern, not this button."
+        ],
+        "evidence": [
+          "qa-evidence/test-results/filters-PR-102---the-custo-c7666-t-duplicated-by-the-tooltip-chromium/test-failed-1.png",
+          "qa-evidence/test-results/filters-PR-102---the-custo-c7666-t-duplicated-by-the-tooltip-chromium/error-context.md",
+          "qa-evidence/test-results/filters-PR-102---the-custo-c7666-t-duplicated-by-the-tooltip-chromium/trace.zip"
+        ],
+        "suspected_cause": "The Tooltip-plus-aria-label pairing is a pre-existing convention in this codebase, not something this PR authored. git diff --stat origin/main...HEAD shows GraphButton.tsx and SnapshotButton.tsx untouched; both already paired aria-label with an identical Tooltip, and the same toolbar already announces \"Data Table, Data Table\" on main. This PR follows that convention for the Filters button rather than inventing it, so I am filing it as pre-existing and not blocking on it. The proper fix is one place, not here: drop the redundant Tooltip where the trigger already carries aria-label, or drop the aria-label and let the tooltip name the control. Doing that inside this PR would mean diverging from the convention its sibling buttons use, which is a wider change than issue #86 asked for.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "blocked",
