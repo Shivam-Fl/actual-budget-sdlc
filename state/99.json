@@ -236,7 +236,15 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/ci-actions/src/release-notes/util.mjs",
+    "packages/ci-actions/bin/release-notes-gate.mjs",
+    "packages/ci-actions/bin/release-notes-check.mjs",
+    "packages/ci-actions/bin/release-notes-check.test.mjs",
+    "packages/ci-actions/src/release-notes/util.test.js",
+    "packages/ci-actions/src/release-notes/util.test.js",
+    "packages/ci-actions/bin/release-notes-check.test.mjs"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
