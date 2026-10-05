@@ -315,5 +315,249 @@
   },
   "validated_from": "plan",
   "validated_at": "2026-10-05T04:00:29.506Z",
-  "validated_ac_changes": []
+  "validated_ac_changes": [],
+  "approved_work_order": {
+    "issue": 98,
+    "version": 1,
+    "kind": "chore",
+    "confidence": 82,
+    "understanding": "Issue #98 collects five non-blocking findings the review of PR #95 (for #92) approved despite, and instructs me to check each still reproduces, drop any that does not, and split the ticket if the findings turn out to be unrelated. I reproduced all five against the current tree by reading the code; none has been fixed since the review wrote it.\n\nFinding 1 (ReportCard.tsx:165, the click guard) and finding 3 (the same lines, the keydown guard) are one defect seen twice, not two: the click guard resolves `target.closest(INTERACTIVE_SELECTOR)` (eleven entries, ReportCard.tsx:25-37) while the keydown guard four lines below returns on `e.target !== e.currentTarget`, which is every descendant unconditionally. The comment above explains why the click guard cannot use target identity, but never says the two therefore cover different sets. They do: a `tabIndex={0}` descendant navigates the card on click and is swallowed on Enter.\n\nThe reviewer's evidence that this is not live today is incomplete in a way that changes the fix. It rests on `grep -rn \"tabIndex\" packages/desktop-client/src/components/reports/reports/` returning nothing, but that path excludes `graphs/`. `ReportTable.tsx:154` does render `<View tabIndex={0}>` — the keyboard-scrolling container around the report table's rows — and it is reachable inside a card that carries a `to`: `CustomReportListCards.tsx:133-137` renders `ReportCard to={/reports/custom/${report.id}}`, whose body is `GetCardData` (line 163), which renders `ChooseGraph` (GetCardData.tsx:188-192), which renders `ReportTable` for `graphType === 'TableGraph'` (ChooseGraph.tsx:189-191). A custom-report widget whose graph is a table therefore has a focusable non-activatable descendant inside its clickable card today. That makes the reviewer's primary fix — and its own fallback, since both add `[tabindex]` — a live behaviour change: every click inside that table's scroll container would stop navigating the card. The e2e would not catch it (`goToBalanceForecastPage` clicks a LineChart card whose body has no tabIndex).\n\nFinding 2 (`a[href]` at ReportCard.tsx:30) reproduces as written and is unreachable: no card body renders an anchor, and MarkdownCard — the only card that renders markdown, the only way an anchor could appear via rehypeExternalLinks — passes no `to` (MarkdownCard.tsx:101-106) and so never installs this handler. The selector encodes a decision that no acceptance criterion and no comment states.\n\nFinding 4 reproduces exactly: three copies of one idiom. `grep -rln \"from 'node:fs'\" packages/desktop-client/src/` returns ReportCard.test.tsx, useDashboardWidget.test.tsx and useReport.test.tsx and nothing else. The first factors it into `readOwnSource` (ReportCard.test.tsx:120-124); the other two inline the identical `readFileSync` + strip-`//` + collapse-whitespace block (useDashboardWidget.test.tsx:143-148, useReport.test.tsx:136-141). `#mocks/*` is already mapped in packages/desktop-client/package.json and `src/mocks/connection.ts` already sets the precedent for a test-only module there.\n\nFinding 5 reproduces. `error` and `fetchStatus` are the two fields the hook returns keep, and the comment above the return explains only why `status`, `isSuccess` and `isInitialLoading` go. Grepping every call site: twelve callers destructure `data` plus one of `isPending`/`isLoading`, and CustomReport.tsx:122 reads `data` and `isPending`; none reads `error`. `fetchStatus` has no production reader either (the only hit outside the two hooks is an unrelated literal in PayeeAutocomplete.test.tsx:137) — but the two hook tests read it at useReport.test.tsx:101 and useDashboardWidget.test.tsx:97, and it is the un-derived input of the derived `isPending`, so it earns its place for a reason `error` never had.\n\nSplit judgement: findings 1-3 are one change in one file. Finding 4 is test plumbing and finding 5 is a two-line surface change in two other files. All five are follow-ups to one merged PR, all in packages/desktop-client, and all land in one PR with one release note. Splitting would cost three CI and QA cycles for about sixty changed lines, so I am keeping them together — which is also what the issue's own framing (\"one ticket for the lot\") asks for unless the findings are unrelated, and they are not.\n\nI could not execute anything to confirm this empirically: dependencies are not installed in this checkout (`node_modules/.bin/vitest` and `packages/desktop-client/node_modules` are both absent), so every statement above is from reading the code and grepping the tree.",
+    "root_cause": "The click guard on ReportCard's surface enumerates the element types it knows about (INTERACTIVE_SELECTOR) while the rule it enforces is a property of the element (a control the widget body rendered owns its own click). The two halves of the handler therefore answer the same question two different ways — closest() against a type list for a click, unconditional target inequality for a keypress — and the divergence is neither documented nor tested, so it will be discovered by whoever next renders a focusable control into a widget body. Alongside it, three test files carry three copies of one source-reading helper, and the two report hooks keep a return field with no reader while dropping eight others on a stated rule that does not cover the one it keeps.",
+    "approach": "Make the divergence explicit and pinned rather than silently rewritten, and decline the fix that would change behaviour on a shipped path.\n\n1. ReportCard.tsx — keep the allowlist and the keydown guard exactly as they are; add the activatable types the list is missing (`[role=\"radio\"]`, `[role=\"switch\"]`, `[role=\"option\"]`, `[role=\"menuitemcheckbox\"]`, `[role=\"menuitemradio\"]`, `[role=\"textbox\"]`, `[role=\"combobox\"]`, `[role=\"searchbox\"]`, `[role=\"slider\"]`, `[role=\"spinbutton\"]`, `[role=\"treeitem\"]`, `summary`); and rewrite the comment above the selector to state the invariant, state that the click guard's set is deliberately narrower than the keydown guard's because a click can start on static content while a keypress cannot, and say explicitly that focusability is therefore not the click guard's test — which is why `[tabindex]` is absent and why ReportTable's `tabIndex={0}` scroll container still navigates its card on click. `[tabindex]` is declined, not overlooked: adding it would stop card navigation inside every table-graph custom-report widget (the reachability chain is in `understanding`).\n\n2. `a[href]` stays, and is now stated where a reader of the selector will find it, pinned by a test, and recorded in risks. A link inside a widget body owning its click is the same rule that keeps CalendarCard's month button's click; removing the entry would change nothing observable today and make the next link-bearing widget body wrong.\n\n3. Extract the normalized source read into one helper at `src/mocks/source.ts`, exported through the existing `#mocks/*` mapping. All three test files call it and drop their `node:fs`/`node:path` imports, so the idiom exists in exactly one place.\n\n4. The two hooks drop `error` (no reader, production or test) and keep `fetchStatus` (the un-derived input of the derived `isPending`, and what the disabled-query cases assert against). The comment above each return is rewritten to state one rule — the return is what a caller needs: the data, the derived loading flag, and the raw fetch status that derivation reads; everything react-query also exposes either disagrees with the derived flag or has no reader — instead of naming only the three fields that happen to be dropped. The existing comment-content assertions in the hook tests must still hold, so the rewritten comment keeps the tokens `isPending && isFetching` and `paused` and never regains the phrase `react-query's own isLoading definition`.\n\n5. One `Maintenance` release note covering all of it.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/mocks/source.ts",
+        "action": "create",
+        "change": "New test-only module exporting `readNormalizedSource(basePath: string, file: string): string` — the single copy of the idiom currently at ReportCard.test.tsx:120-124. Body: `readFileSync(path.resolve(basePath, file), 'utf8').replaceAll(/^\\s*\\/\\//gm, ' ').replaceAll(/\\s+/g, ' ')`, with `readFileSync` from `node:fs` and `path` from `node:path`. The base path stays a parameter because the three callers resolve against their own `import.meta.dirname`, not against this module. Carry over the existing doc comment: it reads a sibling source file and flattens it enough that a claim about a comment cannot be satisfied or dodged purely by where the line breaks and `//` markers fall. This is the only file that may import `node:fs` for this purpose after the change. Reachable as `#mocks/source` through the existing `\"#mocks/*\": \"./src/mocks/*.ts\"` entry in packages/desktop-client/package.json — no package.json edit is needed, and none should be made.",
+        "why": "Finding 4: three copies of one helper exist today; `src/mocks/connection.ts` is the existing precedent for a test-only module under the `#mocks/*` mapping."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/ReportCard.tsx",
+        "action": "edit",
+        "change": "Two edits, both in the top of the file plus the comment block. (a) Extend INTERACTIVE_SELECTOR (currently lines 25-37, eleven entries joined with ',') by appending, in this order: `[role=\"radio\"]`, `[role=\"switch\"]`, `[role=\"option\"]`, `[role=\"menuitemcheckbox\"]`, `[role=\"menuitemradio\"]`, `[role=\"textbox\"]`, `[role=\"combobox\"]`, `[role=\"searchbox\"]`, `[role=\"slider\"]`, `[role=\"spinbutton\"]`, `[role=\"treeitem\"]`, `summary`. Do not add `[tabindex]`, do not add a bare `[role]`, and do not change the existing eleven entries or the `e.currentTarget` comparison — the handler logic is unchanged by this ticket. (b) Replace the comment above INTERACTIVE_SELECTOR (currently lines 23-24) with one that states, in this order: the invariant (a click on the card's own content navigates the card; a click on a control the widget body rendered belongs to that control, which is why the surface is a View with role=\"button\" rather than a <Button>); that the two guards on this surface cover deliberately different sets, because a click can start on static content (a span, a chart node, table text) while a keypress can only start on a focusable element, so the click guard asks \"is this an activatable control\" and the keydown guard can ask \"did this start somewhere other than the surface\"; that focusability is therefore NOT the click guard's test, which is why `[tabindex]` is absent from this list even though the keydown guard below treats every descendant as owning its keypress; and the concrete consequence — ReportTable.tsx:154 renders a `tabIndex={0}` scroll container inside a card that carries a `to` (a custom-report widget whose graphType is TableGraph), so a click anywhere in that table still navigates the card while Enter on it does not, and that asymmetry is pinned by a test in ReportCard.test.tsx. The existing long comment at lines 129-142 above the surface must be left in place and must still contain the words `nested-interactive` and `CalendarCard` — the test at ReportCard.test.tsx:379-386 asserts them. Do not reword it. Do not touch the keydown handler, goToReport, the Layout/context-menu branch, or the non-clickable fallback at line 195.",
+        "why": "Findings 1 and 3 are one defect: the guard's coverage is undocumented and untested, and the reviewer's proposed fix would change click behaviour on a shipped path."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/ReportCard.test.tsx",
+        "action": "edit",
+        "change": "Delete the local `readOwnSource` helper (lines 117-124) and its `readFileSync` / `path` imports; import `readNormalizedSource` from `#mocks/source` instead and change the one existing call site (line 381) to `readNormalizedSource(import.meta.dirname, 'ReportCard.tsx')`. Add three fixtures alongside `CardWithInnerControl` and `CardWithNativeInnerControls`, each rendering one extra child inside the same body wrapper those fixtures use: `CardWithFocusablePlainDiv` (a `<div tabIndex={0} data-testid=\"focusable-div\">` with text), `CardWithInnerLink` (an `<a href=\"https://example.com\">link</a>`), and `CardWithInnerRole` (a `<div role=\"radio\" data-testid=\"inner-radio\">`). Add four cases to the `ReportCard click surface` describe block: 1. clicking the `tabIndex={0}` div navigates the card: `fireEvent.click(screen.getByTestId('focusable-div'))`, expect `mockNavigate` called once with `('/reports/net-worth', { state: { goBack: true } })`. 2. Enter on that same div does not: `dispatchKeyDown(screen.getByTestId('focusable-div'), 'Enter')`, expect `mockNavigate` not called. Together with case 1 this is the pin that documents the intentional asymmetry — a comment above it must say so and name ReportTable's scroll container as the reason it is not a bug. 3. clicking the inner link does not navigate: `fireEvent.click(screen.getByRole('link', { name: 'link' }))`, expect `mockNavigate` not called. Comment above it: the selector gives a link inside a widget body its own click, the same rule that keeps CalendarCard's month button; unreachable in the app today because MarkdownCard passes no `to`. 4. `it.each` over the twelve newly added selector entries: for each, render a body containing `<div role=\"<role>\">` (or `<summary>` for the `summary` entry), click it, expect `mockNavigate` not called. Twelve named cases, one per entry, so a later deletion of a single entry fails exactly one case. Leave all sixteen existing cases, including the comment-content case at 379-386, byte-identical apart from the helper rename.",
+        "why": "The divergence and the `a[href]` decision are currently asserted by nothing; without these four cases the next edit to the selector changes behaviour silently."
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useDashboardWidget.ts",
+        "action": "edit",
+        "change": "Delete `error: query.error,` from the returned object. Keep `data`, `isPending`, `isLoading` and `fetchStatus` exactly as they are, and leave `isFirstLoad` and its derivation comment (lines 20-31) alone. Replace the comment above the return (currently lines 34-36, which names only status/isSuccess/isInitialLoading) with one that states the rule for the whole return: it is returned explicitly rather than spread, because spreading would leave react-query's `status`, `isSuccess` and `isInitialLoading` visible next to a derived `isPending` that disagrees with them on an id-less route; the return carries the data, the derived loading flag, and `fetchStatus` because that is the un-derived input the derivation reads, so a caller seeing `isPending: false` can tell a disabled query from one that resolved with no data. Keep the tokens `isPending && isFetching` and `paused` in the file, and do not reintroduce the phrase `react-query's own isLoading definition` — useDashboardWidget.test.tsx:141-157 asserts both directions.",
+        "why": "Finding 5: `error` has no reader at all; the justification for keeping it named a rule the return did not follow."
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useReport.ts",
+        "action": "edit",
+        "change": "The same two edits as useDashboardWidget.ts, applied to this file's return (lines 27-33) and the comment above it (lines 24-26): delete `error: query.error,`, keep `data`, `isPending`, `isLoading`, `fetchStatus`, and rewrite the comment to state the same rule. This file's derivation comment already refers the reader to useDashboardWidget, so write \"See useDashboardWidget\" once and then state the rule here in full — the two comments are asserted separately by two different test files and must each stand alone. Keep the tokens `isPending && isFetching` and `paused`; do not reintroduce `react-query's own isLoading definition` (useReport.test.tsx:134-149 asserts both directions). Leave `isFirstLoad` and lines 11-22 alone.",
+        "why": "Same defect as useDashboardWidget; the reviewer named only one of the two files."
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useDashboardWidget.test.tsx",
+        "action": "edit",
+        "change": "Delete the `readFileSync` / `path` imports (lines 3-4) and the inline normalized read inside the case at lines 142-148; import `readNormalizedSource` from `#mocks/source` and call `readNormalizedSource(import.meta.dirname, 'useDashboardWidget.ts')`. In the case at line 131, rename it to `exposes only data, the derived loading flags and fetchStatus` and add `expect(result.current).not.toHaveProperty('error');` beside the three existing `not.toHaveProperty` assertions (lines 137-139). Leave line 97's `expect(result.current.fetchStatus).toBe('idle');` in place — `fetchStatus` is kept, so that assertion still holds.",
+        "why": "Finding 4 (the duplicate helper) and finding 5 (the drop of `error`)."
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useReport.test.tsx",
+        "action": "edit",
+        "change": "Delete the `readFileSync` / `path` imports (lines 3-4) and the inline normalized read inside the case at lines 135-141; import `readNormalizedSource` from `#mocks/source` and call `readNormalizedSource(import.meta.dirname, 'useReport.ts')`. In the case at line 127, rename it to `exposes only data, the derived loading flags and fetchStatus` and add `expect(result.current).not.toHaveProperty('error');` beside the three existing `not.toHaveProperty` assertions (lines 131-133). Leave line 101's `expect(result.current.fetchStatus).toBe('idle');` in place.",
+        "why": "Finding 4 (the duplicate helper) and finding 5 (the drop of `error`)."
+      },
+      {
+        "path": "upcoming-release-notes/report-card-click-guard-and-hook-return.md",
+        "action": "create",
+        "change": "Release note with front matter `category: Maintenance` and `authors: [Shivam-Fl]` (the author on the 15 existing agent-authored notes in this directory, including clarify-sqljs-fetch-patch-test-comment.md). One or two plain sentences naming what changed for a reader of the release feed: the report card's click guard now covers the activatable controls it was missing and its relationship to the key guard is written down and pinned by tests, the source-reading test helper exists once instead of three times, and the two report hooks no longer return a field nothing read. No user-facing behaviour change is claimed — none of these five findings changes what the app does today.",
+        "why": "The repository requires a note per change; commit ede8c09 exists because a shipped fix initially shipped without one."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/components/reports/ReportCard.test.tsx",
+        "action": "edit",
+        "cases": [
+          "clicking a tabIndex={0} descendant that is not an activatable control navigates the card once, with route /reports/net-worth and state { goBack: true }",
+          "Enter on that same tabIndex={0} descendant does not navigate — the pair pins the intentional click/keydown asymmetry and names ReportTable's scroll container in a comment",
+          "clicking an a[href] inside the widget body does not navigate the card",
+          "it.each over the twelve added selector entries: clicking a descendant carrying each of role=radio, role=switch, role=option, role=menuitemcheckbox, role=menuitemradio, role=textbox, role=combobox, role=searchbox, role=slider, role=spinbutton, role=treeitem, and summary does not navigate",
+          "existing: the sixteen current cases unchanged, including the two comment-content cases at 379-386 and the nested-button, accessible-name, hover-shadow and Enter/Space cases"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useDashboardWidget.test.tsx",
+        "action": "edit",
+        "cases": [
+          "the disabled-query case still asserts fetchStatus 'idle', isPending false, isLoading false, data undefined and queryCalls 0",
+          "the narrowed-return case now also asserts not.toHaveProperty('error') alongside status, isSuccess and isInitialLoading",
+          "the comment-content case reads through #mocks/source and still asserts the comment does not claim to be react-query's own isLoading, does contain 'isPending && isFetching' and does contain 'paused'"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/hooks/useReport.test.tsx",
+        "action": "edit",
+        "cases": [
+          "the bare-/reports/custom case still asserts fetchStatus 'idle', isPending false, isLoading false, data undefined and reportCalls 0",
+          "the narrowed-return case now also asserts not.toHaveProperty('error') alongside status, isSuccess and isInitialLoading",
+          "the comment-content case reads through #mocks/source and still asserts the comment does not claim to be react-query's own isLoading, does contain 'isPending && isFetching' and does contain 'paused'"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "On /reports, clicking the body text of a report card navigates to that card's report — the click guard still lets a click on the card's own content through after the selector grows.",
+        "how_to_verify": "Open /reports in the demo budget, click the text inside any report card (not its title link), and confirm the URL changes to that card's report. This is the path e2e/reports.test.ts already drives through goToBalanceForecastPage(); that helper clicking `getByRole('button', { name: /^Balance Forecast/i })` and waiting for /reports/forecast/ is the same check and must stay green.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "On /reports, right-clicking a report card still opens its context menu with Rename, Remove and Copy to dashboard — the context menu lives in a portal outside the surface and must be untouched by the selector change.",
+        "how_to_verify": "Right-click any report card on /reports and confirm the menu shows Rename. This is e2e/reports.test.ts's 'right clicking a report card opens context menu' via page-models/reports-page.ts rightClickReportCard('Net Worth'), and it must stay green.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "A tabIndex={0} descendant that is not an activatable control navigates its card on click and does not on Enter — the two guards' asymmetry is deliberate and now pinned.",
+        "how_to_verify": "CI case 'clicking a tabIndex={0} descendant navigates the card' and 'Enter on that same descendant does not navigate' in packages/desktop-client/src/components/reports/ReportCard.test.tsx. No browser path renders such a descendant in a card today.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "A link inside a widget body owns its own click: clicking it does not navigate the card. This is the decision the a[href] entry encodes, now stated in the file and pinned.",
+        "how_to_verify": "CI case 'clicking an inner link does not navigate the card' in ReportCard.test.tsx. Unreachable through the app today because no card body renders an anchor and MarkdownCard passes no `to`.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "Each of the twelve controls added to INTERACTIVE_SELECTOR owns its own click: a click on a descendant carrying role=radio, role=switch, role=option, role=menuitemcheckbox, role=menuitemradio, role=textbox, role=combobox, role=searchbox, role=slider, role=spinbutton, role=treeitem, or summary does not navigate the card.",
+        "how_to_verify": "The twelve it.each cases in ReportCard.test.tsx, one per selector entry, so removing one entry fails exactly one case.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "The normalized source read exists in exactly one place: the three source-reading cases all resolve through #mocks/source, and no test file imports node:fs for this purpose any more.",
+        "how_to_verify": "CI: the 'records in a comment what isFirstLoad actually computes' case in each hook test and the 'records the nested-interactive trade' case in ReportCard.test.tsx all pass. Grep check: `grep -rln \"from 'node:fs'\" packages/desktop-client/src/` returns exactly packages/desktop-client/src/mocks/source.ts.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-7",
+        "check": "useReport and useDashboardWidget return only data, isPending, isLoading and fetchStatus — no error, and no status, isSuccess or isInitialLoading — and the disabled-query cases still prove the query never ran.",
+        "how_to_verify": "CI cases 'exposes only data, the derived loading flags and fetchStatus' and 'is neither pending nor loading when the widget is disabled by a missing id' (useDashboardWidget.test.tsx) and 'is neither pending nor loading for bare /reports/custom, which has no id' (useReport.test.tsx).",
+        "verify": "test"
+      },
+      {
+        "id": "AC-8",
+        "check": "The repo's own checks pass on the changed package: typecheck, lint and the desktop-client unit suite are green, and the two existing reports e2e paths (card click navigation, card right-click menu) still pass.",
+        "how_to_verify": "`yarn typecheck`, `yarn lint`, `yarn workspace @actual-app/web run test`, and `yarn workspace @actual-app/web run playwright test reports.test.ts --browser=chromium`.",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "Open the app, choose \"Don't use a server\", then \"View demo\" so the reports dashboard has real cards.",
+      "Go to /reports and confirm every widget card renders and the page loads without a console error.",
+      "Click the body of a report card and confirm you land on that card's report (AC-1). Repeat on a second, differently-typed card.",
+      "Right-click a report card and confirm Rename / Remove / Copy to dashboard appear (AC-2).",
+      "Focus a card with the keyboard and press Enter, and separately press Space; both must navigate once, and holding Enter must not navigate twice.",
+      "If the demo budget has a Calendar widget card, click its month label and confirm the calendar's own control wins — the card does not navigate. That is the motivating case the selector exists for; if no Calendar card is present in the budget, note that and move on.",
+      "Right-click a card, rename it, and confirm the new name shows on the card and the rename survives a reload — the context-menu path the selector must not disturb.",
+      "Read packages/desktop-client/src/components/reports/ReportCard.tsx:23-37 and confirm the comment states the invariant, states that the two guards cover different sets on purpose, and says why [tabindex] is absent.",
+      "Run `grep -rln \"from 'node:fs'\" packages/desktop-client/src/` and confirm it returns exactly packages/desktop-client/src/mocks/source.ts (AC-6).",
+      "Run `grep -rn \"error:\" packages/desktop-client/src/hooks/useDashboardWidget.ts packages/desktop-client/src/hooks/useReport.ts` and confirm no match (AC-7).",
+      "Confirm upcoming-release-notes/report-card-click-guard-and-hook-return.md exists with category Maintenance and one author matching the directory's existing notes."
+    ],
+    "risks": [
+      "Declining the reviewer's suggested fix is the main judgement in this plan. `[tabindex]` is deliberately NOT added to INTERACTIVE_SELECTOR even though the reviewer's primary fix and its own fallback both call for it: ReportTable.tsx:154 renders `<View tabIndex={0}>` and is reachable inside a card carrying a `to` (CustomReportListCards.tsx:133-137 -> GetCardData at :163 -> GetCardData.tsx:188-192 -> ChooseGraph.tsx:189-191 for graphType TableGraph). Adding `[tabindex]` would stop a click anywhere inside a table-graph custom-report widget from navigating its card — a live behaviour change on a path the review measured as unreachable, and one the e2e would not catch because goToBalanceForecastPage clicks a LineChart card. The reviewer's evidence came from grepping components/reports/reports/, which excludes components/reports/graphs/. If a person disagrees and wants [tabindex] added anyway, it is a one-line change plus a browser check on a table-graph widget — but it should be a decision, not a follow-up comment.",
+      "The twelve newly added selector entries are not exercised by any widget body in the app today — no reports component renders role=radio, role=switch, role=option, role=menuitemcheckbox, role=menuitemradio, role=textbox, role=combobox, role=searchbox, role=slider, role=spinbutton, role=treeitem or summary (grep over packages/desktop-client/src/components/reports returns only the five roles already in the list). They are covered by unit cases only, so their coverage does not prove a user-facing path; that is the accepted cost of answering finding 1 without a behaviour change.",
+      "`[role=\"textbox\"]` and `[role=\"combobox\"]` are broader than they look: a widget body that renders a read-only ARIA textbox or combobox will now swallow card clicks on it. Nothing does today, but it is the same class of surprise finding 2 is about, which is why the rewritten comment has to say what the list means rather than leave it as a bare enumeration.",
+      "Keeping `a[href]` means an inner link owns its click and the card does not navigate. That is intended and pinned, and it is recorded here because no acceptance criterion in the shipped work order named it — the reviewer's complaint was that this trade was undocumented, and it now is, but the behaviour is unchanged from what shipped in PR #95.",
+      "Dropping `error` from the two hook returns is an API reduction with no reader to satisfy: if a future widget wants an error state it must add the field back. That is deliberate — the alternative is a field kept on a rationale that does not distinguish it from the eight already dropped.",
+      "Rewriting the return comments in both hooks is constrained by test assertions on their wording (the tokens `isPending && isFetching` and `paused`, and the absence of `react-query's own isLoading definition`). An implementer who paraphrases freely will fail those tests; the required tokens are named in each file's change.",
+      "No forbidden path is touched: no .sdlc/**, .github/**, .claude/**, AGENTS.md, CLAUDE.md or packages/*/migrations entry is in files[]. No host is added that would make the app send data anywhere, so env.api_allowlist in .sdlc/config.yml needs no change.",
+      "I could not run anything to confirm this: dependencies are not installed in the checkout I planned from, so no test was executed and no e2e was run. Every claim about current behaviour is from reading the code and grepping the tree. The implementer should expect the first `yarn install` to be the first real check."
+    ],
+    "out_of_scope": [
+      "Replacing the role=\"button\" + tabIndex={0} surface with a real <Button>, or otherwise removing the nested-interactive shape the comment above the surface records. That would change the click target and accessible name the e2e selectors depend on, which the comment already says is a larger change than this one.",
+      "Turning recharts' accessibilityLayer on. It is off repo-wide and is what makes the divergence non-live for chart surfaces; enabling it would add tabIndex to chart nodes and change what finding 1 is about.",
+      "Removing the source-reading comment tests outright. The review called them the weakest thing in the diff and offered dropping the idiom as a council decision; the cases encode two decisions that were argued and are asserted for that reason, so this ticket deduplicates them rather than deleting them.",
+      "Dropping the `isLoading` alias the hooks return alongside `isPending` — five of the twelve call sites read it. Removing it is an API reduction no finding asked for.",
+      "Any change to the hook return's `isPending` derivation, or to the comment above it in either hook (useDashboardWidget.ts lines 20-31, useReport.ts lines 11-22). Only the comment above the return and the `error` line change.",
+      "Making the ReportTable scroll container stop the click itself (stopPropagation) rather than relying on the selector. That is the other way to resolve the divergence and it would put the burden on every widget body; the selector is the one place the rule lives today.",
+      "Reopening the [AI] prefix and PR-template handling for #95, and any change to how the release note is published."
+    ],
+    "confidence_rationale": "Every file named was read in full and every claim about current behaviour is traceable to a line: the eleven selector entries, the keydown guard's unconditional return, the three copies of the source read (confirmed by grep returning exactly three files), the absence of any reader of `error` or `fetchStatus` across all twelve call sites plus CustomReport, and the CustomReportListCards -> GetCardData -> ChooseGraph -> ReportTable chain that makes `[tabindex]` a live behaviour change. The plan reuses what exists (`#mocks/*`, the existing helper's regexes, the existing comment tokens the tests assert) and adds no dependency. Confidence is not higher for two reasons: dependencies are not installed here, so no test was executed to confirm the reproductions empirically — the reviewer's own probes were run by the reviewer, not by me — and the one genuinely arguable call is the decision to decline `[tabindex]`, which is a deliberate rejection of the reviewer's stated fix and is written up in full under risks so a person can overrule it cheaply.",
+    "evidence": [
+      "packages/desktop-client/src/components/reports/ReportCard.tsx:25-37 — INTERACTIVE_SELECTOR is eleven entries: button, input, select, textarea, a[href], [contenteditable], and role=button/link/checkbox/tab/menuitem. No [tabindex].",
+      "packages/desktop-client/src/components/reports/ReportCard.tsx:157-166 — the click guard returns only when `target.closest(INTERACTIVE_SELECTOR) !== e.currentTarget`; :168-175 — the keydown guard returns on `e.target !== e.currentTarget`, unconditionally, for every descendant.",
+      "packages/desktop-client/src/components/reports/ReportCard.tsx:23-24 — the comment above the selector is two lines and says nothing about the two guards covering different sets; the longer comment at :129-142 explains only why the click guard cannot use target identity.",
+      "grep -rn 'tabIndex|tabindex' packages/desktop-client/src/components/reports/ (non-test) returns exactly two hits: ReportCard.tsx:147 (the surface's own) and graphs/tableGraph/ReportTable.tsx:154 — the review's grep path components/reports/reports/ excludes graphs/, so the review's 'not live today' rests on an incomplete search.",
+      "Reachability of that tabIndex inside a clickable card: CustomReportListCards.tsx:133-137 renders ReportCard with to=/reports/custom/${report.id}; :163 renders GetCardData inside that card's body; GetCardData.tsx:188-192 renders ChooseGraph with graphType={report.graphType}; ChooseGraph.tsx:189-191 renders ReportTable when graphType === 'TableGraph'.",
+      "grep -rn '<a |href=|Link to=' packages/desktop-client/src/components/reports/reports/*Card.tsx returns nothing, and MarkdownCard.tsx:101-106 passes no `to`, so MarkdownCard takes the non-clickable branch at ReportCard.tsx:195 and never installs the handler. Finding 2 is unreachable, as the review says.",
+      "grep -rln \"from 'node:fs'\" packages/desktop-client/src/ returns exactly ReportCard.test.tsx, useDashboardWidget.test.tsx, useReport.test.tsx. ReportCard.test.tsx:120-124 factors the idiom into readOwnSource; useDashboardWidget.test.tsx:143-148 and useReport.test.tsx:136-141 inline it verbatim.",
+      "packages/desktop-client/package.json imports map contains \"#mocks\": \"./src/mocks.tsx\" and \"#mocks/*\": \"./src/mocks/*.ts\"; packages/desktop-client/src/mocks/connection.ts is the existing test-only module under that mapping, imported by ~10 test files. No non-test file imports #mocks, so adding a helper there is safe.",
+      "grep for readers of `error` from useDashboardWidget/useReport across packages/desktop-client/src: zero. The twelve call sites read only data plus one of isPending/isLoading; CustomReport.tsx:122 reads data and isPending only. The `error` reads visible in BalanceForecast.tsx:141 and BalanceForecastCard.tsx:88 come from useBalanceForecast, a different hook, and are out of scope.",
+      "fetchStatus outside the two hooks: one unrelated literal at PayeeAutocomplete.test.tsx:137. Inside the hooks it is read at useDashboardWidget.ts:22 (the derivation) and by the two hook tests at useDashboardWidget.test.tsx:97 and useReport.test.tsx:101 — so it is the derivation's own input, unlike error.",
+      "useDashboardWidget.test.tsx:131 and useReport.test.tsx:127 are the cases that assert the return excludes status/isSuccess/isInitialLoading; neither asserts anything about error, so dropping it needs the one added assertion this plan specifies.",
+      "Both hook tests assert the wording of their hook's derivation comment: not.toContain(\"react-query's own isLoading definition\"), toContain('isPending && isFetching'), toContain('paused'). Any rewrite of the comment above the return must leave those tokens intact.",
+      "ReportCard.test.tsx:379-386 asserts the surface comment contains 'nested-interactive' and 'CalendarCard'; that comment is not being changed, but the plan names the constraint so an implementer does not reword it.",
+      "e2e/reports.test.ts and e2e/page-models/reports-page.ts cover exactly two card surfaces: goToBalanceForecastPage() clicks getByRole('button', { name: /^Balance Forecast/i }) and waits for /reports/forecast/, and rightClickReportCard('Net Worth') opens a menu containing Rename. Neither touches a table-graph widget, so neither would catch the [tabindex] regression.",
+      "upcoming-release-notes/ holds 15 notes authored by Shivam-Fl including clarify-sqljs-fetch-patch-test-comment.md (category Maintenance); git log shows commit ede8c09, 'The shipped custom-report fix gets the release note the repository requires', so the note is mandatory for this repo.",
+      "Not verified by execution: node_modules/.bin/vitest and packages/desktop-client/node_modules are both absent in this checkout, so no vitest, typecheck, lint or e2e command was run. Every statement above is from reading source and grepping the tree."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Take the reviewer's primary fix for findings 1 and 3 as written: invert the click guard to walk from e.target up to e.currentTarget and block whenever an element carries a focusability/interactivity signal, using matches(':any-link, button, input, [tabindex], [contenteditable], [role]') plus typeof el.onclick === 'function'.",
+        "rejected_because": "It blocks on [tabindex] and on any [role], so it swallows the same clicks as the fallback — including ReportTable's tabIndex={0} scroll container inside a to-bearing card (CustomReportListCards -> GetCardData -> ChooseGraph, graphType TableGraph). That is a live behaviour change on a shipped path, uncovered by any e2e, for a ticket whose findings are all non-blocking follow-ups. The typeof el.onclick check is also dead code under React's synthetic event system, which attaches at the root and never sets a DOM onclick property."
+      },
+      {
+        "approach": "Take the reviewer's own fallback for findings 1 and 3: add [tabindex] to INTERACTIVE_SELECTOR plus the remaining common roles, and pin a tabIndex={0} descendant to the same outcome as its keydown.",
+        "rejected_because": "Adding [tabindex] is the same live regression — the pin the reviewer asks for would be pinning today's bug as intended behaviour. The 'remaining common roles' half of that suggestion is kept, and the [tabindex] half is declined with the reachability chain written into risks."
+      },
+      {
+        "approach": "For finding 2, drop a[href] from INTERACTIVE_SELECTOR so a link inside a widget body falls through to the card.",
+        "rejected_because": "It changes nothing observable today (no card body renders an anchor) and makes the next link-bearing widget body wrong: the link's own navigation and the card's would both fire. Keeping the entry and naming the trade — with a test and a risks line — is what the reviewer asked for and is the smaller change."
+      },
+      {
+        "approach": "For finding 2, keep a[href] and add only a risks line, with no test and no code change.",
+        "rejected_because": "The reviewer's actual objection is that the trade is unstated in the file where the selector lives, and a reviewer reading only ReportCard.tsx would not see a ticket's risks list. The comment and the pinning test put it where the decision is made."
+      },
+      {
+        "approach": "For finding 5, drop both error and fetchStatus from the two hook returns and rewrite the two disabled-query assertions onto isPending.",
+        "rejected_because": "fetchStatus is the un-derived input the derived isPending is computed from (useDashboardWidget.ts:22), so a caller seeing isPending: false cannot otherwise tell a disabled query from one that resolved empty — and the disabled-query cases assert fetchStatus 'idle' precisely to prove the query never ran. Dropping error alone removes the field with no reader and no derivation role, which is the whole of the finding."
+      },
+      {
+        "approach": "For finding 5, keep all three fields and only extend the comment.",
+        "rejected_because": "That is defensible on its own terms, but error then stays on exactly the rationale the reviewer rejected — kept, alongside eight dropped fields, with no stated reason. Dropping it is a two-line change with no reader to break."
+      },
+      {
+        "approach": "For finding 4, put readNormalizedSource on #mocks (src/mocks.tsx) itself rather than a new #mocks/source module.",
+        "rejected_because": "src/mocks.tsx is the store-and-providers helper every test that renders under TestProviders imports; adding a node:fs dependency to it widens what that import costs. src/mocks/connection.ts is already the precedent for a focused test-only module under the same mapping."
+      },
+      {
+        "approach": "Split the ticket into three — ReportCard guards, the shared test helper, the hook return.",
+        "rejected_because": "The issue asks for a split only if the findings are unrelated. Findings 1-3 are one change in one file; 4 and 5 are small and touch the same package; all five follow one merged PR and would land as one PR with one release note. Three tickets would mean three CI and QA cycles for roughly sixty changed lines. The judgement is recorded here so a human can overrule it."
+      },
+      {
+        "approach": "Drop the three source-reading comment tests instead of deduplicating them.",
+        "rejected_because": "The review explicitly left this as a council decision rather than a review comment, and the cases encode two decisions that were argued (that isFirstLoad is not react-query's own isLoading definition; that the nested-interactive trade is deliberate). Deleting them is a different decision than deduplicating them, and it is not this ticket's to take."
+      }
+    ],
+    "assumptions": [
+      "The ledger has no prior work order for #98, so version 1 is correct (nextWorkOrderVersion returns ledger.work_order.version + 1, and state/98.json has no work_order key).",
+      "`import.meta.dirname` and `import.meta.url` are available in these test files — both are already used (ReportCard.test.tsx:122, useReport.test.tsx:138), so no tsconfig or vitest change is needed.",
+      "The `#mocks/*` subpath mapping resolves `#mocks/source` to packages/desktop-client/src/mocks/source.ts without a package.json edit; `#mocks/connection` already resolves this way and is imported by test files today.",
+      "src/mocks.tsx is imported only by test files, so adding a test-only module beside it under src/mocks/ cannot pull node:fs into a production bundle.",
+      "The next agent runs `yarn install` before testing; until then no vitest, typecheck, lint or e2e result in this plan is empirical.",
+      "Only the three named test files read sibling source off disk for these assertions; a grep of node:fs across packages/desktop-client/src returning exactly those three is the basis for that."
+    ],
+    "unknowns": [
+      "Whether a person would rather have [tabindex] added despite the table-graph consequence. This plan declines it and documents the chain; that is the one call in here worth a human's five seconds, and the change is one line plus a browser check if they disagree.",
+      "Whether the demo budget QA gets contains a custom-report widget whose graphType is TableGraph. If it does, the [tabindex] consequence is directly observable in a browser; if not, it is not. Either way AC-1 through AC-5 do not depend on it.",
+      "Whether any widget body outside packages/desktop-client/src/components/reports renders a control inside a to-bearing ReportCard. The twelve call sites were checked for which hook fields they read, not exhaustively for what they render, so the new selector entries' real-world reach is inferred from the reports-tree grep rather than proven.",
+      "Whether recharts 3.x emits any role attribute on chart nodes with accessibilityLayer off. It could not be checked here — node_modules is absent — and it matters only if someone later adds a bare [role] to the selector, which this plan does not."
+    ]
+  },
+  "approved_too_high": false
 }
