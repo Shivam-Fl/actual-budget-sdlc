@@ -402,6 +402,21 @@
       ],
       "run_url": "https://github.com/Shivam-Fl/actual-budget-sdlc/actions/runs/37264700272",
       "prior_signatures": []
+    },
+    "triage": {
+      "verdict": "repair",
+      "diagnosis": "The ci stage's red step \"Fail if any check failed\" only reports the non-zero exit of the step before it. The real failure is the @actual-app/ci-actions `release-notes` task, and it is a defect in this PR's own deliverable, not in the product code: the release note this branch adds, upcoming-release-notes/report-card-click-guard-and-hook-return.md, has a three-line body (two paragraphs separated by a blank line). packages/ci-actions/bin/release-notes-gate.mjs:111-114 requires the trimmed body to be non-empty and free of any newline, and it failed that note and nothing else. Every other check in the run was green — all 8 test suites passed (@actual-app/web 2m31s, @actual-app/core 2m10s, @actual-app/sync-server 620 tests, plus api, components, cli, crdt, eslint-plugin-actual) and all 16 typechecks succeeded. The fix is one edit to the note body on the existing branch: collapse it to a single line that still covers both changes the note describes (the report card click guard now covering the activatable controls its keydown guard already handled, and the duplicated readOwnSource test helper consolidated to one home). The branch and PR survive — PR #101, head 942727f, with the seven source and test files already implemented — so this is a repair on top of that work, not a re-plan and not a re-run.",
+      "evidence": "failed-run.log:2442 `##[error]::error::report-card-click-guard-and-hook-return.md body should contain exactly one line`, from `##[error]Running yarn run release-notes, pid: 5570`; failed-run.log:2435 `INFO: @actual-app/ci-actions release-notes failed, took 0.59s` against `[Tasks Count] success: 8, skipped: 0, pending: 1, aborted: 0`. Rule at packages/ci-actions/bin/release-notes-gate.mjs:111-114 (`const trimmed = content.trim(); if (!trimmed || trimmed.includes('\\n'))`). Reproduced locally against the PR's own tree: `git archive pr101 upcoming-release-notes` into /tmp/notes, then `collectFailures('/tmp/notes')` returns exactly one failure — `report-card-click-guard-and-hook-return.md body should contain exactly one line`. File body from `git show pr101:upcoming-release-notes/report-card-click-guard-and-hook-return.md`: front matter `category: Maintenance` / `authors: [Shivam-Fl]`, then three non-empty lines. prior_signatures is empty and occurrences is 1; the cause is deterministic, not environmental."
     }
-  }
+  },
+  "triage_history": [
+    {
+      "at": "2026-10-05T04:51:55.507Z",
+      "stage": "ci",
+      "verdict": "repair",
+      "confidence": 96,
+      "diagnosis": "The ci stage's red step \"Fail if any check failed\" only reports the non-zero exit of the step before it. The real failure is the @actual-app/ci-actions `release-notes` task, and it is a defect in this PR's own deliverable, not in the product code: the release note this branch adds, upcoming-release-notes/report-card-click-guard-and-hook-return.md, has a three-line body (two paragraphs separated by a blank line). packages/ci-actions/bin/release-notes-gate.mjs:111-114 requires the trimmed body to ",
+      "run": "37264714318"
+    }
+  ]
 }
