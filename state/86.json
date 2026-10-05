@@ -195,7 +195,13 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/filters/CompactFiltersButton.tsx",
+    "packages/desktop-client/e2e/page-models/custom-report-page.ts",
+    "packages/desktop-client/e2e/reports.test.ts",
+    "packages/desktop-client/src/components/filters/CompactFiltersButton.test.tsx",
+    "packages/desktop-client/e2e/reports.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
