@@ -2,9 +2,9 @@
   "issue": 87,
   "pr": null,
   "state": "implementing",
-  "owner": null,
-  "lock_expires": null,
-  "lock_run": null,
+  "owner": "implementer",
+  "lock_expires": "2026-10-05T10:43:18.168Z",
+  "lock_run": "37248572136",
   "attempts": {
     "plan": 7,
     "ci": 0,
@@ -259,7 +259,7 @@
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-04T19:00:42.493Z",
-  "updated_at": "2026-10-05T00:43:01.613Z",
+  "updated_at": "2026-10-05T00:43:18.168Z",
   "history": [
     {
       "at": "2026-10-04T22:15:06.451Z",
@@ -380,6 +380,11 @@
       "at": "2026-10-05T00:43:01.613Z",
       "agent": "planner",
       "action": "lock released"
+    },
+    {
+      "at": "2026-10-05T00:43:18.168Z",
+      "agent": "implementer",
+      "action": "lock acquired"
     }
   ],
   "epic": 83,
