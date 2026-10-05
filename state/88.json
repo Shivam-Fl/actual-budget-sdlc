@@ -359,7 +359,8 @@
         "detail": "'does not collide when a real category and a synthetic row are siblings' has no discriminating power over the key expression. Every mutant of ReportTableList.tsx:84 I tried leaves it green, including the unfixed `key={category.id}` — the fixture's uuid `id` and the synthetic row's `id: ''` do not collide under any of them, so the only thing that could fail it is two sibling names colliding, which the fixture does not contain.\n\n`packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.test.tsx:170`\n\nEvidence: Ran four mutants of ReportTableList.tsx:84 against the suite. `key={category.id}` (the pre-fix code) fails tests 1 and 2 but passes tests 3 and 4. `key={category.uncategorizedId}` (fallback deleted), `key={category.name}` and `key={category.uncategorizedId ?? category.id ?? category.name}` all pass all 4. Test 4 is green in every one of those runs, so it constrains nothing about the change it is named after. This is not scope creep — the work order's tests[] asked for this case — and test 2 in the same file does have real value: it fails on the pre-fix code.\n\nFix: Either delete it, or make it discriminating: give the real category a uuid `id` and assert against a key expression that would collide with it (e.g. a mutant-independent check that the rendered rows carry distinct DOM identity after a re-render). If it stays as a smoke test, rename it so its name stops claiming to guard the key expression."
       }
     ],
-    "pr": "94"
+    "pr": "94",
+    "filed": 97
   },
   "qa": {
     "verdict": "pass",
