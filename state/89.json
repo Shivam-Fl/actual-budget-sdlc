@@ -578,5 +578,26 @@
       "run": "37241395726",
       "at": "2026-10-04T23:05:56.383Z"
     }
+  },
+  "failure_packet": {
+    "issue": 89,
+    "pr": 91,
+    "head": "aa7b08259904ff512074a0e3f13d8372eeee717e",
+    "stage": "ci",
+    "attempt": 3,
+    "occurrences": 1,
+    "error_type": "unknown",
+    "error_signature": "5ee68e82c4d7bcaf",
+    "raw_excerpt": "verify\tFail if any check failed\t﻿2026-10-05T00:05:16.9608720Z ##[group]Run exit 1\nverify\tFail if any check failed\t2026-10-05T00:05:16.9608967Z ^[[36;1mexit 1^[[0m\nverify\tFail if any check failed\t2026-10-05T00:05:16.9670456Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}\nverify\tFail if any check failed\t2026-10-05T00:05:16.9671131Z ##[endgroup]\nverify\tFail if any check failed\t2026-10-05T00:05:16.9754955Z ##[error]Process completed with exit code 1.",
+    "digest": "The ci stage failed and no known error pattern matched. The raw output is below.",
+    "decision": "triage",
+    "decision_reason": "an agent reads the failed run's full log and decides what happens next — this script cannot see that log from inside the run that produced it",
+    "context": {
+      "work_order_version": 2,
+      "failed_checks": [
+        "ci-verify"
+      ],
+      "prior_signatures": []
+    }
   }
 }
