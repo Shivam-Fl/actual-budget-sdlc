@@ -358,7 +358,7 @@
     }
   ],
   "epic": 83,
-  "resume_at": null,
+  "resume_at": "qa",
   "flow_plan": {
     "kind": "feature",
     "confidence": 88,
@@ -369,7 +369,7 @@
     },
     "decided_at": "2026-10-05T01:04:37.190Z"
   },
-  "stopped_at": null,
+  "stopped_at": "qa",
   "dispatched_stage": "qa",
   "validated_from": "plan",
   "validated_at": "2026-10-05T03:53:41.405Z",
