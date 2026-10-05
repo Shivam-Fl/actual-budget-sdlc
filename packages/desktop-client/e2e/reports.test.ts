@@ -274,6 +274,39 @@ test.describe('Reports', () => {
       await expect(rows).toContainText('Uncategorized');
     });
 
+    /** Tick only the Bills group, as QA's T-9 does. */
+    const selectOnlyBillsGroup = async () => {
+      await page.getByRole('button', { name: 'Unselect All' }).click();
+
+      // Clicking by checkbox id rather than by label text: two elements are
+      // labelled "Income".
+      await page
+        .locator(
+          `input#${await page
+            .getByText('Bills', { exact: true })
+            .first()
+            .getAttribute('for')}`,
+        )
+        .check();
+
+      await expect(
+        customReportPage.pageContent.getByRole('button', {
+          name: /category one of \[Cell, Internet/,
+        }),
+      ).toBeVisible();
+    };
+
+    /** Flip the operator toggle from 'all of' to 'any of'. */
+    const switchToAnyOf = async () => {
+      // The toggle only renders once two or more conditions exist, and its
+      // options live in a menu that opens on click.
+      const toggle = customReportPage.pageContent.getByTestId('field-select');
+      await expect(toggle).toContainText('all');
+      await toggle.click();
+
+      await page.getByRole('button', { name: 'any', exact: true }).click();
+    };
+
     test.describe("'any of' keeps every row the query fetched", () => {
       // With 'any of', the query side unions every disjunct but the row axis
       // was narrowed as though the category condition were the only one. Rows
@@ -308,27 +341,6 @@ test.describe('Reports', () => {
         ).toBeVisible();
       };
 
-      const selectOnlyBillsGroup = async () => {
-        await page.getByRole('button', { name: 'Unselect All' }).click();
-
-        // Clicking by checkbox id rather than by label text: two elements are
-        // labelled "Income".
-        await page
-          .locator(
-            `input#${await page
-              .getByText('Bills', { exact: true })
-              .first()
-              .getAttribute('for')}`,
-          )
-          .check();
-
-        await expect(
-          customReportPage.pageContent.getByRole('button', {
-            name: /category one of \[Cell, Internet/,
-          }),
-        ).toBeVisible();
-      };
-
       /** Wait until the table has re-rendered carrying all of these rows. */
       const waitForRows = async (...names: string[]) => {
         await expect
@@ -337,17 +349,6 @@ test.describe('Reports', () => {
             return names.every(name => rows.includes(name));
           })
           .toBe(true);
-      };
-
-      /** Flip the operator toggle from 'all of' to 'any of'. */
-      const switchToAnyOf = async () => {
-        // The toggle only renders once two or more conditions exist, and its
-        // options live in a menu that opens on click.
-        const toggle = customReportPage.pageContent.getByTestId('field-select');
-        await expect(toggle).toContainText('all');
-        await toggle.click();
-
-        await page.getByRole('button', { name: 'any', exact: true }).click();
       };
 
       test.beforeEach(async () => {
@@ -473,36 +474,6 @@ test.describe('Reports', () => {
             name: `category contains ${value}`,
           }),
         ).toBeVisible();
-      };
-
-      /** Tick only the Bills group, as QA's T-9 does. */
-      const selectOnlyBillsGroup = async () => {
-        await page.getByRole('button', { name: 'Unselect All' }).click();
-
-        // Clicking by checkbox id rather than by label text: two elements are
-        // labelled "Income".
-        await page
-          .locator(
-            `input#${await page
-              .getByText('Bills', { exact: true })
-              .first()
-              .getAttribute('for')}`,
-          )
-          .check();
-
-        await expect(
-          customReportPage.pageContent.getByRole('button', {
-            name: /category one of \[Cell, Internet/,
-          }),
-        ).toBeVisible();
-      };
-
-      /** Flip the operator toggle from 'all of' to 'any of'. */
-      const switchToAnyOf = async () => {
-        const toggle = customReportPage.pageContent.getByTestId('field-select');
-        await expect(toggle).toContainText('all');
-        await toggle.click();
-        await page.getByRole('button', { name: 'any', exact: true }).click();
       };
 
       test('a bare % leaves the report exactly as an unfiltered one', async () => {
@@ -675,6 +646,23 @@ test.describe('Reports', () => {
       await expect(page).toMatchThemeScreenshots();
 
       await customReportPage.showLabelsButton.click();
+    });
+
+    test('opens the conditions menu by name at a 1024px viewport', async () => {
+      // Positive assertion only: the locator is role-and-name, so it does not
+      // depend on where the control sits - this just proves the control is
+      // still on the toolbar at 1024px, well above the 512px narrow gate.
+      try {
+        await page.setViewportSize({ width: 1024, height: 720 });
+        await customReportPage.selectMode('total');
+        await customReportPage.selectViz('Data Table');
+
+        await customReportPage.openConditionsMenu();
+
+        await expect(page.getByTestId('filters-select-tooltip')).toBeVisible();
+      } finally {
+        await page.setViewportSize({ width: 1280, height: 720 });
+      }
     });
   });
 });
