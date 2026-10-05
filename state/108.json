@@ -203,7 +203,12 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/loot-core/src/shared/transactions.ts",
+    "packages/loot-core/src/shared/transactions.test.ts",
+    "upcoming-release-notes/fix-split-survivor-payee.md",
+    "packages/loot-core/src/shared/transactions.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
