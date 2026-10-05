@@ -556,69 +556,22 @@
   "stopped_at": null,
   "dispatched_stage": "root-cause",
   "validated_from": "root-cause",
-  "validated_at": "2026-10-05T11:10:23.902Z",
+  "validated_at": "2026-10-05T14:06:47.808Z",
   "validated_ac_changes": [
-    {
-      "id": "AC-1",
-      "was": {
-        "id": "AC-1",
-        "check": "A release note in a subdirectory of upcoming-release-notes/ reaches the published changelog: given a directory holding both top.md and sub/deep.md, parseReleaseNotes returns files containing 'sub/deep.md' and a notesByCategory entry whose text contains deep.md's body.",
-        "how_to_verify": "Not a browser surface — release tooling with no screen. Run 'publishes a nested note's body and category into notesByCategory' in packages/ci-actions/src/release-notes/util.test.js. It fails today: parseReleaseNotes filters a flat fs.readdir, so files omits sub/deep.md.",
-        "verify": "test"
-      },
-      "now": {
-        "id": "AC-1",
-        "check": "A release note in a subdirectory of upcoming-release-notes/ reaches the published changelog: given a directory holding both top.md and sub/deep.md, parseReleaseNotes returns files containing 'sub/deep.md' and a notesByCategory entry whose text contains deep.md's body.",
-        "how_to_verify": "Not a browser surface -- release tooling with no screen. Run 'publishes a nested note's body and category into notesByCategory' in packages/ci-actions/src/release-notes/util.test.js.",
-        "source": "TR-1",
-        "verify": "test"
-      }
-    },
     {
       "id": "AC-2",
       "was": {
-        "id": "AC-2",
-        "check": "With no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory: given a tmpdir fixture holding top.md, sub/deep.md and sub/README.md plus a top-level README.md, the two agree element for element — both notes present, sub/README.md present, the top-level README.md absent from both.",
-        "how_to_verify": "Run 'with no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory' in packages/ci-actions/src/release-notes/util.test.js; it asserts files deep-equals listNotePaths(dir) over that fixture. The equality holds by construction because parseReleaseNotes calls the one exported walk. Scoped to the no-`only` case on purpose: with an `only` filter parseReleaseNotes returns a strict subset, which is correct behaviour and is asserted separately in AC-8.",
-        "verify": "test"
-      },
-      "now": {
         "id": "AC-2",
         "check": "With no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory: given a tmpdir fixture holding top.md, sub/deep.md and sub/README.md plus a top-level README.md, the two agree element for element -- both notes present, sub/README.md present, the top-level README.md absent from both.",
         "how_to_verify": "Run 'with no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory' in packages/ci-actions/src/release-notes/util.test.js. Scoped to the no-`only` case on purpose: with an `only` filter parseReleaseNotes returns a strict subset, which AC-8 asserts separately.",
         "source": "TR-2",
         "verify": "test"
-      }
-    },
-    {
-      "id": "AC-3",
-      "was": {
-        "id": "AC-3",
-        "check": "Running the release-notes gate against a notes directory that does not exist prints a single line beginning '::error::cannot read ' and naming the directory, and exits 1. It does not print a Node stack trace.",
-        "how_to_verify": "Run 'reports a directory it cannot read as one \"cannot read …\" failure string naming that path instead of throwing' in packages/ci-actions/bin/release-notes-check.test.mjs. For the process shape, run node packages/ci-actions/bin/release-notes-gate.mjs against a directory moved aside and expect exit 1 and one ::error:: line; today it prints a nine-line ENOENT stack.",
-        "verify": "test"
       },
       "now": {
-        "id": "AC-3",
-        "check": "Running the release-notes gate against a notes directory that does not exist prints a single line beginning '::error::cannot read ' and naming the directory, and exits 1. It does not print a Node stack trace. Scoped to what the number of lines depends on: a missing or unreadable TOP-LEVEL directory yields exactly one 'cannot read <dir>' string, while an unreadable SUBdirectory yields its own 'cannot read <subdir>' string alongside every failure of the notes outside it -- so the run prints exactly one line only when those other notes are clean. That second shape is AC-10's case and both halves are measured there.",
-        "how_to_verify": "Run the collectFailures case 'still returns exactly one cannot read string naming the directory for a top-level directory that does not exist' in packages/ci-actions/bin/release-notes-check.test.mjs. For the process shape, run node packages/ci-actions/bin/release-notes-gate.mjs against a directory moved aside and expect exit 1 and one ::error:: line. For the subdirectory half, run AC-10's case and count the lines rather than assuming one.",
-        "source": "TR-3",
-        "verify": "test"
-      }
-    },
-    {
-      "id": "AC-4",
-      "was": {
-        "id": "AC-4",
-        "check": "Running release-notes-check.mjs in a repository whose upcoming-release-notes/ does not exist prints a line beginning '::error::Cannot read upcoming-release-notes/: ' and exits 1, rather than a stack trace.",
-        "how_to_verify": "Run 'drives release-notes-check.mjs as a subprocess against a repository whose upcoming-release-notes/ has been removed, and asserts exit 1 with one \"::error::Cannot read upcoming-release-notes/: \" line and no stack trace' in packages/ci-actions/bin/release-notes-check.test.mjs. The case reuses the suite's existing runCheck(dir) subprocess harness, which already runs the script with cwd set to a throwaway repository and unsets GITHUB_STEP_SUMMARY. Assert only the stable prefix; the ENOENT text after it varies by platform.",
-        "verify": "test"
-      },
-      "now": {
-        "id": "AC-4",
-        "check": "Running release-notes-check.mjs in a repository whose upcoming-release-notes/ does not exist prints a line beginning '::error::Cannot read upcoming-release-notes/: ' and exits 1, rather than a stack trace.",
-        "how_to_verify": "Run 'drives release-notes-check.mjs as a subprocess against a repository whose upcoming-release-notes/ has been removed' in packages/ci-actions/bin/release-notes-check.test.mjs. Note that this criterion is about the message and exit code with GITHUB_STEP_SUMMARY UNSET; AC-11 is the same guard under the runner's real environment.",
-        "source": "TR-4",
+        "id": "AC-2",
+        "check": "With no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory: given a tmpdir fixture holding top.md, sub/deep.md, a subdirectory README.md and a top-level README.md, the two agree element for element -- both notes present, and BOTH README.md files absent from both. The rule the criterion states is that a README.md documents the directory holding it and is not a release note at any depth, so a subdirectory's README is excluded on the same grounds as the top-level one. (Corrected from the previous revision, which required sub/README.md to be present in both lists while also requiring the top-level README.md to be absent -- the same filename treated as a note at depth 1 and as a non-note at depth 0, with no rule offered for the difference. Applying it as written aborts the docs build, which base commit 96e810c9 does not.)",
+        "how_to_verify": "Run 'with no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory' in packages/ci-actions/src/release-notes/util.test.js, and read the assertion rather than only its result: the two arrays must match element for element with sub/README.md absent from both. Scoped to the no-`only` case on purpose: with an `only` filter parseReleaseNotes returns a strict subset, which AC-8 asserts separately.",
+        "source": "TR-2",
         "verify": "test"
       }
     },
@@ -626,14 +579,15 @@
       "id": "AC-5",
       "was": {
         "id": "AC-5",
-        "check": "The @actual-app/ci-actions unit suite writes nothing inside upcoming-release-notes/: the nested-note case builds its fixture under the system temporary directory, and no qa-nested directory exists in the repository's notes directory afterwards, so a vitest process killed mid-run cannot leave a fixture that fails every later run.",
-        "how_to_verify": "Run 'leaves no qa-nested directory in the real upcoming-release-notes/ after the suite's nested-note case, because the fixture is built under os.tmpdir()' in packages/ci-actions/bin/release-notes-check.test.mjs, and run the full package suite (yarn workspace @actual-app/ci-actions run test) then `git status --porcelain -- upcoming-release-notes/` — expect empty output. The kill path needs no separate procedure: the property being asserted is that no repository path is written at all, so there is nothing left for a kill to strand.",
+        "check": "The @actual-app/ci-actions unit suite writes nothing inside upcoming-release-notes/: the nested-note case builds its fixture under the system temporary directory, and no qa-nested directory exists in the repository's notes directory afterwards.",
+        "how_to_verify": "Run the full package suite then `git status --porcelain -- upcoming-release-notes/` -- expect empty output. The new chmod-000 and malformed-note fixtures also live under os.tmpdir() and restore their permissions in a finally.",
+        "source": "TR-5",
         "verify": "test"
       },
       "now": {
         "id": "AC-5",
         "check": "The @actual-app/ci-actions unit suite writes nothing inside upcoming-release-notes/: the nested-note case builds its fixture under the system temporary directory, and no qa-nested directory exists in the repository's notes directory afterwards.",
-        "how_to_verify": "Run the full package suite then `git status --porcelain -- upcoming-release-notes/` -- expect empty output. The new chmod-000 and malformed-note fixtures also live under os.tmpdir() and restore their permissions in a finally.",
+        "how_to_verify": "Run the full package suite then `git status --porcelain -- upcoming-release-notes/` -- expect empty output. The new chmod-000, malformed-note and throwaway-git-repository fixtures also live under os.tmpdir() and restore their permissions in a finally. The git-repository case in particular must use `git -c user.email=... -c user.name=...` rather than `git config`, and must build its repository under os.tmpdir().",
         "source": "TR-5",
         "verify": "test"
       }
@@ -642,14 +596,15 @@
       "id": "AC-6",
       "was": {
         "id": "AC-6",
-        "check": "release-notes-gate.mjs exports exactly listNotePaths and collectFailures; neither validateNote nor main carries the export keyword, and no dir parameter exists that no caller supplies — the nested-note case passes a temporary directory to collectFailures and the new util.test.js cases pass one to listNotePaths.",
-        "how_to_verify": "grep -n '^export' packages/ci-actions/bin/release-notes-gate.mjs — expect exactly two lines, listNotePaths and collectFailures. grep -rn \"from './release-notes-gate.mjs'\" packages/ — expect exactly one line, the import in release-notes-check.test.mjs. Do NOT grep for the bare string 'release-notes-gate' across packages/: it also matches the lage wiring in packages/ci-actions/package.json and two assertions inside that same test file, and this plan leaves all three untouched. Note the pre-existing argument-less listNotePaths() and collectFailures() calls at release-notes-check.test.mjs:236 and :240 stay argument-less on purpose — the non-empty-set guard depends on them reading the real directory.",
+        "check": "release-notes-gate.mjs exports exactly listNotePaths and collectFailures; neither validateNote nor main carries the export keyword, and no dir parameter exists that no caller supplies.",
+        "how_to_verify": "grep -n '^export' packages/ci-actions/bin/release-notes-gate.mjs -- expect exactly two lines. This attempt adds a second PARAMETER to the exported listNotePaths; it must not add a third export.",
+        "source": "TR-6",
         "verify": "test"
       },
       "now": {
         "id": "AC-6",
         "check": "release-notes-gate.mjs exports exactly listNotePaths and collectFailures; neither validateNote nor main carries the export keyword, and no dir parameter exists that no caller supplies.",
-        "how_to_verify": "grep -n '^export' packages/ci-actions/bin/release-notes-gate.mjs -- expect exactly two lines. This attempt adds a second PARAMETER to the exported listNotePaths; it must not add a third export.",
+        "how_to_verify": "grep -n '^export' packages/ci-actions/bin/release-notes-gate.mjs -- expect exactly two lines. This attempt adds a new export to src/release-notes/util.mjs and none to the gate, so the count here is unchanged.",
         "source": "TR-6",
         "verify": "test"
       }
@@ -658,14 +613,15 @@
       "id": "AC-7",
       "was": {
         "id": "AC-7",
-        "check": "The gate's failure report order is deterministic across runs and unaffected by the host locale: two notes failing at once always report in the same order, and that order is UTF-16 code-unit order, not locale-alphabetical.",
-        "how_to_verify": "Run 'returns paths in the default sort order, so the report order does not shift with the filesystem or the host locale' in util.test.js. End to end: run the gate under LC_ALL=C and LC_ALL=en_US.UTF-8 against the same failing fixtures and confirm the ::error:: lines appear in the same order.",
+        "check": "The gate's failure report order is deterministic across runs and unaffected by the host locale: two notes failing at once always report in the same order, and that order is UTF-16 code-unit order, not locale-alphabetical. The 'cannot read' entries for unreadable directories are covered by the same rule and must not follow the order readdir happened to return them in.",
+        "how_to_verify": "Run the sort-order case in util.test.js, then run the gate under LC_ALL=C and LC_ALL=en_US.UTF-8 against the same failing fixtures. Build a fixture holding two chmod-000 subdirectories created in one order and then in the reverse order, and confirm the two 'cannot read' lines come back in the same order both times.",
+        "source": "TR-7",
         "verify": "test"
       },
       "now": {
         "id": "AC-7",
         "check": "The gate's failure report order is deterministic across runs and unaffected by the host locale: two notes failing at once always report in the same order, and that order is UTF-16 code-unit order, not locale-alphabetical. The 'cannot read' entries for unreadable directories are covered by the same rule and must not follow the order readdir happened to return them in.",
-        "how_to_verify": "Run the sort-order case in util.test.js, then run the gate under LC_ALL=C and LC_ALL=en_US.UTF-8 against the same failing fixtures. Build a fixture holding two chmod-000 subdirectories created in one order and then in the reverse order, and confirm the two 'cannot read' lines come back in the same order both times.",
+        "how_to_verify": "Run the sort-order case in util.test.js -- its witness is now sub/Beta.md ahead of sub/alpha.md, which is code-unit order and the reverse of alphabetical order, so a locale-aware sort would fail it. Then run the gate under LC_ALL=C and LC_ALL=en_US.UTF-8 against the same failing fixtures, and build a fixture holding two chmod-000 subdirectories created in one order and then in the reverse order, confirming the two 'cannot read' lines come back in the same order both times.",
         "source": "TR-7",
         "verify": "test"
       }
@@ -675,13 +631,14 @@
       "was": {
         "id": "AC-8",
         "check": "The `only` filter matches the relative path, which is how release-notes-generate.mjs calls it: given a fixture holding top.md and sub/deep.md, only = ['sub/deep.md'] selects the nested note alone, and only = ['deep.md'] selects nothing.",
-        "how_to_verify": "Run the two filter cases in packages/ci-actions/src/release-notes/util.test.js. Kept separate from AC-2's equality claim because with an `only` filter parseReleaseNotes returns a strict subset of listNotePaths, not an equal set — that is the filter working, not the two disagreeing.",
+        "how_to_verify": "Run the two filter cases in packages/ci-actions/src/release-notes/util.test.js.",
+        "source": "TR-8",
         "verify": "test"
       },
       "now": {
         "id": "AC-8",
         "check": "The `only` filter matches the relative path, which is how release-notes-generate.mjs calls it: given a fixture holding top.md and sub/deep.md, only = ['sub/deep.md'] selects the nested note alone, and only = ['deep.md'] selects nothing.",
-        "how_to_verify": "Run the two filter cases in packages/ci-actions/src/release-notes/util.test.js.",
+        "how_to_verify": "Run the two filter cases in packages/ci-actions/src/release-notes/util.test.js. Note that AC-13 changes where the `only` list is BUILT, not what it matches: it is still a set of paths relative to the notes directory.",
         "source": "TR-8",
         "verify": "test"
       }
@@ -781,5 +738,256 @@
       "run": "37297420810",
       "at": "2026-10-05T10:56:58.228Z"
     }
+  },
+  "validated_work_order": {
+    "issue": 99,
+    "version": 3,
+    "kind": "bug",
+    "understanding": "THE PREVIOUS ATTEMPT'S DIAGNOSIS WAS RIGHT ABOUT ITS OWN THREE BUGS AND WRONG ABOUT THE PREMISE UNDERNEATH THEM. BUG-1, BUG-2 and BUG-3 are genuinely fixed and all eleven criteria passed. But that attempt rested on one thing it never examined: it took 'README.md is excluded only at the top level' from selectReleaseNotePaths as a settled design rule, asserted in its own words that a nested README.md being validated as a note was 'the correct outcome of that shared rule, not a bug to route around', and then wrote that rule into AC-2 and into a test asserting sub/README.md IS a release note. It was not a design rule. It was an artefact of a flat notes directory: before this PR every note sat at the top level, so 'the top-level README' and 'a README' were the same set and the string comparison was indistinguishable from the sane rule. The recursive walk separated those two sets and nothing reconciled them. QA's regression is that separation, nothing else.\n\nAC-2 IS THEREFORE THE ONE CRITERION I AM CORRECTING, and I am correcting it on its own internal contradiction rather than on the implementation. AC-2 asserts that a top-level README.md is absent from both lists -- which is it stating the rule 'a README is not a release note' -- and in the same sentence requires sub/README.md to be present. Same basename, same file kind, differing only in depth, with no rule offered for the difference. Read by the rule AC-2 itself states, sub/README.md must be absent. What applying the criterion as written produces is measured: base commit 96e810c9 builds the changelog on that fixture and ff4e8a40 aborts it. AC-2 keeps its id, its position and its parity rule; only the worked example flips, from 'sub/README.md present' to 'both READMEs absent'. I want to be explicit about what this is not: it is not a criterion rewritten to accommodate a defect. The code is wrong here and the criterion was right to say a README is not a note -- the code stopped obeying a rule it had always stated.\n\nI reproduced the mechanism myself rather than reasoning from QA's error string. I extracted the PR's own listNotePaths verbatim out of ff4e8a40 and ran it against a tmpdir fixture: it returns ['qa-nested/README.md','qa-nested/real.md','top.md'] -- the README admitted as a note. The base commit's parseReleaseNotes could not produce that path at all, because it read one flat level with `f !== 'README.md'` and there was no subdirectory to descend into. From the admitted README the abort follows deterministically through code I read rather than ran: matter() yields no authors key, and this PR's own Array.isArray guard (the BUG-1 fix) throws naming it. QA measured the end of that chain, including that the base commit exits 0 and this one exits 1.\n\nThe escalation matters more than the crash and it is why this is a must-fix rather than a note: the gate names that README 'is missing a category', 'is missing authors', 'body should contain exactly one line'. A contributor who obeys satisfies the gate, and the README is then published as the changelog entry '- What lives in this directory. - thanks @alice' and unlinked by release-notes-generate.mjs:264, which iterates the same files array -- so a README is credited to a person and destroyed, and the deletion propagates to master.\n\nSECOND FINDING, and I am fixing it here rather than deferring it. QA recorded BUG-5 as introduced_by_pr: false and suggested filing it separately. Two reasons not to: this pipeline's agents must not create GitHub issues, so 'file it separately' means the finding is lost; and the mechanism is one this PR widens rather than creates. release-notes-generate.mjs:120-127 builds its `only` list from `git ls-tree -r --name-only` with no -z, so git quotes and octal-escapes any path that needs it and the quoted string can never equal the walked path. I measured both shapes in a throwaway repository: without -z, sub/café.md comes back as \"upcoming-release-notes/sub/caf\\303\\251.md\" and is dropped from the release; with -z all notes come back verbatim. This is the same hazard selectReleaseNotePaths already documents and handles one caller over, and this PR is what routes nested notes through that filter.",
+    "root_cause": "The README exclusion was written for a flat notes directory, so it is a rule about the TOP LEVEL rather than about READMEs, and the recursive walk made that difference reachable. util.mjs:211 excludes `relative !== 'README.md'` and util.mjs:150 excludes `path !== `${notesDir}/README.md`` -- both keyed to depth 0, and both copied from a rule that was only ever correct because notes could not nest. listNotePaths is new in this PR and is the shared enumeration for the gate and the publisher, so a README.md inside a subdirectory is now enumerated as a release note by both: the gate validates it and tells the contributor to add front matter, and parseReleaseNotes admits it into `files`, which release-notes-generate.mjs:264 unlinks after publishing. Four participants enumerate upcoming-release-notes/ and the rule that keeps a README out of the note set lives in none of them as a statement about READMEs; it survives only as a string comparison that happened to be equivalent to the correct rule while the directory was flat. Independent and second: release-notes-generate.mjs derives its `only` filter from `git ls-tree -r --name-only` without -z, so git's path quoting reaches the filter argument and a note whose path needs quoting can never match the walked path -- latent at the top level before this PR, and widened to every nested note by the same walk.",
+    "approach": "Keep the three fixes QA confirmed (BUG-1's named throw, BUG-2's per-directory onError, BUG-3's terminating reportError) exactly as they are -- they are landed, measured and green. Add two repairs, one per finding, both of which make a participant obey a rule the others already state.\n\nBUG-4: state the README rule once, as a predicate, and apply it everywhere in util.mjs by BASENAME rather than by relative path. A module-private `isReleaseNoteName(name)` returning `name.endsWith('.md') && name !== 'README.md'` replaces the two depth-0 comparisons: in listNotePaths the test moves from `relative !== 'README.md'` to the entry's own `entry.name`, and in selectReleaseNotePaths it moves from the full path to the last '/'-separated segment. That is the entire behavioural change, and it is the change the previous attempt refused to make because it read the depth-0 comparison as intent. The gate needs no behavioural change at all: release-notes-gate.mjs delegates to listNotePaths, so it inherits the rule. Its doc comment does need correcting -- it currently states 'exclude README.md only at the top level', which is the sentence that made this look intentional -- and so does the matching comment in util.mjs. Per this repository's own convention that a comment must describe the state of the code four lines below it, both are corrected in this change rather than left to rot into the next follow-up ticket.\n\nBUG-5: extract the ls-tree invocation into `export async function listNotePathsFromGitRef(ref, notesDir)` in util.mjs, running `git ls-tree -rz --name-only <ref> -- <notesDir>` through the promisified execFile already imported at the top of that file, splitting stdout on NUL, dropping empty fields, stripping the `${notesDir}/` prefix and applying the same isReleaseNoteName predicate. release-notes-generate.mjs calls it in place of its inline ls-tree. Extracting it rather than editing the flag in place is deliberate: as an inline one-word change there is no test that can fail when someone drops the -z again, and QA had to reconstruct the `only` list by hand to find this at all. As a function over a real git repository the regression is directly falsifiable.\n\nThe real upcoming-release-notes/ is flat today -- no subdirectories at all -- so the README rule changes no published note and the generated docs page is byte-identical after this change.\n\nOne thing deliberately NOT done: AC-1 through AC-11 are carried forward with AC-2's example corrected. Every other criterion, including the scoping clauses added last round, is unchanged and still passes. AC-6's grep stays accurate because the new export goes into src/release-notes/util.mjs, not into release-notes-gate.mjs, which keeps exactly its two.",
+    "reproduced": true,
+    "files": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.mjs",
+        "action": "edit",
+        "change": "Add one module-private predicate near the other module-private helpers: `function isReleaseNoteName(name) { return name.endsWith('.md') && name !== 'README.md'; }`, and use it at every place this file decides what a release note is. (1) In listNotePaths, replace `entry.name.endsWith('.md') && relative !== 'README.md'` with `isReleaseNoteName(entry.name)` -- the test moves from the RELATIVE path to the entry's own BASENAME, which is the whole of BUG-4. (2) In selectReleaseNotePaths, replace `path?.endsWith('.md') && path !== `${notesDir}/README.md`` with a basename test that keeps the existing null-path behaviour (so a null path still yields no note). (3) Rewrite the doc comment above listNotePaths, which currently reads 'The walk is recursive, and README.md is excluded only at the top level ... only the directory's own README is the directory's README.' That sentence becomes false and is the sentence that made this look like a decision; state the rule as: a README.md documents the directory that holds it, at any depth, and is never a release note. (4) Rewrite the matching sentence in selectReleaseNotePaths' doc comment so it says the README filter is by basename at any depth and names the predicate. (5) Add `export async function listNotePathsFromGitRef(ref, notesDir)`: run `git ls-tree -rz --name-only <ref> -- <notesDir>` through the `execFile` already promisified at the top of this file, split stdout on NUL, drop empty fields, strip a leading `${notesDir}/` from each, apply isReleaseNoteName, and return the array in git's order (it is used as a filter set, not as a report). Document why -z is load-bearing in the same terms selectReleaseNotePaths already uses.",
+        "why": "BUG-4 and BUG-5 both live here. This is the only file that enumerates upcoming-release-notes/, so a rule stated once here reaches the gate, the publisher, the diff-based checker and the release generator at the same time."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-gate.mjs",
+        "action": "edit",
+        "change": "Comment only -- no executable statement changes and no export is added or removed. In the doc comment above the exported listNotePaths wrapper, replace the sentence 'the rule it encodes -- recurse into every subdirectory, and exclude README.md only at the top level -- has to be the same rule everywhere' with one that says a README.md is excluded at ANY depth, because it documents the directory holding it. Read the whole comment top to bottom while editing it: the conventions memory records nine merged PRs that existed only because a hand-written comment described the pre-fix state as the current one four lines above code that contradicted it.",
+        "why": "The gate's behaviour changes with no edit of its own -- it delegates to listNotePaths -- so leaving its comment asserting the old rule would make the file describe behaviour it no longer has."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-generate.mjs",
+        "action": "edit",
+        "change": "Add `listNotePathsFromGitRef` to the existing import from '../src/release-notes/util.mjs', and replace the whole inline block that runs `git ls-tree -r --name-only origin/${releaseBranch} -- upcoming-release-notes`, splits stdout on newline, filters blanks and maps `.replace(/^upcoming-release-notes\\//, '')` with a single `const releaseNoteFiles = await listNotePathsFromGitRef(`origin/${releaseBranch}`, 'upcoming-release-notes');`. The comment block immediately above it stays accurate and should be kept.",
+        "why": "BUG-5's -z fix, made testable. Left inline it is a flag nobody can regress-test; behind a function over a real git repository the case fails the moment the flag goes."
+      },
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "change": "Three fixture edits ripple through the file and every one of them must be made in the same pass, or the suite fails on counts rather than on the defect. (a) In FIXTURE_NOTES, change 'sub/README.md' from `note('A note that happens to be called README')` to `'# What lives in this directory\\n'` -- a real README with no front matter, which is what makes the reproduction faithful -- and add two valid notes 'sub/Beta.md' and 'sub/alpha.md'. (b) Rewrite the doc comment above FIXTURE_NOTES, which currently says a nested sub/README.md is 'excluded by neither, because only the top-level one is the README'. (c) Update the assertions that name sub/README.md: the listNotePaths exclusion case (rename to 'excludes a README.md at any depth', assert the exact array ['sub/Beta.md','sub/alpha.md','sub/deep.md','top.md'], keep the not.toContain checks for 'README.md', 'sub/README.md' and 'sub/notes.txt'); the sort case, whose `listNotePaths(dir)[0]` assertion changes from 'sub/README.md' to 'sub/Beta.md' -- Beta before alpha is UTF-16 code-unit order and the REVERSE of locale-alphabetical order, so the new witness pins AC-7's clause more sharply than the one it replaces; and the onError case's arrayContaining, from ['top.md','sub/deep.md','sub/README.md'] to ['top.md','sub/deep.md']. (d) The control case 'still publishes a note that has an authors list' asserts `notesByCategory.Bugfixes` toHaveLength(3); after the fixture change the published notes are top.md, sub/deep.md, sub/Beta.md and sub/alpha.md, so it becomes 4. Add new cases: one that parseReleaseNotes over the shared fixture RESOLVES and publishes the sibling notes rather than aborting on sub/README.md (the BUG-4 reproduction, which fails against ff4e8a40); one for listNotePathsFromGitRef over a real throwaway git repository (mkdtemp under os.tmpdir, `git init` with -c user.email/-c user.name so no global config is touched, four notes including 'sub/café.md', commit, then call it with 'HEAD') asserting sub/café.md comes back verbatim; and one for selectReleaseNotePaths asserting a diff row `A <notesDir>/sub/README.md` yields {added: [], changed: []}, which fails against ff4e8a40.",
+        "why": "BUG-4 had no test that could fail because the fixture made a nested README a VALID note and a test then asserted it was one. The fixture is the reason this shipped, so the fixture is what has to change."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.test.mjs",
+        "action": "edit",
+        "change": "Add one subprocess case in the existing 'release-notes-check' describe block. On a feature branch, mkdir -p upcoming-release-notes/sub inside repo.dir, write 'sub/README.md' as a plain readme with no front matter via repo.writeNote, write a valid note beside it via repo.writeNote, commit, push and start the branch, then run runCheck(repo.dir) and assert exit 0 with a line matching /Validated 1 release note\\(s\\)/. Against ff4e8a40 this case fails: the script selects the README from the diff and reports 'Release note upcoming-release-notes/sub/README.md is missing a category.' Note that repo.writeNote joins NOTES_DIR onto the name but does not create the subdirectory, so the mkdir has to be explicit.",
+        "why": "The gate's diff-based selection is a third enumeration of the notes directory. A unit case on selectReleaseNotePaths is not enough: this is the path a contributor's PR actually takes, and it is where the misleading advice is emitted."
+      },
+      {
+        "path": "upcoming-release-notes/fix-release-notes-check-error-reporting.md",
+        "action": "edit",
+        "change": "Replace the single body line with exactly: 'Fix the release notes check hiding some of a pull request's release note problems, crashing instead of reporting one, and treating a subdirectory's README as a release note'. Keep the front matter exactly as it is -- category Maintenance, authors [Shivam-Fl] -- and keep the body to ONE line: the release-notes gate tests `content.trim().includes('\\n')`, so a second paragraph fails the build.",
+        "why": "The repository's release-note gate requires a note describing this change, and this PR's scope grew after the note was written."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "cases": [
+          "reproduces BUG-4: parseReleaseNotes over a notes directory holding sub/README.md (a plain directory readme, no front matter) beside a valid note RESOLVES and publishes the sibling note, instead of aborting with 'has no usable `authors` list' -- VERIFIED to fail against ff4e8a40",
+          "listNotePaths excludes a README.md at ANY depth -- assert the exact array, and that neither 'README.md' nor 'sub/README.md' appears -- so the walk can no longer admit a subdirectory readme; VERIFIED to fail against ff4e8a40",
+          "reproduces BUG-5: listNotePathsFromGitRef over a real throwaway repository containing 'sub/café.md' returns that path verbatim, so a note git would otherwise quote still reaches the release. Fails the moment the -z flag is dropped",
+          "selectReleaseNotePaths drops a nested README from a diff row -- `A <notesDir>/sub/README.md` yields {added: [], changed: []} -- so the checker cannot tell a contributor to add front matter to a readme; VERIFIED to fail against ff4e8a40",
+          "still publishes every well-formed note in the fixture, so the README exclusion is not satisfied by excluding more than READMEs",
+          "still excludes the top-level README.md, the nested README.md and the non-markdown sub/notes.txt, pinning all three exclusions at once",
+          "returns paths in the default sort order with sub/Beta.md before sub/alpha.md, which is UTF-16 code-unit order and the reverse of locale-alphabetical order -- the witness AC-7 needs now that the old one is gone",
+          "every pre-existing case in this file still passes, including the two malformed-authors cases and the three sort and no-`only` cases"
+        ]
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.test.mjs",
+        "action": "edit",
+        "cases": [
+          "reproduces BUG-4 gate-side: a feature branch adding sub/README.md (no front matter) beside one valid note exits 0 and reports 'Validated 1 release note(s)' -- VERIFIED to fail against ff4e8a40, which exits 1 with 'sub/README.md is missing a category'",
+          "still refuses a diff that touches nothing under upcoming-release-notes/, so the new case is not satisfied by the empty-diff guard passing instead",
+          "still validates an edited note, not only an added one, so excluding README rows has not narrowed `changed` to additions",
+          "collectFailures over a fixture holding sub/README.md plus a broken sibling note reports ONLY the sibling's failures and says nothing about the README, which is the third enumeration agreeing with the other two",
+          "every pre-existing case in this file still passes unchanged, including the seventeen subprocess cases whose runCheck keeps GITHUB_STEP_SUMMARY unset and BASE_REF injected by default"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "A release note in a subdirectory of upcoming-release-notes/ reaches the published changelog: given a directory holding both top.md and sub/deep.md, parseReleaseNotes returns files containing 'sub/deep.md' and a notesByCategory entry whose text contains deep.md's body.",
+        "how_to_verify": "Not a browser surface -- release tooling with no screen. Run 'publishes a nested note's body and category into notesByCategory' in packages/ci-actions/src/release-notes/util.test.js.",
+        "source": "TR-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "With no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory: given a tmpdir fixture holding top.md, sub/deep.md, a subdirectory README.md and a top-level README.md, the two agree element for element -- both notes present, and BOTH README.md files absent from both. The rule the criterion states is that a README.md documents the directory holding it and is not a release note at any depth, so a subdirectory's README is excluded on the same grounds as the top-level one. (Corrected from the previous revision, which required sub/README.md to be present in both lists while also requiring the top-level README.md to be absent -- the same filename treated as a note at depth 1 and as a non-note at depth 0, with no rule offered for the difference. Applying it as written aborts the docs build, which base commit 96e810c9 does not.)",
+        "how_to_verify": "Run 'with no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory' in packages/ci-actions/src/release-notes/util.test.js, and read the assertion rather than only its result: the two arrays must match element for element with sub/README.md absent from both. Scoped to the no-`only` case on purpose: with an `only` filter parseReleaseNotes returns a strict subset, which AC-8 asserts separately.",
+        "source": "TR-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "Running the release-notes gate against a notes directory that does not exist prints a single line beginning '::error::cannot read ' and naming the directory, and exits 1. It does not print a Node stack trace. Scoped to what the number of lines depends on: a missing or unreadable TOP-LEVEL directory yields exactly one 'cannot read <dir>' string, while an unreadable SUBdirectory yields its own 'cannot read <subdir>' string alongside every failure of the notes outside it -- so the run prints exactly one line only when those other notes are clean. That second shape is AC-10's case and both halves are measured there.",
+        "how_to_verify": "Run the collectFailures case 'still returns exactly one cannot read string naming the directory for a top-level directory that does not exist' in packages/ci-actions/bin/release-notes-check.test.mjs. For the process shape, run node packages/ci-actions/bin/release-notes-gate.mjs against a directory moved aside and expect exit 1 and one ::error:: line. For the subdirectory half, run AC-10's case and count the lines rather than assuming one.",
+        "source": "TR-3",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "Running release-notes-check.mjs in a repository whose upcoming-release-notes/ does not exist prints a line beginning '::error::Cannot read upcoming-release-notes/: ' and exits 1, rather than a stack trace.",
+        "how_to_verify": "Run 'drives release-notes-check.mjs as a subprocess against a repository whose upcoming-release-notes/ has been removed' in packages/ci-actions/bin/release-notes-check.test.mjs. Note that this criterion is about the message and exit code with GITHUB_STEP_SUMMARY UNSET; AC-11 is the same guard under the runner's real environment.",
+        "source": "TR-4",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "The @actual-app/ci-actions unit suite writes nothing inside upcoming-release-notes/: the nested-note case builds its fixture under the system temporary directory, and no qa-nested directory exists in the repository's notes directory afterwards.",
+        "how_to_verify": "Run the full package suite then `git status --porcelain -- upcoming-release-notes/` -- expect empty output. The new chmod-000, malformed-note and throwaway-git-repository fixtures also live under os.tmpdir() and restore their permissions in a finally. The git-repository case in particular must use `git -c user.email=... -c user.name=...` rather than `git config`, and must build its repository under os.tmpdir().",
+        "source": "TR-5",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "release-notes-gate.mjs exports exactly listNotePaths and collectFailures; neither validateNote nor main carries the export keyword, and no dir parameter exists that no caller supplies.",
+        "how_to_verify": "grep -n '^export' packages/ci-actions/bin/release-notes-gate.mjs -- expect exactly two lines. This attempt adds a new export to src/release-notes/util.mjs and none to the gate, so the count here is unchanged.",
+        "source": "TR-6",
+        "verify": "test"
+      },
+      {
+        "id": "AC-7",
+        "check": "The gate's failure report order is deterministic across runs and unaffected by the host locale: two notes failing at once always report in the same order, and that order is UTF-16 code-unit order, not locale-alphabetical. The 'cannot read' entries for unreadable directories are covered by the same rule and must not follow the order readdir happened to return them in.",
+        "how_to_verify": "Run the sort-order case in util.test.js -- its witness is now sub/Beta.md ahead of sub/alpha.md, which is code-unit order and the reverse of alphabetical order, so a locale-aware sort would fail it. Then run the gate under LC_ALL=C and LC_ALL=en_US.UTF-8 against the same failing fixtures, and build a fixture holding two chmod-000 subdirectories created in one order and then in the reverse order, confirming the two 'cannot read' lines come back in the same order both times.",
+        "source": "TR-7",
+        "verify": "test"
+      },
+      {
+        "id": "AC-8",
+        "check": "The `only` filter matches the relative path, which is how release-notes-generate.mjs calls it: given a fixture holding top.md and sub/deep.md, only = ['sub/deep.md'] selects the nested note alone, and only = ['deep.md'] selects nothing.",
+        "how_to_verify": "Run the two filter cases in packages/ci-actions/src/release-notes/util.test.js. Note that AC-13 changes where the `only` list is BUILT, not what it matches: it is still a set of paths relative to the notes directory.",
+        "source": "TR-8",
+        "verify": "test"
+      },
+      {
+        "id": "AC-9",
+        "check": "A release note under upcoming-release-notes/ with no `authors` front-matter key -- or with an `authors` value that is not a list -- aborts the publish with an error naming that file by its path relative to the notes directory, instead of the publisher dying with 'Cannot read properties of undefined (reading map)'. A note that DOES have an authors list still publishes normally.",
+        "how_to_verify": "Run the two BUG-1 cases in the malformed-note describe block plus the control case. End to end: write upcoming-release-notes/qa-nested/noauthors.md with no authors key, then run packages/docs/scripts/generate-upcoming-release-notes.mjs -- expect a non-zero exit naming qa-nested/noauthors.md, not a TypeError, and NOT a silently omitted note. Confirm the case FAILS against d4684c80.",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-10",
+        "check": "When one subdirectory of upcoming-release-notes/ cannot be read, the gate reports that directory AND every other note's failures in the same run, so a contributor who fixes the unreadable directory and re-runs is not meeting a second, previously hidden failure for the first time. Scoped the same way as AC-3: a missing or unreadable TOP-LEVEL directory yields exactly one 'cannot read <dir>' string, while an unreadable SUBdirectory yields its own 'cannot read <subdir>' string alongside every failure of the notes outside it -- so the run prints exactly one line only when those other notes are clean.",
+        "how_to_verify": "Run the two collectFailures cases in release-notes-check.test.mjs. End to end: a throwaway notes dir holding a note with a bad category and a bot author plus a chmod-000 subdirectory must return the 'cannot read' entry naming the SUBDIRECTORY AND the note's two failures in one array -- at d4684c80 only the unreadable-directory message comes back. Then repeat with a dir holding a chmod-000 subdirectory and otherwise-VALID notes and count the lines: exactly one, which is what AC-3's scoping clause predicts and what the previous revision of this criterion wrongly denied. Both cases must SKIP under root.",
+        "source": "IAC-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-11",
+        "check": "With GITHUB_STEP_SUMMARY set -- which is every GitHub Actions run, and the environment the current unit harness deletes -- release-notes-check.mjs STOPS at its missing-notes-directory guard: exactly one '::error::Cannot read upcoming-release-notes/: ' line, no subsequent '::error::BASE_REF env var is not set' line, and exit 1. At d4684c80 the guard prints its error and execution continues into the BASE_REF check.",
+        "how_to_verify": "Run 'reproduces BUG-3: halts at the missing-notes-directory guard with GITHUB_STEP_SUMMARY set, as a runner has it'. The case MUST pass `BASE_REF: undefined` through runCheck's env-override parameter so the child has no BASE_REF at all -- runCheck injects BASE_REF by default, and with it left set the unfixed script prints one error line and the case passes vacuously. End to end: `GITHUB_STEP_SUMMARY=/tmp/s.md env -u BASE_REF node packages/ci-actions/bin/release-notes-check.mjs` -- expect exactly one ::error:: line and no BASE_REF line. Both env shapes matter: AC-4 covers the variable unset, this one covers it set.",
+        "source": "IAC-3",
+        "verify": "test"
+      },
+      {
+        "id": "AC-12",
+        "check": "A README.md anywhere under upcoming-release-notes/ is not a release note, and nothing in the release process treats one as one. Given a notes directory holding sub/README.md -- a plain directory readme with no release-note front matter -- beside a valid note in the same subdirectory: the docs changelog generator exits 0 and publishes the sibling note rather than aborting; the gate reports nothing whatever about the README; the README is never published as a changelog entry credited to a person; and it is never deleted from the tree, whether or not a contributor adds release-note front matter to it in answer to the gate. At ff4e8a40 the same fixture aborts the generator with 'Release note sub/README.md has no usable `authors` list in its front matter' where base commit 96e810c9 exits 0.",
+        "how_to_verify": "Run 'reproduces BUG-4' in packages/ci-actions/src/release-notes/util.test.js, the listNotePaths 'excludes a README.md at any depth' case, the selectReleaseNotePaths nested-README case, the new subprocess case in release-notes-check.test.mjs, and the collectFailures case. Then end to end, which is the only way to see the deletion half: in the checkout under test create upcoming-release-notes/qa-nested/README.md ('# What lives in this directory') and a sibling upcoming-release-notes/qa-nested/real.md holding a valid note, run `node --import=extensionless/register packages/docs/scripts/generate-upcoming-release-notes.mjs` -- expect EXIT=0. Then add category/authors front matter and a one-line body to that README, as the gate instructs, re-run, and confirm the README is still absent from the generated page AND that the file is still on disk. Finally confirm `git status --porcelain` is empty and remove the fixture.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-13",
+        "check": "Every note in the tree reaches the release, including one whose path git would otherwise quote: given a repository holding upcoming-release-notes/sub/café.md alongside other notes, the list of notes built from git for the release includes sub/café.md verbatim, so no note is silently dropped from a changelog. The same list built without NUL separation returns that path quoted and octal-escaped, which matches no walked path and drops the note with no warning.",
+        "how_to_verify": "Run 'reproduces BUG-5' in packages/ci-actions/src/release-notes/util.test.js, which builds a real throwaway repository and calls the function the release script calls. Independently, in a throwaway repository: run `git ls-tree -r --name-only HEAD -- upcoming-release-notes` and observe the quoted path, then `git ls-tree -rz --name-only HEAD -- upcoming-release-notes | cat -v` and observe the same path verbatim between NUL bytes. Both shapes must be shown, because the criterion is about which of the two the release uses.",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "yarn install -- node_modules is absent in a fresh checkout and every command below fails for that reason alone",
+      "yarn workspace @actual-app/ci-actions run test -- the floor at ff4e8a40 is 92 passing (17 in release-notes-check.test.mjs, 44 in util.test.js). All 92 pass today, so a green run at the new count is the floor and not the signal; the signal is the falsifiability step below",
+      "FALSIFIABILITY FIRST, before judging any fix: revert each source change in turn and record the failing run. (1) put `relative !== 'README.md'` back in listNotePaths -- the 'excludes a README.md at any depth' case and the parseReleaseNotes BUG-4 case must fail. (2) drop the `-z` from listNotePathsFromGitRef -- the sub/café.md case must fail. (3) restore `path !== `${notesDir}/README.md`` in selectReleaseNotePaths -- the nested-README diff case must fail. A suite that never went red proves nothing about this change",
+      "BUG-4 end to end, the half no unit test can show: in the checkout under test create upcoming-release-notes/qa-nested/README.md ('# What lives in this directory') beside a valid upcoming-release-notes/qa-nested/real.md, run `node --import=extensionless/register packages/docs/scripts/generate-upcoming-release-notes.mjs`, and expect EXIT=0 with the sibling note on the generated page. At ff4e8a40 the same fixture is EXIT=1 with 'no usable `authors` list'. Record the generated page, then restore it and remove the fixture",
+      "BUG-4's escalation half, which is worse than the crash: add category/authors front matter and a one-line body to that nested README, exactly as the gate instructs, re-run the gate (expect no mention of the README at all) and the docs generator (expect the README absent from the page). Then confirm the file is STILL ON DISK -- at ff4e8a40 it is published as a changelog entry credited to a person and unlinked by release-notes-generate.mjs:264. Remove the fixture and confirm `git status --porcelain` is empty",
+      "BUG-4 gate-side: `selectReleaseNotePaths` on the diff row `A upcoming-release-notes/sub/README.md` must yield {added: [], changed: []}, and a feature branch adding a nested README beside one valid note must make release-notes-check.mjs exit 0 with 'Validated 1 release note(s)' rather than telling the contributor the README is missing a category",
+      "BUG-5, both shapes side by side in one throwaway repository holding sub/café.md, sub/my note.md, sub/plain.md and a top-level README.md: `git ls-tree -r --name-only HEAD -- upcoming-release-notes` must show the accented note quoted and octal-escaped, and `git ls-tree -rz --name-only HEAD -- upcoming-release-notes | cat -v` must show the same path verbatim between NUL bytes. Then call the exported listNotePathsFromGitRef against that repository and confirm all three nested notes come back and no README does",
+      "AC-2 as corrected, read as a rule rather than as a pass: on a fixture holding top.md, sub/deep.md, sub/README.md and README.md, assert the walked and parsed arrays agree element for element AND that neither README.md nor sub/README.md appears in either. The parity claim and the exclusion are two separate things here; check both",
+      "Non-regression on the three bugs the last round fixed, since this revision rewrites the same two files: the malformed-authors cases still throw a named Error naming the relative path (AC-9), collectFailures still reports an unreadable subdirectory ALONGSIDE the failures outside it and exactly one string when those are clean (AC-3, AC-10), and the missing-directory guard still halts with GITHUB_STEP_SUMMARY set and BASE_REF deleted (AC-11) -- with that case still passing `BASE_REF: undefined`, since with BASE_REF left injected it passes vacuously",
+      "AC-7's sort clause with the new witness: the sort case must place sub/Beta.md before sub/alpha.md. Run it under LC_ALL=C and LC_ALL=en_US.UTF-8 and confirm the array is identical, since a locale-aware sort would put alpha first and fail the case",
+      "AC-6's grep: `grep -n '^export' packages/ci-actions/bin/release-notes-gate.mjs` -- still exactly two lines. The new export belongs to src/release-notes/util.mjs and must not appear here",
+      "git status --porcelain -- upcoming-release-notes/ -- expect empty apart from the intended edit to this PR's own release note. Every new fixture is created under os.tmpdir(); the throwaway git repository in particular must not be built inside the checkout",
+      "yarn lint and yarn typecheck -- note that @actual-app/ci-actions typecheck is SKIPPED (every file is .mjs), so lint is the only static gate on these files",
+      "yarn test from the repository root -- the release-notes gate runs as an uncached dependency of the ci-actions test task, so a malformed note fails the whole suite",
+      "These files are release tooling with no screen, so every case above is driven with node or a child process rather than a browser, and each should cite a saved exchange"
+    ],
+    "risks": [
+      ".github/scripts/count-points.mjs:300-302 carries its own copy of the rule and excludes only 'upcoming-release-notes/README.md', so after this change a PR whose only notes-directory addition is a NESTED README would still be awarded release-note points that no participant will ever publish. That file is under .github/**, which no ticket may change, so it is left alone and is called out here for a maintainer. Its glob does reach subdirectories, so this is a live inconsistency rather than a theoretical one.",
+      "The rule becomes 'a basename of README.md, at any depth'. A release note deliberately named README.md inside a subdirectory can no longer be published. The repository's convention is a descriptive slug or a numeric filename and no such file exists today, so nothing in the tree is affected.",
+      "After this change, a PR whose only change under upcoming-release-notes/ is a nested README is reported by release-notes-check.mjs as 'No release note added or modified under upcoming-release-notes/'. That is the correct outcome -- such a PR ships no user-facing note -- but the message reads as though nothing had been added. The message is left alone deliberately: it is about notes, and rewording it would be a claim about a case no criterion covers.",
+      "The new listNotePathsFromGitRef shells out to git from process.cwd(). The release script already ran that same ls-tree from the repository root, so the working directory it runs in does not change.",
+      "Three of util.mjs's four call sites now share one predicate, which is the point -- but it also means the previous depth-0 comparison is gone from the codebase entirely, so a reader grepping for the README rule finds a helper rather than a string. The doc comments name the helper.",
+      "The test-fixture edits touch counts in four unrelated cases (the array assertion, the sort witness, the onError arrayContaining, and the published-notes length). Missing one produces a count failure rather than a behavioural one, so a red suite on this change is more likely a missed edit than a broken fix -- check the diff before diagnosing.",
+      "Editing the existing release note is a MODIFIED status, which the gate accepts (its --diff-filter=AMR covers M), and it requires the body to stay exactly one line. A second paragraph fails the build."
+    ],
+    "out_of_scope": [
+      ".github/scripts/count-points.mjs's README filter (lines 300-302) is NOT changed: .github/** is reserved and no ticket may touch it. Aligning it with the walk needs the same basename rule in that file, and it additionally needs GitHub API credentials to exercise.",
+      "release-notes-generate.mjs is still NOT driven end to end. It needs a release branch, a version, a changelog slug, a remote and a GITHUB_TOKEN, and it writes into packages/docs/blog and packages/docs/docs/releases.md. BUG-5's construction is unit-tested against a real repository instead, which covers the part that was actually wrong; what stays unverified by execution is the unlink loop and whether it leaves an emptied subdirectory behind.",
+      "Windows path separators are NOT addressed. listNotePaths builds relative paths with a literal '/' while path.join produces '\\' on Windows, so a Windows checkout would produce 'sub\\deep.md' from the join. QA flagged this as unverified, this repository's CI is ubuntu-only, and no acceptance criterion claims Windows support.",
+      "The absolute filesystem path inside the 'cannot read <dir>' and 'Cannot read upcoming-release-notes/' messages is NOT changed. QA graded it a note rather than a defect: the message names the directory it was handed, because a fixed string would misreport the temporary directory the unit suite passes.",
+      "An unrecognised `category` in a nested note (parseReleaseNotes logs 'WARNING: Unrecognized category') is NOT changed. It is pre-existing behaviour unrelated to either finding, and no criterion covers it.",
+      "The three fixes carried forward from the previous attempt (BUG-1's named throw, BUG-2's onError callback, BUG-3's terminating reportError) are NOT reworked. QA measured all three as fixed on this branch and all eleven carried-forward criteria pass against the code as it stands."
+    ],
+    "evidence": [
+      "BUG-4's enumeration, reproduced by me against the PR's own code: I extracted listNotePaths verbatim out of ff4e8a40 (it depends only on node:fs and node:path, so it runs without node_modules) and called it on a tmpdir fixture holding qa-nested/README.md ('# What lives in this directory'), qa-nested/real.md, top.md and a top-level README.md. It returned [\"qa-nested/README.md\",\"qa-nested/real.md\",\"top.md\"] -- the subdirectory README enumerated as a release note.",
+      "Why the base commit cannot produce that: at 96e810c9 parseReleaseNotes reads one flat level with `(f.endsWith('.md') && f !== 'README.md' && ...)`. There is no subdirectory to descend into and no 'sub/README.md' string to compare, so the nested README was unreachable rather than mis-handled. Recursion is the whole difference.",
+      "The four enumeration sites, read in full at ff4e8a40: util.mjs:211 `entry.name.endsWith('.md') && relative !== 'README.md'`; util.mjs:150 `path?.endsWith('.md') && path !== `${notesDir}/README.md``; release-notes-gate.mjs delegating to listNotePaths; and .github/scripts/count-points.mjs:300-302, which is reserved and still carries its own copy of the depth-0 rule. Two of the three editable copies key on the relative path, one keys on the full repository path, and none states a rule about READMEs.",
+      "The deletion path, read rather than executed: release-notes-generate.mjs parses at line 146 into `{ notesByCategory, files }`, and line 264 runs `Promise.all(files.map(f => fs.unlink(join('upcoming-release-notes', f))))` over that same array. `files` comes from the walk, so anything the walk wrongly admits is unlinked after being published. QA measured this: following the gate's own advice, the nested README is published as a changelog entry credited to a person and deleted.",
+      "BUG-5, reproduced by me in a throwaway git repository holding sub/café.md, sub/my note.md, sub/plain.md and README.md. Without -z: `git ls-tree -r --name-only main -- upcoming-release-notes` returns \"upcoming-release-notes/sub/caf\\303\\251.md\" -- quoted and octal-escaped -- which cannot equal the walked path 'sub/café.md'. With -z the same command returns every path verbatim, NUL-separated, and splitting on NUL and stripping the notes-dir prefix yields [\"README.md\",\"sub/café.md\",\"sub/my note.md\",\"sub/plain.md\"]. A path containing a space is unaffected either way; only the non-ASCII path is quoted.",
+      "Scope of the change to published output: `find upcoming-release-notes -type d` returns only upcoming-release-notes itself -- there are no subdirectories in the real notes tree today, and the only README is the top-level one. So the README rule changes no currently published note and packages/docs/docs/upcoming-release-notes.md is unaffected.",
+      "QA's report qa-evidence/qa-evidence/qa-report.json, verdict fail on PR #105 at ff4e8a40, attempt 2: all eleven acceptance criteria pass and BUG-1, BUG-2 and BUG-3 are each confirmed fixed with a case that reproduces the old shape. Two new findings: BUG-4 major, introduced_by_pr true, reproducible always, with the base-versus-PR comparison in exchanges/BUG-4-comparison.txt (PR EXIT=1, base EXIT=0 on the identical fixture) and the escalation in exchanges/BUG-4-escalation.txt; and BUG-5 minor, introduced_by_pr false, reproducible always, in exchanges/T-18.txt.",
+      "The CI floor at ff4e8a40: @actual-app/ci-actions runs 92 tests across 6 files (17 in release-notes-check.test.mjs, 44 in util.test.js), all passing, and yarn lint reports 'All matched files use the correct format' over 2547 files.",
+      "What I could not execute: this checkout has no node_modules, so I did not run parseReleaseNotes or the vitest suite. BUG-4's abort is therefore established by running the real walk (above) plus reading the two statements it reaches (matter() yielding no authors key, and this PR's own Array.isArray guard throwing), with the end of the chain measured by QA; BUG-5 is established end to end by my own git measurement."
+    ],
+    "assumptions": [
+      "A file named README.md documents the directory that holds it, at any depth, and is never a release note. This is not a new premise -- it is the premise AC-2 already stated for the top-level README, and the code is what stopped obeying it.",
+      "The `only` list release-notes-generate.mjs builds is a filter set rather than a report, so applying the README predicate to it as well as to the walk changes no published note and keeps one rule in one place. The walk remains the authority on which paths are notes.",
+      "release-notes-generate.mjs runs from the repository root, which it already did for the ls-tree invocation this change replaces."
+    ],
+    "unknowns": [
+      "Whether any tooling outside this repository enumerates upcoming-release-notes/ with its own rule. count-points.mjs is the one instance found by reading this repository, and it is reserved; a consumer outside the repository cannot be checked from here.",
+      "Whether any contributor has ever added a README inside a subdirectory of upcoming-release-notes/. No subdirectory exists in the tree today, so the damage BUG-4 describes is prospective rather than already merged -- which is why this is a regression to fix rather than data to repair."
+    ],
+    "residual_risks": [
+      "release-notes-generate.mjs is still never executed end to end -- it needs a release branch, a version, a slug, a remote and a token, and it writes into packages/docs/blog and packages/docs/docs/releases.md. The unlink loop, and whether it leaves an emptied subdirectory behind after publishing a nested note, remain reasoned from reading the script rather than from running it.",
+      ".github/scripts/count-points.mjs still counts a nested README as a release note and still cannot be changed here, so after this fix that script disagrees with every other participant by construction. See risks.",
+      "The Windows path-separator disagreement between the walk's literal '/' and path.join's '\\' is unaddressed and unexercised: this runner is Linux and the repository's CI is ubuntu-only.",
+      "@actual-app/ci-actions has no typecheck coverage -- every file is .mjs and the task is skipped -- so none of these changes is checked by a type checker. Lint is the only static gate on them.",
+      "There is no browser surface anywhere in this change. Every criterion is verified by running node or a child process, which is a fact about the change rather than a gap in the plan, but it does mean QA's live-URL pass confirms only that the checkout under test is the PR and nothing more."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "QA's second option for BUG-4: keep README.md in the gate's enumeration and exclude subdirectory READMEs only in the publisher, so AC-2 stays exactly as written.",
+        "rejected_because": "It reopens the precise defect class this PR exists to close. A file the gate validates as a note and count-points counts would be silently dropped by the publisher -- validated, counted, published nowhere, credited to nobody, which is the original ticket's defect one layer down. It also leaves BUG-4's second consequence untouched: the gate would keep telling a contributor that their README is missing a category and authors. QA measured that message, and it is the one that leads to a README being credited to a person and unlinked."
+      },
+      {
+        "approach": "Fix the README rule in parseReleaseNotes only, and leave selectReleaseNotePaths' depth-0 comparison alone because the top-level README is the only one the checker has ever seen.",
+        "rejected_because": "The checker selects notes from a recursive git diff pathspec, so it already reaches subdirectories and already selects a nested README today. QA measured that half directly: it reports the README as a malformed note. Leaving it would fix the crash and keep the misleading advice that leads to the destructive escalation."
+      },
+      {
+        "approach": "Fix BUG-4 and file BUG-5 separately, as QA's hint suggested.",
+        "rejected_because": "This pipeline's agents must not create GitHub issues, so a separate issue would not get filed at all -- the finding would be lost rather than deferred. The fix is the same -z discipline selectReleaseNotePaths already documents one caller over, it is small, and this PR is what widens the blast radius by routing nested notes through that filter."
+      },
+      {
+        "approach": "Fix BUG-5 as an inline one-word edit to the ls-tree invocation in release-notes-generate.mjs, with no test.",
+        "rejected_because": "Nothing could fail, so the flag would be dropped again by the next person who tidies that line and nobody would find out until a note silently vanished from a release -- which is precisely how BUG-5 survived to this round. Extracting the call into a function over a real git repository makes the -z falsifiable, and it is also what lets AC-13 be verified at all: QA had to reconstruct this list by hand."
+      },
+      {
+        "approach": "Revert the recursive walk and return to a flat notes directory, keeping only the BUG-1/2/3 fixes.",
+        "rejected_because": "That deletes the ticket's headline change, which QA confirmed real: T-1 shows a nested note reaching notesByCategory and T-21 shows it on the generated docs page end to end through the real docs script. A subdirectory README is a consequence of allowing subdirectories, not an argument against them."
+      }
+    ],
+    "confidence": 88,
+    "confidence_rationale": "High on the mechanism and on the fix. I ran the PR's own listNotePaths, extracted verbatim from ff4e8a40, and it returns the subdirectory README as a note; the base commit's flat readdir cannot produce that string at all, which pins the regression to recursion rather than to anything else in the diff. I measured the git-quoting failure in both shapes myself, in a real repository. The real notes tree is flat, so the README rule changes no published note today, and the fix is a single predicate moved from a relative-path comparison to a basename comparison at three call sites in one file, with the gate inheriting it for free. AC-2's correction rests on the criterion's own internal contradiction -- it states the rule and then contradicts it in the same sentence -- and not on what the code does, which is the test the pipeline sets for changing a criterion. Not higher because this checkout has no node_modules, so parseReleaseNotes and the vitest suite were read and not run: the abort's first half is mine and the second half is QA's, and the fix has not been executed. Not higher also because count-points.mjs is left knowingly inconsistent, which is a real residual rather than an oversight.",
+    "mode": "committed"
   }
 }
