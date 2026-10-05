@@ -598,6 +598,21 @@
         "ci-verify"
       ],
       "prior_signatures": []
+    },
+    "triage": {
+      "verdict": "rerun",
+      "diagnosis": "Nothing in PR #91 is wrong. The ci stage went red on @actual-app/web typecheck with TS2306 \"File ... is not a module\" and TS2305 \"has no exported member\" against packages/loot-core files, but the PR's diff touches only packages/ci-actions/**, lage.config.js and one release note — nothing in loot-core, desktop-client, or any tsconfig. The cause is a write race in the repo's own typecheck setup: `yarn typecheck` is `lage typecheck` at concurrency 2, every package script is `tsgo -b`, and `tsgo -b` rebuilds each project's referenced projects into their shared outDir. Four of them (api, desktop-client, sync-server, desktop-electron) reference packages/loot-core, whose tsconfig pins outDir `@types` and tsBuildInfoFile `@types/.tsbuildinfo` — one directory, four concurrent writers. When two writers rebuild loot-core's declarations simultaneously, the reader resolves a half-written or truncated .d.ts and reports the source file as having no exports. The run log shows exactly that interleaving: `@actual-app/core typecheck` finished at 23:59:45.79 and `@actual-app/api` and `@actual-app/web` both started at 23:59:45.8, sharing loot-core's @types. I reproduced the identical error signature on the PR head (2 of 6 runs) and, decisively, on unmodified main (1 of 10 runs) with four concurrent typechecks, so it is pre-existing and not introduced here. A re-run of the same stage, unchanged, is expected to pass; the underlying outDir collision is a real repo bug but it is outside what this work order covers and does not need fixing to land this PR.",
+      "evidence": "failed-run.log:519-523 — the 5 digest findings, e.g. `File '/home/runner/work/actual-budget-sdlc/actual-budget-sdlc/packages/loot-core/src/types/models/simplefin.ts' is not a module` [TS2306] and `Module '\"@actual-app/core/types/models\"' has no exported member 'SyncServerSimpleFinAccount'` [TS2305]. failed-run.log:495,510-512 — `@actual-app/core typecheck success` at 23:59:45.79 then `@actual-app/api` and `@actual-app/web typecheck` both queued at 23:59:45.8, each running `tsgo -b`. packages/loot-core/tsconfig.json — `outDir: \"@types\"`, `tsBuildInfoFile: \"@types/.tsbuildinfo\"`; referenced by api, desktop-client, sync-server and desktop-electron, all of whose `typecheck` scripts are `tsgo -b`; lage.config.js sets `concurrency: 2`. Reproduction on the PR head (aa7b082) and on main with four concurrent typechecks: `RUN 1: methods.ts(18,3): error TS2305: Module '\"@actual-app/core/types/models\"' has no exported member 'NoteEntity'`, `RUN 3: src/queries/pagedQuery.ts(2,22): error TS2306: File '.../packages/loot-core/src/shared/async.ts' is not a module`, and on main `src/components/EditablePageHeaderTitle.tsx(5,30): error TS2306: File '.../packages/component-library/src/InitialFocus.ts' is not a module` — 3 of 16 total concurrent runs, 0 of 3 sequential `lage typecheck --no-cache` runs on the PR head."
     }
-  }
+  },
+  "triage_history": [
+    {
+      "at": "2026-10-05T00:51:01.301Z",
+      "stage": "ci",
+      "verdict": "rerun",
+      "confidence": 88,
+      "diagnosis": "Nothing in PR #91 is wrong. The ci stage went red on @actual-app/web typecheck with TS2306 \"File ... is not a module\" and TS2305 \"has no exported member\" against packages/loot-core files, but the PR's diff touches only packages/ci-actions/**, lage.config.js and one release note — nothing in loot-core, desktop-client, or any tsconfig. The cause is a write race in the repo's own typecheck setup: `yarn typecheck` is `lage typecheck` at concurrency 2, every package script is `tsgo -b`, and `tsgo -b`",
+      "run": "37245629014"
+    }
+  ]
 }
