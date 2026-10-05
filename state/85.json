@@ -146,6 +146,278 @@
   "stopped_at": null,
   "dispatched_stage": "plan",
   "validated_from": "plan",
-  "validated_at": "2026-10-05T18:06:16.388Z",
-  "validated_ac_changes": []
+  "validated_at": "2026-10-05T18:41:15.812Z",
+  "validated_ac_changes": [],
+  "validated_work_order": {
+    "issue": 85,
+    "version": 6,
+    "understanding": "`likePatternToRegex` (packages/loot-core/src/shared/likePattern.ts:16) turns every unescaped `%` into `.*` and every unescaped `?` into `.` with no limit, so a user-supplied value compiles into a regex whose `.test()` backtracks catastrophically against real names. The fix belongs where the pattern language is defined so every consumer inherits it, and the refusal direction is the substance of the ticket: the report's money invariant (fixed in PR #9) requires the axis never to be narrower than the query's result set, so a refused pattern must be handled OPENLY.\n\nThis version answers the two objections to v5. Both are upheld; both are corrected here.\n\n**Objection 1 — v5's boundary arithmetic was wrong, and its 'exact boundary pair' was 4-against-4.** v5 stated that the `contains` value `%oo%` compiles to `%%%oo%%`, 'exactly 5 unescaped wildcards', and must be refused. `contains` wraps the value as `'%' + condition.value + '%'` (budgetDataQuery.ts:249), so `%oo%` becomes `%%oo%%` — 4 unescaped wildcards, which under v5's own cap of 4 is ACCEPTED. The refused value v5 described is real, but the value that produces it is `%%oo%`, not `%oo%`. Every number in this version comes from running the counter (the loop that will actually live in likePattern.ts, counting only the unescaped `%` and `?` branches and skipping the escape branch) over the wrapped pattern, not from hand-counting. Results for the `contains` wrap `'%' + value + '%'`:\n\n  value `oo`     -> pattern `%oo%`      (len 4)  wildcards=2  ACCEPTED\n  value `%oo`    -> pattern `%%oo%`     (len 5)  wildcards=3  ACCEPTED\n  value `%%oo`   -> pattern `%%%oo%`    (len 6)  wildcards=4  ACCEPTED  <- accepted boundary\n  value `%oo%`   -> pattern `%%oo%%`    (len 6)  wildcards=4  ACCEPTED  <- v5 called this 5\n  value `%%oo%`  -> pattern `%%%oo%%`   (len 7)  wildcards=5  REFUSED   <- the value v5 meant\n  value `%%%%%%Z`-> pattern `%%%%%%%Z%` (len 9)  wildcards=8  REFUSED\n  value `x`*254  -> pattern (len 256)   ACCEPTED by length\n  value `x`*255  -> pattern (len 257)   REFUSED  by length\n\nThe boundary pair for QA is therefore `%%oo` (4 wildcards, ACCEPTED, narrows to Food plus the three synthetic rows) against `%%oo%` (5, REFUSED, keeps all 21) — 4 against 5, adjacent in the input, and neither degenerate. For the raw-pattern unit test the pair is `%%%%` (4, accepted) against `%%%%%` (5, refused). Every value any existing test already pins is inside the cap, also machine-checked: the largest are `contains '%'` and `contains '?'` and `contains 'o%'` at 3, `contains '\\\\%'` at 2 and `contains '_'` at 2, so no existing assertion changes meaning.\n\n**Objection 2 — v5's justification for rewriting the two comments in budgetDataQuery.ts was false, and the comments are accurate as they stand.** v5 claimed the `list === categories.list` identity shortcut at :151 'can never fire once a condition is being evaluated' and directed rewriting the :115-125 and :148-153 comments on that basis. It can fire, and it does. `filterCategoriesByConditions` returns its input by identity at three points — :176 (no conditions), :191 (conditions present but none category-related), :201 (an unsupported category condition) — and `narrowCategoriesByConditions` gates only on `canNarrowAxisByConditions` (:137), which does not require a supported category condition: a conjunction of any non-OR conditions returns true at :99-101 before the category fields are ever examined. So a filter on `notes` alone passes the gate, falls into the :191 early return, and the identity shortcut fires. budgetDataQuery.test.ts:456-459 and :463-476 already pin both of those cases by `toBe(axis)`. Those comments are therefore left alone, and the early returns they describe stay. What IS true and new is narrower: a REFUSED pattern is not an early return — it reaches `categories.filter(...)` at :291, which always allocates, so the shortcut does not fire, the rebuild at :158-166 runs, and its trailing `.filter(group => group.categories.length > 0)` drops a group that was already empty in the input. That is a single accurate sentence added to the existing :148-153 comment, not a rewrite, and it carries no money (an empty group holds no transactions).",
+    "root_cause": "`likePatternToRegex` compiles an unbounded number of `%`/`?` wildcards into a single regex source, so the regex engine's backtracking cost grows exponentially with the wildcard count and a user's filter value becomes a denial-of-service vector on the report category axis and on the SQL `$like` path. There is no bound anywhere in the pattern language definition, and because every consumer calls the same helper, none of them has a place to express a limit of its own.",
+    "approach": "Put the bound inside `likePatternToRegex` and make its refusal explicit in the type. Two module-private constants — `MAX_PATTERN_LENGTH = 256` and `MAX_UNESCAPED_WILDCARDS = 4` — are checked before compiling and inside the compile loop respectively. The counter increments only on the unescaped `%` and `?` branches, never on the escaped branch, so `\\%` costs 0 and a `contains` of `\\%` (pattern `%\\%%`) costs 2. Over-long patterns are refused before any regex is constructed. On refusal the function returns `null` instead of a `RegExp`, which pushes the direction question to every call site in the type system rather than leaving it to a default.\n\nThe cap of 4 is what the measurement supports and it changes nothing a user can currently observe: running the counter over every value any existing test pins gives a maximum of 3 (`contains '%'`, `contains '?'`, `contains 'o%'` all compile to 3), so the accepted region is untouched. The exact boundary pair for QA is `%%oo` (pattern `%%%oo%`, exactly 4, accepted, narrows to Food) and `%%oo%` (pattern `%%%oo%%`, exactly 5, refused, keeps all 21) — adjacent in the input, 4 against 5, neither degenerate. The same pair for the raw-pattern unit test is `%%%%` against `%%%%%`. The length boundary pair is a 254-character value (pattern length exactly 256, accepted) against a 255-character value (pattern length 257, refused).\n\nEvery consumer then refuses OPENLY, which is the money invariant: on the report axis `contains` keeps a category when `matcher === null || matcher.test(text)` and `doesNotContain` keeps one when `matcher === null ? true : !matcher.test(text)`; on the query side `unicodeLike` returns 1 for a cached `null`, so under `$like` every transaction comes back (equal to the open axis) and under `$notlike` none do (a strict subset of it). Under no operator can the axis end up narrower than what the query returned — which is the defect class fixed in PR #9, and the reason a naive 'return no match' refusal would be a money bug rather than a robustness win. `doesNotContain` in particular must return `true` on refusal; negating a match-everything result would drop every category and reintroduce exactly that bug. spending-spreadsheet.ts's direct call to `filterCategoriesByConditions` inherits the same direction for free, because on refusal the filter keeps every category and its `$oneof` is then a superset of the result set.\n\nThree smaller pieces come along because the change makes their exports dead or their comments incomplete. `canNarrowAxisByConditions` is unexported: it has exactly one caller (:137) and no test imports it (grep across packages/ returns two hits, both in budgetDataQuery.ts), with the reason recorded next to it, satisfying IAC-6's first branch. `REGEX_SPECIAL` loses its `export` for the same reason — its only in-repo uses are likePattern.ts:14, :25 and :35. The `// ? added here` scar is deleted while `// escaped wildcard - treat as literal character` stays. The two comments at :115-125 and :148-153 are NOT rewritten; they describe the three identity early returns accurately today and continue to after this change, and the new sentence added to the second says only what is genuinely different about a refusal — it is not an early return, so the grouped array is rebuilt and an already-empty group is dropped.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/shared/likePattern.ts",
+        "action": "edit",
+        "change": "Add two module-private constants, `MAX_PATTERN_LENGTH = 256` and `MAX_UNESCAPED_WILDCARDS = 4`. Change the signature to `export function likePatternToRegex(pattern: string): RegExp | null`. Return `null` when `pattern.length > MAX_PATTERN_LENGTH` before compiling anything. Inside the existing loop, add an `unescapedWildcards` counter incremented only on the unescaped `%` and `?` branches (never on the escaped branch, so `\\%` costs 0 and `%\\%%` costs 2) and `return null` once it exceeds the cap. Extend the module doc comment with the contract — a `null` means 'this pattern is refused, it was not compiled', and consumers must fail OPEN (keep every row) rather than closed, because the report axis may never be narrower than the query's result set — and record why the cap is 4 by pointing at the measured curve from the epic (3 wildcards 3 ms per category, 4 → 21 ms, 5 → 150 ms, 6 → 850 ms, and the axis predicate runs once per category per condition on every render; 200 compiles of one pattern total under a millisecond, so the cost is all in `.test()` and memoisation cannot fix it). Delete `export` from `REGEX_SPECIAL` (no consumers outside this file) and delete the `// ? added here` scar on the escaped-wildcard line, keeping `// escaped wildcard - treat as literal character`.",
+        "why": "This is the single definition of the LIKE pattern language that `UNICODE_LIKE` speaks, so a bound placed here is inherited by every consumer rather than re-implemented at each — which is what IAC-2 asks for. Returning `RegExp | null` instead of a `RegExp` makes the refusal direction a compile-time obligation at each call site instead of a silent default."
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/unicodeLike.ts",
+        "action": "edit",
+        "change": "Retype the LRU to `LRUCache<string, RegExp | null>` so a refusal is cacheable. Replace the `if (!cachedRegExp)` presence test with `=== undefined` — `null` is a legitimate cached value and the old falsy test would treat a cached refusal as a miss and recompile once per scanned row, which is the opposite of the point. Return 1 immediately for a cached `null`. On a cache miss, store whatever `likePatternToRegex` returned, `null` included.",
+        "why": "This is the SQL `$like` / `$notlike` path compiled in packages/loot-core/src/server/aql/compiler.ts:733-743, and it is registered as the `UNICODE_LIKE` SQLite function by BOTH backends (index.electron.ts:158 and index.ts:283), so it is reached from the desktop Electron app, the browser app, the API and the sync server. Returning 1 on refusal is what keeps the report axis from becoming narrower than the query's result set: under `$like` every transaction is returned, equal to an axis that kept everything; under `$notlike` none are returned, a strict subset of that axis. It is also what a transaction rule inherits (transaction-rules.ts:645-663), where the same choice means a refused `contains` matches every transaction and a refused `doesNotContain` matches none — the direction is set in one place so it cannot be got wrong per call site."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.ts",
+        "action": "edit",
+        "change": "In both LIKE branches (`contains` at :246-253 and `doesNotContain` at :258-265), hoist the compiled matcher out of the per-category callback so a refusal is decided once per condition rather than once per category, and handle `null` openly: `contains` keeps a category when `matcher === null || matcher.test(getNormalisedString(textValue))`; `doesNotContain` keeps one when `matcher === null ? true : !matcher.test(getNormalisedString(textValue))`. Drop `export` from `canNarrowAxisByConditions` (its only caller is :137 and grep across packages/ shows no test importing it) and record that reason in its doc comment, satisfying IAC-6's first branch.\n\nLeave the block comment at :115-125 and the note at :148-153 substantially as they are — they accurately describe the three identity early returns in `filterCategoriesByConditions` (:176, :191, :201) and this change does not falsify them. Add ONE sentence to the :148-153 note, stating what is genuinely different about a refusal: a refused pattern is not one of those early returns, so it reaches `categories.filter(...)` at :291, which always allocates, the identity check does not fire, the rebuild at :158-166 runs holding the same contents in new arrays, and its trailing `.filter(group => group.categories.length > 0)` drops a group that was already empty in the input — no money moves, since an empty group holds no transactions, and `contains '%'` already behaves this way on unmodified main. Do NOT delete or reword the existing sentences; budgetDataQuery.test.ts:456-459 and :463-476 constrain them by `toBe(axis)`.",
+        "why": "This is the report category axis, the money path. Refusing openly is the whole point: a fail-closed axis would hide categories whose transactions the query did fetch, losing their money from every total — the defect class fixed in PR #9. The two comments stay because they are right (a conjunction with no supported category condition, and the unsupported-condition fallback, both still reach the identity shortcut — v5's claim that it 'can never fire once a condition is being evaluated' was false and is dropped). spending-spreadsheet.ts:60 calls `filterCategoriesByConditions` directly and inherits this direction unchanged, so no edit is needed there."
+      },
+      {
+        "path": "upcoming-release-notes/bound-like-pattern-wildcards.md",
+        "action": "create",
+        "change": "Frontmatter `category: Bugfixes` and `authors: [Shivam-Fl]`, with a one-line body stating that a wildcard-heavy filter value can no longer hang a report and that a refused pattern now keeps every category rather than dropping them.",
+        "why": "The release-notes CI gate (.github/actions/release-notes/check/action.yml) refuses a merged PR without one, and 'Maintenance' is the wrong category — this changes user-visible behaviour of the report filter."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/shared/likePattern.test.ts",
+        "action": "edit",
+        "cases": [
+          "returns null for a pattern with eight unescaped wildcards ('%%%%%%%%')",
+          "returns null for a pattern of five unescaped wildcards and compiles one of exactly four ('%%%%' accepted, '%%%%%' refused) — the boundary pair, 4 against 5",
+          "returns null for a pattern longer than 256 characters and compiles one of exactly 256",
+          "does not count backslash-escaped wildcards toward the limit: 'a\\\\%b' and '50\\\\% off' compile with 0 counted wildcards"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/platform/server/sqlite/unicodeLike.test.ts",
+        "action": "edit",
+        "cases": [
+          "returns 1 for a refused pattern so a $like filter keeps every transaction",
+          "keeps returning 1 for a refused pattern without recompiling it per row (falsified by reverting the === undefined sentinel to !cachedRegExp)",
+          "still returns 1 for accepted all-wildcard patterns such as %%% and %?% (3 wildcards, inside the cap)"
+        ]
+      },
+      {
+        "path": "packages/loot-core/src/server/transactions/transaction-rules.test.ts",
+        "action": "edit",
+        "cases": [
+          "a contains rule whose value is refused by the wildcard bound matches every transaction, through the compiled $like filter",
+          "a doesNotContain rule whose value is refused matches no transaction, through the compiled $notlike filter",
+          "a contains rule whose value is refused by the length bound (255 characters) behaves the same as one refused by the wildcard bound",
+          "an ordinary contains rule is unaffected: a value with few wildcards still narrows as before"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/budgetDataQuery.test.ts",
+        "action": "edit",
+        "cases": [
+          "contains with a refused value keeps every category in the axis (value '%%oo%' -> pattern %%%oo%%, 5 wildcards)",
+          "doesNotContain with a refused value keeps every category in the axis — the direction that would drop every category if implemented as a negated match-everything",
+          "contains with exactly four unescaped wildcards ('%%oo' -> %%%oo%) still narrows the axis, and five ('%%oo%') does not — the boundary pair",
+          "a refused value is not an identity early return: the grouped array is rebuilt and a group that was already empty in the input is dropped, while a conjunction with no supported category condition still returns the axis by identity (guards the :148-153 comment against the false claim that the shortcut can never fire)"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+        "action": "edit",
+        "cases": [
+          "contains with a refused value renders every fetched category and totals match the served data",
+          "doesNotContain with a refused value renders every fetched category"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/spreadsheets/spending-spreadsheet.test.ts",
+        "action": "edit",
+        "cases": [
+          "a contains condition whose value is refused produces an $oneof over every category, a superset of the query result rather than a subset"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "source": "IAC-1",
+        "verify": "browser",
+        "check": "In the demo budget with a report filtered on `category contains %%%%%%Z`, the category axis keeps every category and the page stays interactive throughout — no spinner that outlives the settle, and no frozen table that needs a reload. Stated honestly: the demo budget has 16 categories (18 after the qa_script setup step), and an 8-wildcard pattern over 18 names costs single-digit milliseconds, so the multi-minute hang is NOT reproducible there. What the browser can falsify is that a heavy wildcard value is handled at all rather than hanging, and that the axis stays intact; the falsifiable structural form of the timing claim is AC-8.",
+        "how_to_verify": "Follow qa_script steps 1-3, then step 8. The sign of failure is not slowness alone: the row count collapses from the 21-row reference recorded in step 4 to the three synthetic rows."
+      },
+      {
+        "id": "AC-2",
+        "source": "IAC-2",
+        "verify": "test",
+        "check": "The bound lives inside `likePatternToRegex` and nowhere else: `packages/loot-core/src/shared/likePattern.ts` contains the wildcard-counting and length logic, and neither unicodeLike.ts nor budgetDataQuery.ts contains any — both only handle a `null` the helper returned.",
+        "how_to_verify": "`grep -rn 'MAX_UNESCAPED_WILDCARDS\\|MAX_PATTERN_LENGTH' packages/` returns hits in likePattern.ts and its test only. Read the diff of unicodeLike.ts and budgetDataQuery.ts and confirm each adds `null` handling (an `=== null` test, a `matcher === null` branch) and no counting."
+      },
+      {
+        "id": "AC-3",
+        "source": "IAC-3",
+        "verify": "browser",
+        "check": "A refused pattern keeps the axis OPEN. `categoryLists` unconditionally appends Uncategorized, Off budget and Transfers (ReportOptions.ts:396-401), so the observable failure signal is NOT an empty table. It is that the category list COLLAPSES TO THOSE THREE SYNTHETIC ROWS. With the 18-category QA budget and Split:Category a correct build renders 21 rows (18 + 3 synthetic); a fail-closed build renders 3. With Split:Group: correct renders 4 rows (3 groups + Uncategorized & Off budget); a fail-closed build renders 1.",
+        "how_to_verify": "qa_script steps 4 and 7: record the reference row count with NO filter applied (21 for Split:Category), then enter `%%oo%`. The axis must still show 21 rows and the same total. Three rows here means fail-closed. QA does NOT untick 'Show uncategorized' or 'Show off budget' to look for an empty table — those toggles filter transaction data, not axis rows (`filterHiddenItems` is applied to query data inside `recalculate`, while rows are built by mapping over `groupByList`), so they would not produce that signal."
+      },
+      {
+        "id": "AC-4",
+        "source": "IAC-4",
+        "verify": "browser",
+        "check": "Ordinary values filter exactly as today, and so do the escaped-wildcard values. `\\%` narrows to exactly `50% off` and `_` narrows to exactly `C_Sharp` ONLY in a budget where the qa_script setup step has created those two categories. In the un-augmented demo budget both narrow to the three synthetic rows — no category name there contains a literal `%` or `_` — and that is the CORRECT result there, not a failure; it is only indistinguishable from fail-closed if asserted without the setup step, which is what the previous plan did. Machine-checked: every value an existing test pins is at most 3 wildcards after the wrap, so the accepted region is unchanged by the cap.",
+        "how_to_verify": "qa_script steps 2-3 create `50% off` and `C_Sharp`; step 4 records the 21-row reference with no filter applied. Then `contains oo` keeps only Food; `contains \\%` keeps only `50% off`; `contains _` keeps only `C_Sharp`; `contains 50\\% off` keeps only `50% off`; `contains Food` keeps only Food. A wildcard `_` would have kept all 18 — one survivor is what proves it is literal. Each of those narrows to 4 rows (the survivor plus the three synthetic rows), which is distinct from the 21-row reference and from the 3-row failure signal."
+      },
+      {
+        "id": "AC-5",
+        "source": "IAC-5",
+        "verify": "test",
+        "check": "`REGEX_SPECIAL` is no longer exported and nothing outside the file imports it. Its only in-repo uses are likePattern.ts:14, :25 and :35.",
+        "how_to_verify": "`grep -rn 'REGEX_SPECIAL' packages/ --include=*.ts --include=*.tsx` returns hits only in packages/loot-core/src/shared/likePattern.ts. `grep -n 'export const REGEX_SPECIAL' ...` returns nothing. Note that packages/loot-core/package.json exposes ./shared/* as a direct file path, so unexporting has no barrel to update."
+      },
+      {
+        "id": "AC-6",
+        "source": "IAC-6",
+        "verify": "test",
+        "check": "`canNarrowAxisByConditions` is unexported, with the reason written next to it: its only caller is budgetDataQuery.ts:137 and no test imports it. If the implementer instead leaves it exported, no test may import it either — the two states are mutually exclusive and the reason must appear in the source.",
+        "how_to_verify": "`grep -rn 'canNarrowAxisByConditions' packages/` returns two hits, both in budgetDataQuery.ts (the definition and its call at :137), and none in any test file."
+      },
+      {
+        "id": "AC-7",
+        "source": "IAC-7",
+        "verify": "test",
+        "check": "The `// ? added here` comment is gone from the escaped-wildcard branch of likePattern.ts, and the descriptive comment `// escaped wildcard - treat as literal character` remains.",
+        "how_to_verify": "`grep -n 'added here' packages/loot-core/src/shared/likePattern.ts` returns nothing; `grep -n 'escaped wildcard' ...` returns the surviving line."
+      },
+      {
+        "id": "AC-8",
+        "source": "TR-2",
+        "verify": "test",
+        "check": "The bound is the measured one, pinned on BOTH sides of the boundary: a raw pattern of more than 4 unescaped `%`/`?` wildcards is refused and one of exactly 4 is accepted (`%%%%` compiles, `%%%%%` returns null); a pattern longer than 256 characters is refused and one of exactly 256 compiles. The count ignores backslash-escaped wildcards. Through the `contains` wrap `'%' + value + '%'` the same boundary reads: value `%%oo` -> `%%%oo%` = 4 accepted, value `%%oo%` -> `%%%oo%%` = 5 refused. This is the falsifiable form of IAC-1's timing claim, since the demo budget is too small to exhibit the hang.",
+        "how_to_verify": "`yarn workspace @actual-app/core run test:node -- src/shared/likePattern.test.ts`. Then raise MAX_UNESCAPED_WILDCARDS to 99 temporarily and confirm BOTH boundary cases change (the 5-wildcard refusal test fails, the 4-wildcard acceptance test still passes) — a bound that cannot fail is not a bound. Repeat with MAX_PATTERN_LENGTH raised to confirm the length cases fail."
+      },
+      {
+        "id": "AC-9",
+        "source": "TR-2",
+        "verify": "test",
+        "check": "Both LIKE operators refuse OPENLY, so a refused pattern can never make the report axis narrower than the query's result set: `contains` keeps every category and `doesNotContain` keeps every category. The second is the one that bites — `doesNotContain` must return `true` on a null matcher, not negate a match-everything result, which would drop every category and reintroduce the money bug fixed in PR #9. The boundary is pinned, not merely the direction: 4 wildcards still narrows and 5 does not.",
+        "how_to_verify": "`yarn workspace @actual-app/web run test -- src/components/reports/spreadsheets/budgetDataQuery.test.ts src/components/reports/spreadsheets/custom-spreadsheet.test.ts`, then read the two LIKE branches in budgetDataQuery.ts:246-265 and confirm `matcher === null ? true : !matcher.test(...)` is what is there. Also confirm spending-spreadsheet.ts:60 needs no edit: it calls `filterCategoriesByConditions` directly and its `$oneof` over every category is a superset, not a subset."
+      },
+      {
+        "id": "AC-10",
+        "source": "TR-2",
+        "verify": "test",
+        "check": "The query side is paired with the axis: `unicodeLike` returns 1 for a refused pattern, so under `$like` every transaction is returned (equal to an axis that kept everything) and under `$notlike` none are (a strict subset of that axis). The cached null is not recompiled per row, which is what the `=== undefined` sentinel exists for.",
+        "how_to_verify": "`yarn workspace @actual-app/core run test:node -- src/platform/server/sqlite/unicodeLike.test.ts` — the whole file, never `-t`, because .sdlc/memory/patterns/sqlite-platform-tests-share-process-state.md records that `-t` makes these vacuous. (That file lives in the node config, not the web one: vitest.config.ts only excludes index.test.ts and fs/index.test.ts.) Revert the sentinel to `!cachedRegExp` temporarily and confirm the no-recompile case fails."
+      },
+      {
+        "id": "AC-11",
+        "source": "TR-2",
+        "verify": "test",
+        "check": "The transaction-rules path is covered, not merely inherited: a rule whose `contains` or `doesNotContain` value the bound refuses compiles to a `$like` / `$notlike` filter that matches every transaction and no transaction respectively — the open direction, stated rather than assumed. This is the direction a rule inherits from the same helper, and it is the one the report's money invariant already requires.",
+        "how_to_verify": "`yarn workspace @actual-app/core run test:node -- src/server/transactions/transaction-rules.test.ts`, whole file. Confirm the refused-value cases FAIL if unicodeLike is changed to return 0 for a refusal."
+      },
+      {
+        "id": "AC-12",
+        "source": "TR-2",
+        "verify": "test",
+        "check": "The comments in budgetDataQuery.ts describe the CURRENT state and are not rewritten on a false premise. Specifically: the identity shortcut at :151 CAN still fire once a condition is being evaluated — `canNarrowAxisByConditions` returns true at :99-101 for any conjunction without checking fields, so a `notes`-only filter reaches the :191 early return and returns the axis by identity — and budgetDataQuery.test.ts:456-459 and :463-476 pin that by `toBe(axis)`. The only addition is one sentence recording that a REFUSED pattern is not an early return, so the grouped array is rebuilt and an already-empty group is dropped. The block at :115-125 keeps its sentences.",
+        "how_to_verify": "Read budgetDataQuery.ts:115-125 and :148-165 against the code below them: the three identity returns are at :176, :191 and :201, and the note names them. Confirm the diff to those comments is an addition, not a rewrite, and that `yarn workspace @actual-app/web run test -- src/components/reports/spreadsheets/budgetDataQuery.test.ts` still passes both `toBe(axis)` cases unchanged."
+      }
+    ],
+    "qa_script": [
+      "Start the app (`yarn start`), open it, and choose 'Don't use a server' then 'View demo' on the initial setup screen. Use the demo budget, NOT 'Start budgeting' — 'View demo' runs createTestBudget (mocks/budget.ts:746), which creates 16 categories in 3 groups (8 Usual Expenses, 5 Bills, 3 Income). Open Reports > Custom report.",
+      "SETUP — create two categories, so the escaped-wildcard steps below have something to narrow to. Go to the Budget page and hover any category group in the left sidebar; click the 'Add category' button (aria-label 'Add category') and type `50% off`, which saves as you type; press Escape. Do the same and type `C_Sharp`. This leaves 18 categories. Skip this step only to confirm the negative case: without it, `\\%` and `_` correctly narrow to the three synthetic rows, which is why a previous plan's assertion could not distinguish that from the bug.",
+      "In the Custom report sidebar turn ON 'Show empty rows' (ReportSidebar.tsx:493). It is required for every count below — `filterEmptyRows` returns `!showEmpty ? showHide : true` — so with it off, empty rows are hidden and the axis cannot be observed. Leave Split on its default 'Category'. Do NOT untick 'Show uncategorized' or 'Show off budget' to look for an empty table: those toggle transaction data, not axis rows.",
+      "REFERENCE — record the baseline with NO filter applied: do not add a filter row yet (a filter row with its value cleared is equivalent). Record the exact row list and count, and the total. With the 18-category budget and Split:Category this is 21 rows — the 18 categories plus Uncategorized, Off budget and Transfers, which `categoryLists` appends unconditionally (ReportOptions.ts:396-401). Every later step is compared against this. Do NOT use an ordinary value such as `Food` for the reference: `contains Food` NARROWS the axis to Food alone and yields 4 rows, which is not the reference.",
+      "ACCEPTED SIDE, ordinary — add a filter row (field `Category`, condition `contains`) and type `oo`. This compiles to the pattern `%oo%` (2 unescaped wildcards) and must be accepted. The axis narrows to Food alone plus the three synthetic rows: 4 rows, total for Food only.",
+      "ACCEPTED BOUNDARY — replace the value with `%%oo`. As a `contains` value this wraps to the pattern `%%%oo%`, which is exactly 4 unescaped wildcards, and must be accepted. Expect 4 rows (Food plus the three synthetic). If the axis stays at 21, the cap is not 4. Two neighbouring values that would NOT test this: `%oo` wraps to `%%oo%`, only 3 wildcards, and `%oo%` wraps to `%%oo%%`, also only 4 — the value that crosses the cap is the one with a third trailing `%`, below.",
+      "REFUSED BOUNDARY — replace the value with `%%oo%`. This wraps to `%%%oo%%`, exactly 5 unescaped wildcards, and must be refused. The axis keeps EVERY category: 21 rows, the same total as step 4. Three rows here means fail-closed. Note the contrast with the previous step: the two values differ by a single character, so this pair pins the cap at exactly 4 rather than merely somewhere below 5.",
+      "HEAVY WILDCARD — replace the value with `%%%%%%Z` (wraps to 8 wildcards). Same expectation: 21 rows, unchanged total, page responsive the whole time. If the row count collapses to 3 (Uncategorized / Off budget / Transfers, all 0.00), the refusal direction is wrong. Switch Split to Group and repeat: correct is 4 rows (3 groups plus Uncategorized & Off budget); a collapse to 1 means fail-closed.",
+      "OPERATOR MIRROR — change the condition to `does not contain`, leaving the value at `%%%%%%Z`. The axis must again keep all 21 rows. This is the direction that reintroduces the money bug if it is implemented as a negated match-everything: the symptom is a collapse to 3 rows, with the report totals reading 0.00 while transactions clearly exist.",
+      "ESCAPED WILDCARDS — back to `contains`. `\\%` wraps to `%\\%%`, only 2 wildcards because the escaped one is a literal, and must narrow to exactly `50% off` plus the three synthetic rows (4 rows). `_` must narrow to exactly `C_Sharp` plus three (4 rows) — one survivor proves `_` is a literal and not a SQL wildcard, since a real SQL `_` would have kept all 18. `50\\% off` narrows to exactly `50% off`. `?` narrows to all 21 (wraps to 3 wildcards, inside the cap). `%` narrows to all 21 (also 3).",
+      "NEGATIVE CONTROLS — `oo` keeps only Food (4 rows). `Food` keeps only Food (4 rows). These confirm ordinary values are untouched by the bound.",
+      "LENGTH BOUND — paste a value of 255 characters. Wrapped pattern length 257, refused by length. The axis must show the full 21 rows again, the same total as step 4. Then paste 254 characters: wrapped pattern length exactly 256, ACCEPTED, and because no category name contains that run of characters it narrows to the THREE SYNTHETIC ROWS. State this plainly rather than treating it as a pass or a failure: those three rows are byte-for-byte what a fail-closed build renders, so the 254-character observation CANNOT falsify the refusal direction. What the pair (255 chars -> 21 rows, 254 chars -> 3 rows) does establish is that the length bound exists and sits exactly between two adjacent input lengths. What pins acceptance at exactly 256 characters is AC-8's unit test, not this step.",
+      "RELOAD — press F5 with the report still open, and re-enter `%%%%%%Z`. Same 21 rows. This rules out a stale-bundle illusion.",
+      "CONSOLE — with the devtools console open, clear it, then step through 8, 9 and 12. No `pageerror` and no unhandled rejection. Console noise from dev-mode (HMR, plugin service) is expected and is not a failure."
+    ],
+    "risks": [
+      "The refusal direction is the money invariant. A fail-closed slip in budgetDataQuery.ts or unicodeLike.ts reintroduces the defect class fixed in PR #9, and it is invisible in a small budget because the categories it drops have no money. Mitigated by AC-9 and AC-10 (test) and by the mirror case in custom-spreadsheet.test.ts asserting the totals, not just the row count.",
+      "The transaction-rules direction is a silent behaviour change on a path this ticket does not otherwise touch, and the two operators invert: after this change a `contains` rule whose value the bound refuses matches EVERY transaction, and a `doesNotContain` rule whose value is refused matches NO transaction. This is the same open direction the report's money invariant requires, applied consistently, but it is worth naming because a rule that used to apply to a handful of payees would now apply to all of them. AC-11 pins it and the change is bounded by the fact that a value with five or more unescaped wildcards already matched almost everything before it.",
+      "The LRU sentinel. Reusing the existing `if (!cachedRegExp)` with a nullable value would treat a cached `null` as a miss and recompile per row — correctness-neutral but a per-row compile cost on exactly the pattern that is already slow to evaluate. AC-10 pins it.",
+      "No forbidden path is touched: `.sdlc/memory/**`, `docs/spec/**`, `docs/prd.md`, `docs/trd.md`, `docs/ui.md`, `.github/**` and `.sdlc/**` are all outside files[]. The only non-source file created is a release note under upcoming-release-notes/, which the CI gate requires.",
+      "No non-allowlisted host is required: the change is local code and unit tests, and QA runs against `yarn start` on localhost only.",
+      "The one-sentence addition to the :148-153 comment is a behavioural claim that is easy to get backwards. It must say the lists hold the same CONTENTS but are new arrays, that a refusal is not one of the identity early returns, and that an already-empty group is therefore dropped; stating that the identity shortcut can never fire would be false (AC-12) and would make a correct implementation look wrong to a later reader."
+    ],
+    "residual_risks": [
+      "The demo budget is too small to exhibit the original hang, so QA cannot confirm the seconds-to-minutes freeze directly; it can only confirm the axis stays open and the UI stays responsive. The magnitude claim rests on the epic's measured curve (recorded in the likePattern.ts doc comment) plus AC-8's structural test, not on the browser run.",
+      "A user on a budget with thousands of categories who currently relies on a 5-wildcard value will see it silently stop filtering — and in a transaction rule, silently start matching every transaction under `contains`. That is the intended trade (5 wildcards is 150 ms per category at the epic's measurement and grows from there) but it is a silent behaviour change on both surfaces, which is why the release note says a refused pattern keeps every category rather than dropping them, and why the QA script exercises the accepted side (`%%oo`, exactly 4 wildcards) alongside the refused side."
+    ],
+    "out_of_scope": [
+      "Re-measuring or bounding the separate `matches` regex in packages/loot-core/src/server/aql/compiler.ts, which already carries its own `condition.value.length <= 256` guard at budgetDataQuery.ts:277. The issue body excludes it explicitly.",
+      "Routing the Sankey and Budget Analysis graphs through the shared pattern module. Excluded by the issue body; it is issue #84.",
+      "Any change to the query-side compiler's regex handling beyond what unicodeLike needs for the nullable return.",
+      "Reworking the LIKE pattern language itself — collapsing consecutive wildcards, supporting `_`, or adding escaping for other characters. Those change matching semantics, not cost.",
+      "Batching or short-circuiting the category loop in budgetDataQuery.ts (e.g. breaking early once a group cannot match). The bound makes the cost acceptable; the loop is left as it is.",
+      "Surfacing a UI message when a filter value is refused. IAC-3 says the axis keeps every category; adding a banner would be a product decision this ticket does not make.",
+      "Giving the transaction-rules path its OWN refusal direction. It inherits the helper's, deliberately: one direction, chosen once, is what keeps the axis and the query from disagreeing. A separate rules-only sentinel would be a second decision to keep in sync, and it is not needed for correctness.",
+      "Changing the three identity early returns in filterCategoriesByConditions or the identity shortcut at :151. They are correct, they are pinned by existing tests, and a refusal does not need them to change — it needs them bypassed, which it already is."
+    ],
+    "kind": "feature",
+    "mode": "proposal",
+    "reproduced": true,
+    "confidence": 90,
+    "confidence_rationale": "Every claim about the source was checked at HEAD (a596d04f), and every number in this plan was produced by running the wildcard counter over the wrapped pattern rather than by hand — which is exactly the failure that got v5 rejected, so the two boundary values in the QA script are now one character apart and the script's figures can be re-derived by the implementer. The two objections were confirmed against the source before being conceded, and the second one is pinned by an existing test rather than by my reading. What is not verified end-to-end is the timing claim in a live browser against a large budget — the demo budget is too small to exhibit the hang — which is why AC-1 is written to what a browser can observe and AC-8 carries the falsifiable structural form. Confidence is below v5's 88-plus range on the remaining open risk, which is not arithmetic but scope: the transaction-rules direction is a newly-identified behaviour change on a surface this ticket does not otherwise touch. It is committed with tests and named as a risk rather than deferred, but a reviewer may reasonably want it split into its own ticket.",
+    "debate_summary": "Both objections against v5 were re-checked against the source at HEAD (a596d04f) rather than conceded from memory, and both are upheld and fixed in this version. Objection 1 (the boundary arithmetic): upheld — `contains` wraps the value as `'%' + value + '%'` (budgetDataQuery.ts:250), so v5's `%oo%` becomes `%%oo%%`, which is 4 unescaped wildcards and is ACCEPTED under v5's own cap of 4; the value that actually produces v5's stated 5 is `%%oo%` (-> `%%%oo%%`). v5's 'exact boundary pair' therefore tested 4 against 4 and pinned nothing. Corrected at all four sites the objection named (approach, qa_script step 7, understanding, debate_summary), and every figure is now machine-derived by running the counter over the wrapped pattern rather than hand-computed: the accepted boundary is `%%oo` (4, narrows to Food) and the refused boundary is `%%oo%` (5, keeps all 21), adjacent in the input; the raw-pattern unit-test pair is `%%%%` against `%%%%%`; and the length pair is a 254-character value (pattern 256, accepted) against 255 (pattern 257, refused), adjacent rather than 254 against 300. I also machine-checked every value any existing test pins — the maximum is 3, from `contains '%'`, `contains '?'` and `contains 'o%'` — so the cap changes no existing assertion, which is now AC-4's stated basis rather than an assertion. Objection 2 (the identity shortcut): upheld — `filterCategoriesByConditions` returns its input by identity at :176, :191 and :201, and `canNarrowAxisByConditions` returns true at :99-101 for any conjunction without checking fields, so a `notes`-only filter reaches the :191 early return and the shortcut at :151 does fire while a condition is being evaluated; budgetDataQuery.test.ts:456-459 and :463-476 pin both cases by `toBe(axis)`. v5's 'can never fire once a condition is being evaluated' was false and the rewrite it justified is dropped. The comments at :115-125 and :148-153 stay, with one added sentence stating the one thing that IS genuinely different about a refusal — that it is not an early return, so the grouped array is rebuilt and an already-empty group is dropped — which AC-12 checks against those two existing `toBe(axis)` tests. One smaller correction to the cap's justification: v5 argued 4 over 3 on the measurement alone, but the sharper reason is that 3 would reject `contains '%'` and `contains '?'`, which compile to exactly 3 and are pinned by existing tests; 4 is the smallest cap that leaves the accepted region provably untouched. Everything carried forward from v5 that the objections did not touch — the open refusal direction and its money argument, unicodeLike's `=== undefined` sentinel, the transaction-rules enumeration, the reference-row-count correction, and the demo-budget-too-small limitation — was re-verified against the source and stands.",
+    "alternatives_considered": [
+      {
+        "approach": "Memoise the compiled regex (extend the existing LRU in unicodeLike to the report axis too).",
+        "rejected_because": "It does not address the defect. The epic measured it: 200 compiles of one pattern total under a millisecond while testing it against real names costs minutes, so essentially all of the cost is in `.test()`. The issue body also lists memoisation-whose-only-purpose-is-recompiling as out of scope. (Memoisation is still worth keeping for the refused case, so it is retained — that is a different reason and AC-10 pins it.)"
+      },
+      {
+        "approach": "Bound the number of wildcards at each call site instead of inside the helper (a cap in budgetDataQuery.ts and another in unicodeLike.ts).",
+        "rejected_because": "Two implementations that can drift, and the next consumer inherits neither — which is precisely IAC-2's requirement that the bound live inside `likePatternToRegex` so every consumer inherits it. v4's own review established this; it still holds with spending-spreadsheet.ts as a fourth consumer of `filterCategoriesByConditions`."
+      },
+      {
+        "approach": "Fail CLOSED on a refused pattern: return no match, so the axis drops every category.",
+        "rejected_because": "It reintroduces the money bug fixed in PR #9. The axis would be narrower than the query's result set, so categories the query fetched would lose their money from every total. Verified against the source: `unicodeLike` returning 1 makes `$like` return everything (equal to the axis) and `$notlike` return nothing (a subset), so the axis is never narrower in either direction. This is also why the failure signal in AC-3 is a collapse to three rows rather than an empty table — the three synthetic rows render regardless."
+      },
+      {
+        "approach": "Rewrite the pattern to remove ambiguity (e.g. make consecutive `%` collapse to one `.*`).",
+        "rejected_because": "It changes matching semantics rather than bounding cost, and `%%%` already means 'match everything' and is pinned by existing tests in three files. It would still leave a `%` on each side of a long literal run. Out of the ticket's scope."
+      },
+      {
+        "approach": "Bound by pattern length only.",
+        "rejected_because": "Length is a necessary guard but not a sufficient one — 8 wildcards in 9 characters is the pathological case that hangs, while a 254-character run of `x` costs nothing. Both bounds are needed, and AC-8 pins both."
+      },
+      {
+        "approach": "Cap at 3 wildcards instead of 4.",
+        "rejected_because": "Defensible on the measurement (3 ms vs 21 ms per category), but it would reject `contains '%'` and `contains '?'`, which both compile to exactly 3 — the boundary that three existing tests in budgetDataQuery.test.ts already pin. 4 is the smallest cap that leaves the accepted region provably untouched."
+      },
+      {
+        "approach": "Have QA untick 'Show uncategorized' and 'Show off budget' to make an empty table observable, as an earlier review suggested.",
+        "rejected_because": "Checked against the source and it would not work, so following it would produce a QA script that fails for the wrong reason. `filterHiddenItems` is applied to query data inside `recalculate`, while the rows themselves are built by mapping over `groupByList`, and `categoryLists` appends the three synthetic categories unconditionally (ReportOptions.ts:396-401). Un-ticking those toggles zeroes the synthetic rows' amounts but does not remove them, and with 'Show empty rows' ON they still render. The correct failure signal is a collapse to three rows."
+      },
+      {
+        "approach": "Use an ordinary filter value (such as `Food`) to record the QA reference row count, as an earlier plan did.",
+        "rejected_because": "The action cannot produce the stated result. `contains Food` narrows the axis — `canNarrowAxisByConditions` returns true for a single non-OR category condition and `filterCategoriesByConditions` keeps only `%Food%` matches — so it yields 4 rows, not 21. The reference must be recorded with no filter applied."
+      },
+      {
+        "approach": "Use `%oo%` as the refused boundary value, as v5 did, describing it as 5 wildcards.",
+        "rejected_because": "The value wraps to `%%oo%%`, which is 4 unescaped wildcards and would be ACCEPTED under this change — the QA step would report the wrong verdict on a correct build. `%%oo%` (wrapping to `%%%oo%%`, 5) is the value that crosses the cap; it is one character longer than the accepted-side `%%oo`, so the pair is adjacent in the input."
+      },
+      {
+        "approach": "Delete the `list === categories.list` identity shortcut at :151, as v5's file entry implied was safe.",
+        "rejected_because": "It is not dead code. `canNarrowAxisByConditions` returns true at :99-101 for any conjunction without examining fields, so a `notes`-only filter passes the gate, falls into the :191 early return, and the shortcut fires; the unsupported-condition fallback at :201 does the same. budgetDataQuery.test.ts:456-459 and :463-476 assert `toBe(axis)` for both, so removing it would break existing tests and change behaviour for a legitimate empty group in an unfiltered report."
+      }
+    ],
+    "assumptions": [
+      "The demo budget is reached via 'Don't use a server' then 'View demo', which runs createTestBudget (mocks/budget.ts:746) and creates 16 categories in 3 groups (8 Usual Expenses, 5 Bills, 3 Income); the QA setup step adds 2, for 18, and does not add a group, so Split:Group stays 3 + 1.",
+      "`add category` in the budget sidebar saves as the user types, so no explicit Save click is needed.",
+      "The report under test is the Custom report (Reports > Custom report), reached from the report sidebar's filter control.",
+      "`getNormalisedString` is applied to the pattern on BOTH sides before it reaches `likePatternToRegex` — budgetDataQuery.ts:250 wraps and normalises, and aql/compiler.ts:735 normalises before emitting UNICODE_LIKE — so the length and wildcard counts agree between the axis and the query and a pattern cannot be refused on one side only.",
+      "Every wildcard and length figure quoted in this plan and in qa_script comes from running the counter that will live in likePattern.ts over the wrapped pattern, not from hand-counting. The run that produced them is reproduced in AC-8's how_to_verify, so the implementer can re-derive rather than trust."
+    ],
+    "unknowns": [
+      "Whether normalising before counting can change a pattern's length across the 256 boundary: `getNormalisedString` maps ß to ss and œ to oe, so a value of 254 ß characters normalises past 256 and is refused. This is the conservative direction and, per the assumption above, both call paths normalise identically, so the axis and the query still agree. It is a note for a maintainer rather than a risk to this change.",
+      "Whether any non-English locale normalises a category name to characters that change the wildcard count. No such mapping exists in normalisation.ts today, so this is likewise a maintenance note."
+    ]
+  }
 }
