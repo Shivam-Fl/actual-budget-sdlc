@@ -17,11 +17,14 @@ e2e file by running the project's own config directly:
 yarn workspace @actual-app/web exec tsc -p e2e/tsconfig.json --noEmit 2>&1 | grep '^e2e/'
 ```
 
-**Filter to `^e2e/`.** As of 2026-10-04 this reports 10 errors, all pre-existing and all
-in `packages/loot-core/src/shared/` (`util.ts`, `months.ts`) — files the repo's
-`typescript-strict-plugin` setup grandfathers but plain `tsc` does not. They exit
-non-zero and are not yours. Only `e2e/`-prefixed lines indicate a real problem in the
-e2e tree.
+**Filter to `^e2e/`.** The command exits non-zero on errors in
+`packages/loot-core/src/shared/` (`util.ts`, `months.ts`) that plain `tsc` reports but
+the repo's `typescript-strict-plugin` grandfathers — both files carry a
+`// @ts-strict-ignore` header, which that plugin honours and `tsc` does not. Those are
+not yours. Only `e2e/`-prefixed lines indicate a real problem in the e2e tree.
+
+Do not trust a remembered *count* of those non-`e2e/` errors; it drifts as `loot-core`
+changes. Read the current output rather than expecting a fixed number.
 
 This is why e2e type errors reach review as findings rather than as CI failures.
 
@@ -48,6 +51,44 @@ Two rules the suite now encodes, worth copying into any new console assertion:
 Scoping matters: the schedules e2e asserts only the two controlled/uncontrolled-input
 warnings, and says so in a comment. "No console output at all" is not a pass condition
 in `yarn start`.
+
+## The app's "today" and its demo data are frozen under Playwright only
+
+`packages/desktop-client/playwright.config.ts:17` sets `userAgent: 'playwright'`, and
+`Platform.isPlaywright` is exactly `navigator.userAgent.includes('playwright')`
+(`loot-core/src/shared/platform.ts:11`). That one string switches **two** independent
+things off in a real browser session:
+
+- **The clock.** `currentMonth`, `currentWeek`, `currentYear`, `currentDate` and
+  `currentDay` (`loot-core/src/shared/months.ts:135-179`) all return hardcoded values
+  instead of reading the date — `currentDay()` is literally `'2017-01-01'`,
+  `currentMonth()` `'2017-01'`. A schedule created in Playwright is stamped
+  `2017-01-01`; the same schedule created in QA's browser is stamped with the real
+  current date.
+- **The demo budget's randomness.** `#mocks/random` exports
+  `Platform.isPlaywright ? pseudoRandom : Math.random` (`mocks/random.ts:16`), and
+  `createTestBudget` builds every demo payee, category and transaction amount from it.
+  `pseudoRandom` is not random at all: it returns a fixed **3-cycle**
+  `0.45, 0.9, 0, 0.45, 0.9, 0, …`, so `pickRandom` over a 5-item list walks only
+  `c, e, a, c, e, a, …`. Under Playwright the demo budget is identical on every run;
+  in a real browser it differs on every reload.
+
+**Consequence for QA, which drives a real browser at `localhost:3001`:** never assert a
+demo-budget *amount*, a *count*, or a *date* against a literal. Write the assertion the
+way the merged work orders did — assert the **invariant** (three synthetic rows exist,
+each named `Uncategorized` / `Transfers` / `Off budget`, each amount cell non-blank) and
+let the figures be whatever the run produced. PR #94's AC-2 does exactly this and says
+why in the criterion itself.
+
+The converse bites too: a Playwright test that *does* pin a literal can be right for
+Playwright and wrong for QA, because the two environments genuinely disagree about what
+"today" is. When a QA failure looks like a date or amount mismatch, check this before
+filing it — the value may be correct for the environment it was written in.
+
+`global.IS_TESTING` is the other half of each guard, and it is set only by
+`desktop-client/src/setupTests.ts` and `loot-core/src/mocks/setup.ts`, i.e. by vitest,
+never by the app bundle. So the browser half of `global.IS_TESTING || Platform.isPlaywright`
+is false in QA, and the UA is doing all the work.
 
 ## Running one loot-core test file
 
