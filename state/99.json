@@ -451,7 +451,7 @@
   "stopped_at": null,
   "dispatched_stage": "root-cause",
   "validated_from": "root-cause",
-  "validated_at": "2026-10-05T10:34:04.905Z",
+  "validated_at": "2026-10-05T11:10:23.902Z",
   "validated_ac_changes": [
     {
       "id": "AC-1",
@@ -464,7 +464,7 @@
       "now": {
         "id": "AC-1",
         "check": "A release note in a subdirectory of upcoming-release-notes/ reaches the published changelog: given a directory holding both top.md and sub/deep.md, parseReleaseNotes returns files containing 'sub/deep.md' and a notesByCategory entry whose text contains deep.md's body.",
-        "how_to_verify": "Not a browser surface — release tooling with no screen. Run 'publishes a nested note's body and category into notesByCategory' in packages/ci-actions/src/release-notes/util.test.js.",
+        "how_to_verify": "Not a browser surface -- release tooling with no screen. Run 'publishes a nested note's body and category into notesByCategory' in packages/ci-actions/src/release-notes/util.test.js.",
         "source": "TR-1",
         "verify": "test"
       }
@@ -479,7 +479,7 @@
       },
       "now": {
         "id": "AC-2",
-        "check": "With no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory: given a tmpdir fixture holding top.md, sub/deep.md and sub/README.md plus a top-level README.md, the two agree element for element — both notes present, sub/README.md present, the top-level README.md absent from both.",
+        "check": "With no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory: given a tmpdir fixture holding top.md, sub/deep.md and sub/README.md plus a top-level README.md, the two agree element for element -- both notes present, sub/README.md present, the top-level README.md absent from both.",
         "how_to_verify": "Run 'with no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory' in packages/ci-actions/src/release-notes/util.test.js. Scoped to the no-`only` case on purpose: with an `only` filter parseReleaseNotes returns a strict subset, which AC-8 asserts separately.",
         "source": "TR-2",
         "verify": "test"
@@ -495,8 +495,8 @@
       },
       "now": {
         "id": "AC-3",
-        "check": "Running the release-notes gate against a notes directory that does not exist prints a single line beginning '::error::cannot read ' and naming the directory, and exits 1. It does not print a Node stack trace. A subdirectory that cannot be read does not change this: only the top-level directory's own absence yields exactly one line.",
-        "how_to_verify": "Run the collectFailures case 'still returns exactly one cannot read string naming the directory for a top-level directory that does not exist' in packages/ci-actions/bin/release-notes-check.test.mjs. For the process shape, run node packages/ci-actions/bin/release-notes-gate.mjs against a directory moved aside and expect exit 1 and one ::error:: line. QA confirmed this shape already holds at d4684c80; the fix must not widen it to a subdirectory.",
+        "check": "Running the release-notes gate against a notes directory that does not exist prints a single line beginning '::error::cannot read ' and naming the directory, and exits 1. It does not print a Node stack trace. Scoped to what the number of lines depends on: a missing or unreadable TOP-LEVEL directory yields exactly one 'cannot read <dir>' string, while an unreadable SUBdirectory yields its own 'cannot read <subdir>' string alongside every failure of the notes outside it -- so the run prints exactly one line only when those other notes are clean. That second shape is AC-10's case and both halves are measured there.",
+        "how_to_verify": "Run the collectFailures case 'still returns exactly one cannot read string naming the directory for a top-level directory that does not exist' in packages/ci-actions/bin/release-notes-check.test.mjs. For the process shape, run node packages/ci-actions/bin/release-notes-gate.mjs against a directory moved aside and expect exit 1 and one ::error:: line. For the subdirectory half, run AC-10's case and count the lines rather than assuming one.",
         "source": "TR-3",
         "verify": "test"
       }
@@ -512,7 +512,7 @@
       "now": {
         "id": "AC-4",
         "check": "Running release-notes-check.mjs in a repository whose upcoming-release-notes/ does not exist prints a line beginning '::error::Cannot read upcoming-release-notes/: ' and exits 1, rather than a stack trace.",
-        "how_to_verify": "Run 'drives release-notes-check.mjs as a subprocess against a repository whose upcoming-release-notes/ has been removed' in packages/ci-actions/bin/release-notes-check.test.mjs. Assert only the stable prefix; the ENOENT text after it varies by platform. Note that this criterion is about the message and exit code with GITHUB_STEP_SUMMARY UNSET; AC-11 is the same guard under the runner's real environment, and the two must not be collapsed into one case.",
+        "how_to_verify": "Run 'drives release-notes-check.mjs as a subprocess against a repository whose upcoming-release-notes/ has been removed' in packages/ci-actions/bin/release-notes-check.test.mjs. Note that this criterion is about the message and exit code with GITHUB_STEP_SUMMARY UNSET; AC-11 is the same guard under the runner's real environment.",
         "source": "TR-4",
         "verify": "test"
       }
@@ -527,8 +527,8 @@
       },
       "now": {
         "id": "AC-5",
-        "check": "The @actual-app/ci-actions unit suite writes nothing inside upcoming-release-notes/: the nested-note case builds its fixture under the system temporary directory, and no qa-nested directory exists in the repository's notes directory afterwards, so a vitest process killed mid-run cannot leave a fixture that fails every later run.",
-        "how_to_verify": "Run the full package suite (yarn workspace @actual-app/ci-actions run test) then `git status --porcelain -- upcoming-release-notes/` — expect empty output. The new chmod-000 and malformed-note fixtures in this attempt also live under os.tmpdir() and restore their permissions in a finally.",
+        "check": "The @actual-app/ci-actions unit suite writes nothing inside upcoming-release-notes/: the nested-note case builds its fixture under the system temporary directory, and no qa-nested directory exists in the repository's notes directory afterwards.",
+        "how_to_verify": "Run the full package suite then `git status --porcelain -- upcoming-release-notes/` -- expect empty output. The new chmod-000 and malformed-note fixtures also live under os.tmpdir() and restore their permissions in a finally.",
         "source": "TR-5",
         "verify": "test"
       }
@@ -544,7 +544,7 @@
       "now": {
         "id": "AC-6",
         "check": "release-notes-gate.mjs exports exactly listNotePaths and collectFailures; neither validateNote nor main carries the export keyword, and no dir parameter exists that no caller supplies.",
-        "how_to_verify": "grep -n '^export' packages/ci-actions/bin/release-notes-gate.mjs — expect exactly two lines, listNotePaths and collectFailures. grep -rn \"from './release-notes-gate.mjs'\" packages/ — expect exactly one line, the import in release-notes-check.test.mjs. This attempt adds a second PARAMETER to the exported listNotePaths; it must not add a third export.",
+        "how_to_verify": "grep -n '^export' packages/ci-actions/bin/release-notes-gate.mjs -- expect exactly two lines. This attempt adds a second PARAMETER to the exported listNotePaths; it must not add a third export.",
         "source": "TR-6",
         "verify": "test"
       }
@@ -559,8 +559,8 @@
       },
       "now": {
         "id": "AC-7",
-        "check": "The gate's failure report order is deterministic across runs and unaffected by the host locale: two notes failing at once always report in the same order, and that order is UTF-16 code-unit order, not locale-alphabetical.",
-        "how_to_verify": "Run the sort-order case in util.test.js, then run the gate under LC_ALL=C and LC_ALL=en_US.UTF-8 against the same failing fixtures and confirm the ::error:: lines appear in the same order. The unreadable-directory entries collectFailures now prepends are emitted in walk order, which follows the recursive readdir and so is filesystem-dependent: if that ordering proves unstable across runs, sort the `unreadable` array before concatenating rather than leaving it to readdir order.",
+        "check": "The gate's failure report order is deterministic across runs and unaffected by the host locale: two notes failing at once always report in the same order, and that order is UTF-16 code-unit order, not locale-alphabetical. The 'cannot read' entries for unreadable directories are covered by the same rule and must not follow the order readdir happened to return them in.",
+        "how_to_verify": "Run the sort-order case in util.test.js, then run the gate under LC_ALL=C and LC_ALL=en_US.UTF-8 against the same failing fixtures. Build a fixture holding two chmod-000 subdirectories created in one order and then in the reverse order, and confirm the two 'cannot read' lines come back in the same order both times.",
         "source": "TR-7",
         "verify": "test"
       }
@@ -666,5 +666,243 @@
       "run": "37297420810",
       "at": "2026-10-05T10:56:58.228Z"
     }
+  },
+  "validated_work_order": {
+    "issue": 99,
+    "version": 2,
+    "understanding": "TWO SEPARATE THINGS, and this revision answers both.\n\nFIRST, the plan reviewer's objection was correct and is now fixed by measurement. He wrote that AC-3's added second sentence -- \"A subdirectory that cannot be read does not change this: only the top-level directory's own absence yields exactly one line\" -- asserts an exclusivity the prescribed fix does not have. I reproduced his objection exactly rather than taking it on trust: with the fixed collectFailures, a notes directory holding ONE chmod-000 subdirectory and otherwise-VALID notes returns exactly ONE string ('cannot read <dir>/locked: EACCES ...'), length 1. The onError callback contributes one 'cannot read' string and the notes outside it contribute zero, so case B does print exactly one line. AC-3 is rewritten below to scope the guarantee -- a missing/unreadable TOP-LEVEL directory yields exactly one string; an unreadable SUBdirectory yields its own 'cannot read' string ALONGSIDE every failure of the notes outside it, so exactly one line only when those other notes are clean -- and the same rule is mirrored word for word into AC-10's how_to_verify. The 'does not change this' framing and the exclusivity claim are both gone.\n\nSECOND, and this is the diagnosis the previous attempt got wrong. It said its root cause was RIGHT because QA confirmed the headline fix real -- all eight original criteria pass; a nested note now reaches the changelog and the generated docs page (QA's T-11 shows the marker on the page). That much is true and stays true. But the previous attempt carried a premise it never examined: it treated 'the two sides must agree on WHICH files exist' as the whole invariant, and asserted that a nested README.md being validated as a note is 'the correct outcome of that shared rule, not a bug to route around'. Unifying the enumeration was necessary but not sufficient. The gate and the publisher now agree on the file SET and disagree on what happens when a member of that set is malformed. The gate (validateNote) turns every malformation into a named failure string and keeps going; the publisher (parseReleaseNotes) dereferences data.authors unguarded and dies. That asymmetry was harmless while the publisher only read top-level files the gate had already cleared -- an invariant the recursive walk breaks, because gate and publisher now agree a NESTED file is a note and the publisher has no validateNote equivalent. The root cause is a behaviour-parity gap, not an enumeration gap.\n\nI reproduced all three bugs myself against d4684c80 in a worktree at that commit, and then prototyped all three fixes against the real modules. BUG-1: parseReleaseNotes throws 'TypeError: Cannot read properties of undefined (reading map)' on a note with no authors list. BUG-2: collectFailures wraps the ENTIRE recursive walk in one try/catch, so one chmod-000 subdirectory discards every failure already accumulated. BUG-3: the new guard in release-notes-check.mjs calls reportError from module scope, but reportError only exits synchronously when GITHUB_STEP_SUMMARY is ABSENT -- the one environment a real Actions runner never has and the one the unit harness deletes. All 83 existing tests pass on that commit; nothing here is a red suite, all three bugs sit outside coverage.\n\nOne further finding the previous attempt did not have: its BUG-2 fix text said 'path is already imported at the top of the file', but following that literally as a bare join(dir, relative) crashes with 'ReferenceError: join is not defined' -- release-notes-gate.mjs imports * as path and has no bare join binding. The change text below names path.join explicitly.",
+    "root_cause": "The shared walk made the gate and the publisher agree on WHICH files are release notes, but nothing made them agree on WHAT a malformed member of that set does. release-notes-gate.mjs's validateNote turns every rule violation into a named failure string and keeps going; parseReleaseNotes has no equivalent and dereferences data.authors.map with no Array.isArray guard. Before this PR that was latent, because the publisher only ever read top-level files the gate had already cleared. The recursive walk routed nested files into it, so the pre-existing unguarded dereference became reachable. Two smaller instances of the same 'report, do not abort and do not discard' rule were broken by this PR's own additions: collectFailures' single try/catch around the whole walk converts a partial walk into a total one (a throw at depth N discards depths 0..N-1), and reportError defers process.exit to a WriteStream 'close' event whenever GITHUB_STEP_SUMMARY is set, so it is not a terminating function on the only platform it runs on.",
+    "approach": "Three targeted repairs, each making one participant obey the rule the other two already follow. Nothing about the enumeration changes and none of the eight original acceptance criteria is rewritten -- all eight pass today and pass again with every fix below applied.\n\nBUG-1: guard the dereference in parseReleaseNotes with Array.isArray(data.authors), and on failure THROW an Error naming the note's path relative to the notes directory. Throwing rather than skipping is load-bearing and I verified the mechanism this time rather than reasoning about it: release-notes-generate.mjs awaits parseReleaseNotes at line 146, long before the `files.map(f => fs.unlink(...))` at line 264, and `files` comes from listNotePaths regardless of whether the note parsed.\n\nBUG-2: move the try/catch INSIDE the walk via an optional onError callback on listNotePaths; with no callback the walk rethrows exactly as today. collectFailures passes a callback accumulating a 'cannot read <path>: <message>' per unreadable directory and returns those alongside, not instead of, the per-note failures. Two details the previous attempt left open and this one settles: use path.join(dir, relative), NOT a bare join(...), and SORT the accumulated unreadable array before concatenating, because those entries arrive in readdir order -- the filesystem's, not ours -- and AC-7 requires a report order that does not shift between contributors' machines.\n\nBUG-3: make reportError terminating on both paths by replacing the createWriteStream(...).on('close', exit) tail with a synchronous fs.appendFileSync guarded by try/catch, followed by an unconditional process.exit(1). The try/catch is load-bearing: appendFileSync THROWS on an unwritable summary path. I verified all four env shapes against the real script.\n\nThe harness is what let BUG-3 hide, and this is the part the plan reviewer caught. runCheck gains an optional second parameter for env overrides, applied AFTER `const env = { ...process.env, BASE_REF: BASE_BRANCH }`, treating an undefined value as a DELETE rather than stringifying it. The new BUG-3 case MUST pass `BASE_REF: undefined`. I measured both variants against the UNFIXED script rather than arguing about them: with the previous order's prescribed call (BASE_REF left set by the harness) the case PASSES 85/85 -- vacuous, exactly as he said; with the corrected call it FAILS (1 failed, 84 passed) and passes once the fix is applied.\n\nEvery new case is falsifiability-checked by reverting its source fix and recording the failure, not merely recorded green.",
+    "files": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.mjs",
+        "action": "edit",
+        "change": "In parseReleaseNotes, immediately after `const { data, content: body } = matter(content);` and before the `data.authors.map` call, insert a guard: `if (!Array.isArray(data.authors)) throw new Error(...)` whose message names the note by its path relative to the notes directory (`name` is already in scope). Do NOT skip the file instead of throwing -- release-notes-generate.mjs unlinks every path in the returned `files` array at its line 264, and `files` comes from listNotePaths regardless of whether the note parsed. In listNotePaths, add a second optional parameter `onError` and move the directory read inside the recursion into a try/catch: on failure, `if (onError) { onError(prefix, error); return; }` and otherwise `throw error`.",
+        "why": "BUG-1's crash and BUG-2's discarded failures both live in this file. BUG-1 is the only defect whose blast radius is an aborted release."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-gate.mjs",
+        "action": "edit",
+        "change": "Forward the new parameter through the exported listNotePaths wrapper. Rewrite collectFailures to stop wrapping the whole walk: declare `const unreadable = []`, pass a callback that pushes `cannot read ${prefix ? path.join(dir, prefix) : dir}: ${error.message}`, then return `[...unreadable.sort(), ...paths.flatMap(...) ]`. Two things are load-bearing: use `path.join`, NOT a bare `join(...)` (this file imports `* as path` and has no bare `join` binding, so `join(dir, prefix)` is a ReferenceError), and SORT `unreadable` before concatenating, carrying the same oxlint-disable comment the walk's own sort carries.",
+        "why": "Closes BUG-2 while leaving the gate's public surface and AC-3's missing-directory shape exactly as they are."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.mjs",
+        "action": "edit",
+        "change": "In reportError, replace the `if (!process.env.GITHUB_STEP_SUMMARY) { process.exit(1); }` early return followed by the createWriteStream(...).on('close', exit) tail with a `try { fs.appendFileSync(...) } catch {}` guarded by `if (process.env.GITHUB_STEP_SUMMARY)`, then an unconditional `process.exit(1)`. Rewrite the comment above it, which currently claims the runner always supplies GITHUB_STEP_SUMMARY and that without it there is nothing left to do but exit -- after this change both branches do the same thing, and that comment is what made the defect invisible.",
+        "why": "BUG-3. The guard is correct in intent and wrong in mechanism: it called a function that returns instead of exiting on every real Actions run, so the BASE_REF check below it kept executing."
+      },
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "change": "Add a describe block covering the publisher's malformed-input path, which had no coverage at all -- that is why BUG-1 reached a PR. Use fs.mkdtempSync under os.tmpdir() and mock console.log the way the existing block does. Add a second describe block for the onError callback asserting the callback fires AND that the returned array still holds both the top-level note and the readable nested note -- that second half is the regression BUG-2 was. Skip the permission cases under root.",
+        "why": "The publisher's malformed-input path had no coverage at all, which is why BUG-1 reached a PR."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.test.mjs",
+        "action": "edit",
+        "change": "Give runCheck an optional second parameter for extra/overridden child env entries, merged AFTER `const env = { ...process.env, BASE_REF: BASE_BRANCH }`, with an undefined value DELETING the key rather than stringifying it. The new BUG-3 case MUST pass `BASE_REF: undefined`: measured, the previous order's call without it passes 85/85 against the unfixed script, and the corrected call fails it. Add collectFailures cases for BUG-2, for AC-3's one-string shape, and for the deterministic order of the unreadable entries.",
+        "why": "BUG-3 is invisible to the suite precisely because runCheck deletes the variable that makes the new code misbehave, AND injects BASE_REF which hides the symptom."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "cases": [
+          "reproduces BUG-1: parseReleaseNotes rejects, rather than throwing 'Cannot read properties of undefined', when a nested note has no `authors` front matter, and the error names that note's relative path -- VERIFIED to fail against unfixed util.mjs",
+          "rejects a note whose `authors` is a bare string instead of a list, for the same reason and with the same named error -- VERIFIED to fail against unfixed util.mjs",
+          "still publishes a note that HAS an authors list, so the new guard is not satisfied by rejecting unconditionally",
+          "reproduces BUG-2: listNotePaths' onError callback fires once naming the unreadable subdirectory ('locked') and its error code (EACCES), AND the returned array still holds both the top-level note and the readable nested note -- VERIFIED to fail against unfixed util.mjs",
+          "propagates the error when no onError callback is passed, preserving the throwing behaviour parseReleaseNotes relies on"
+        ]
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.test.mjs",
+        "action": "edit",
+        "cases": [
+          "reproduces BUG-3: release-notes-check.mjs run as a subprocess with GITHUB_STEP_SUMMARY SET and BASE_REF DELETED emits '::error::Cannot read upcoming-release-notes/: ' and does NOT emit 'BASE_REF env var is not set' -- VERIFIED to fail against unfixed check.mjs; passing BASE_REF through as set instead makes it pass vacuously, the defect the plan reviewer caught",
+          "collectFailures reports an unreadable SUBDIRECTORY AND both failures of the broken note outside it in a single array, rather than returning only the unreadable-directory message -- VERIFIED to fail against unfixed gate.mjs",
+          "collectFailures still returns exactly one 'cannot read ...' string naming the directory for a top-level directory that does not exist (AC-3's missing-directory shape is unchanged)",
+          "collectFailures orders two 'cannot read' entries the same way whatever order their directories were created in, pinning the sort AC-7 requires",
+          "still passes every pre-existing case unchanged, including the thirteen subprocess cases whose runCheck keeps GITHUB_STEP_SUMMARY unset and BASE_REF injected by default"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "A release note in a subdirectory of upcoming-release-notes/ reaches the published changelog: given a directory holding both top.md and sub/deep.md, parseReleaseNotes returns files containing 'sub/deep.md' and a notesByCategory entry whose text contains deep.md's body.",
+        "how_to_verify": "Not a browser surface -- release tooling with no screen. Run 'publishes a nested note's body and category into notesByCategory' in packages/ci-actions/src/release-notes/util.test.js.",
+        "source": "TR-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "With no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory: given a tmpdir fixture holding top.md, sub/deep.md and sub/README.md plus a top-level README.md, the two agree element for element -- both notes present, sub/README.md present, the top-level README.md absent from both.",
+        "how_to_verify": "Run 'with no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory' in packages/ci-actions/src/release-notes/util.test.js. Scoped to the no-`only` case on purpose: with an `only` filter parseReleaseNotes returns a strict subset, which AC-8 asserts separately.",
+        "source": "TR-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "Running the release-notes gate against a notes directory that does not exist prints a single line beginning '::error::cannot read ' and naming the directory, and exits 1. It does not print a Node stack trace. Scoped to what the number of lines depends on: a missing or unreadable TOP-LEVEL directory yields exactly one 'cannot read <dir>' string, while an unreadable SUBdirectory yields its own 'cannot read <subdir>' string alongside every failure of the notes outside it -- so the run prints exactly one line only when those other notes are clean. That second shape is AC-10's case and both halves are measured there.",
+        "how_to_verify": "Run the collectFailures case 'still returns exactly one cannot read string naming the directory for a top-level directory that does not exist' in packages/ci-actions/bin/release-notes-check.test.mjs. For the process shape, run node packages/ci-actions/bin/release-notes-gate.mjs against a directory moved aside and expect exit 1 and one ::error:: line. For the subdirectory half, run AC-10's case and count the lines rather than assuming one.",
+        "source": "TR-3",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "Running release-notes-check.mjs in a repository whose upcoming-release-notes/ does not exist prints a line beginning '::error::Cannot read upcoming-release-notes/: ' and exits 1, rather than a stack trace.",
+        "how_to_verify": "Run 'drives release-notes-check.mjs as a subprocess against a repository whose upcoming-release-notes/ has been removed' in packages/ci-actions/bin/release-notes-check.test.mjs. Note that this criterion is about the message and exit code with GITHUB_STEP_SUMMARY UNSET; AC-11 is the same guard under the runner's real environment.",
+        "source": "TR-4",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "The @actual-app/ci-actions unit suite writes nothing inside upcoming-release-notes/: the nested-note case builds its fixture under the system temporary directory, and no qa-nested directory exists in the repository's notes directory afterwards.",
+        "how_to_verify": "Run the full package suite then `git status --porcelain -- upcoming-release-notes/` -- expect empty output. The new chmod-000 and malformed-note fixtures also live under os.tmpdir() and restore their permissions in a finally.",
+        "source": "TR-5",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "release-notes-gate.mjs exports exactly listNotePaths and collectFailures; neither validateNote nor main carries the export keyword, and no dir parameter exists that no caller supplies.",
+        "how_to_verify": "grep -n '^export' packages/ci-actions/bin/release-notes-gate.mjs -- expect exactly two lines. This attempt adds a second PARAMETER to the exported listNotePaths; it must not add a third export.",
+        "source": "TR-6",
+        "verify": "test"
+      },
+      {
+        "id": "AC-7",
+        "check": "The gate's failure report order is deterministic across runs and unaffected by the host locale: two notes failing at once always report in the same order, and that order is UTF-16 code-unit order, not locale-alphabetical. The 'cannot read' entries for unreadable directories are covered by the same rule and must not follow the order readdir happened to return them in.",
+        "how_to_verify": "Run the sort-order case in util.test.js, then run the gate under LC_ALL=C and LC_ALL=en_US.UTF-8 against the same failing fixtures. Build a fixture holding two chmod-000 subdirectories created in one order and then in the reverse order, and confirm the two 'cannot read' lines come back in the same order both times.",
+        "source": "TR-7",
+        "verify": "test"
+      },
+      {
+        "id": "AC-8",
+        "check": "The `only` filter matches the relative path, which is how release-notes-generate.mjs calls it: given a fixture holding top.md and sub/deep.md, only = ['sub/deep.md'] selects the nested note alone, and only = ['deep.md'] selects nothing.",
+        "how_to_verify": "Run the two filter cases in packages/ci-actions/src/release-notes/util.test.js.",
+        "source": "TR-8",
+        "verify": "test"
+      },
+      {
+        "id": "AC-9",
+        "check": "A release note under upcoming-release-notes/ with no `authors` front-matter key -- or with an `authors` value that is not a list -- aborts the publish with an error naming that file by its path relative to the notes directory, instead of the publisher dying with 'Cannot read properties of undefined (reading map)'. A note that DOES have an authors list still publishes normally.",
+        "how_to_verify": "Run the two BUG-1 cases in the malformed-note describe block plus the control case. End to end: write upcoming-release-notes/qa-nested/noauthors.md with no authors key, then run packages/docs/scripts/generate-upcoming-release-notes.mjs -- expect a non-zero exit naming qa-nested/noauthors.md, not a TypeError, and NOT a silently omitted note. Confirm the case FAILS against d4684c80.",
+        "source": "IAC-1",
+        "verify": "test"
+      },
+      {
+        "id": "AC-10",
+        "check": "When one subdirectory of upcoming-release-notes/ cannot be read, the gate reports that directory AND every other note's failures in the same run, so a contributor who fixes the unreadable directory and re-runs is not meeting a second, previously hidden failure for the first time. Scoped the same way as AC-3: a missing or unreadable TOP-LEVEL directory yields exactly one 'cannot read <dir>' string, while an unreadable SUBdirectory yields its own 'cannot read <subdir>' string alongside every failure of the notes outside it -- so the run prints exactly one line only when those other notes are clean.",
+        "how_to_verify": "Run the two collectFailures cases in release-notes-check.test.mjs. End to end: a throwaway notes dir holding a note with a bad category and a bot author plus a chmod-000 subdirectory must return the 'cannot read' entry naming the SUBDIRECTORY AND the note's two failures in one array -- at d4684c80 only the unreadable-directory message comes back. Then repeat with a dir holding a chmod-000 subdirectory and otherwise-VALID notes and count the lines: exactly one, which is what AC-3's scoping clause predicts and what the previous revision of this criterion wrongly denied. Both cases must SKIP under root.",
+        "source": "IAC-2",
+        "verify": "test"
+      },
+      {
+        "id": "AC-11",
+        "check": "With GITHUB_STEP_SUMMARY set -- which is every GitHub Actions run, and the environment the current unit harness deletes -- release-notes-check.mjs STOPS at its missing-notes-directory guard: exactly one '::error::Cannot read upcoming-release-notes/: ' line, no subsequent '::error::BASE_REF env var is not set' line, and exit 1. At d4684c80 the guard prints its error and execution continues into the BASE_REF check.",
+        "how_to_verify": "Run 'reproduces BUG-3: halts at the missing-notes-directory guard with GITHUB_STEP_SUMMARY set, as a runner has it'. The case MUST pass `BASE_REF: undefined` through runCheck's env-override parameter so the child has no BASE_REF at all -- runCheck injects BASE_REF by default, and with it left set the unfixed script prints one error line and the case passes vacuously. End to end: `GITHUB_STEP_SUMMARY=/tmp/s.md env -u BASE_REF node packages/ci-actions/bin/release-notes-check.mjs` -- expect exactly one ::error:: line and no BASE_REF line. Both env shapes matter: AC-4 covers the variable unset, this one covers it set.",
+        "source": "IAC-3",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "yarn install — node_modules is absent in a fresh checkout and every command below fails for that reason alone",
+      "yarn workspace @actual-app/ci-actions run test — expect 83 existing tests plus the new ones, all green. All 83 pass on d4684c80 today, so this is a floor, not the signal",
+      "FALSIFIABILITY FIRST, before judging any fix: revert each source fix in turn and confirm the matching case fails. I ran all of these and they do fail. A green suite that never went red proves nothing about this change",
+      "Confirm the BUG-3 harness correction is real, since it is the defect the plan reviewer caught: run the new case with `BASE_REF: undefined` (must fail against d4684c80), then change it to pass BASE_REF through as SET (must PASS against d4684c80 — a vacuous pass). I measured both: 85 passed with BASE_REF set, 1 failed | 84 passed with it deleted",
+      "Reproduce BUG-1 against the pre-fix commit: a tmpdir holding sub/notes.md with no front matter, then parseReleaseNotes over it — expect 'TypeError: Cannot read properties of undefined (reading map)' at d4684c80, and after the fix an error naming sub/notes.md",
+      "Reproduce BUG-2: a tmpdir holding a note with category Nope and authors [github-actions], plus a chmod-000 subdirectory; call collectFailures — at d4684c80 expect ONLY the 'cannot read ... EACCES' string; after the fix expect both, with the entry naming the SUBDIRECTORY rather than the top-level directory",
+      "Measure AC-3's and AC-10's scoping clause as a NUMBER rather than asserting it: a dir holding one chmod-000 subdirectory and otherwise-VALID notes returns EXACTLY ONE string from collectFailures after the fix. This is the case the previous revision of AC-3 wrongly denied",
+      "Reproduce BUG-3 in a throwaway git repo with upcoming-release-notes/ removed: GITHUB_STEP_SUMMARY=<tmpfile> env -u BASE_REF node packages/ci-actions/bin/release-notes-check.mjs — at d4684c80 expect TWO ::error:: lines; after the fix exactly one. Repeat with GITHUB_STEP_SUMMARY unset to confirm AC-4's shape still holds",
+      "Probe the one shape no criterion names: GITHUB_STEP_SUMMARY=<an unwritable path> with BASE_REF unset — at d4684c80 this crashes with an unhandled WriteStream 'error' event on stderr. After the fix it must still exit 1 with the error line and NO stack. I measured this: exit 1, zero bytes on stderr",
+      "AC-3 end to end: mv upcoming-release-notes /tmp/notes-backup; node packages/ci-actions/bin/release-notes-gate.mjs — expect one '::error::cannot read …' line and exit=1, no stack; restore the directory",
+      "AC-7's sort clause for the new entries: build a dir with two chmod-000 subdirectories created in the order b then a, collect the 'cannot read' lines, then repeat with a then b. Both runs must produce the same order",
+      "git status --porcelain -- upcoming-release-notes/ — expect empty. The new fixtures are created under os.tmpdir() and must not strand anything in the tree",
+      "yarn lint and yarn typecheck — note that @actual-app/ci-actions typecheck is SKIPPED (all .mjs), so lint is the only static gate on these files",
+      "yarn test from the repository root — the gate runs as an uncached dependency of the ci-actions test task",
+      "These five changed files are .mjs CLI tooling with no UI surface, so every case above is exercised with node rather than a browser, and each should cite a saved exchange"
+    ],
+    "risks": [
+      "The BUG-1 guard makes parseReleaseNotes throw a plain Error where it previously threw a TypeError. Both abort, but a future caller catching TypeError specifically would now catch a plain Error. No such caller exists today.",
+      "The throw happens inside files.map(async ...), so Promise.all rejects and the remaining notes are never read. That is the intended abort, but one bad note stops the whole changelog — the correct trade precisely because of the unlink at release-notes-generate.mjs:264, which runs against a `files` array built at line 146.",
+      "fs.appendFileSync in reportError is synchronous, so a large README is written on the main thread before exit. The README is small; a pathological one would cost milliseconds. The try/catch is load-bearing, not defensive padding.",
+      "Changing collectFailures' return shape from 'either the note failures or the unreadable-directory string' to 'both' means a caller asserting on array length or on [0] would see different output. The only caller is main(), which iterates and prints.",
+      "Sorting the unreadable entries changes their order relative to walk order. No criterion or existing test depends on walk order, and AC-7 requires a deterministic order that does not follow readdir — but it is a behaviour change to output that did not exist before this diff.",
+      "The chmod-000 cases are meaningless when the suite runs as root, because root ignores the permission bits. Both new permission cases must skip under root.",
+      "Making runCheck's env override accept deletions is a small change to a helper thirteen existing cases share. If the merge is placed before the BASE_REF injection rather than after, the deletion has no effect and the new BUG-3 case goes vacuous again — precisely the failure the plan reviewer caught."
+    ],
+    "out_of_scope": [
+      "The absolute filesystem path in the ENOENT message is NOT changed. QA graded it a note rather than a defect: the message names the directory it was handed because a fixed string would misreport the tmpdir the unit suite passes.",
+      "Windows path separators are NOT addressed. listNotePaths builds relative paths with a literal '/' and joins with node:path.join, so a Windows checkout would produce 'sub\\\\deep.md' from the join. QA flagged this as an unverified platform risk, this repository's CI is ubuntu-only, and no acceptance criterion claims Windows support.",
+      "An unrecognised `category` in a nested note (parseReleaseNotes logs 'WARNING: Unrecognized category') is NOT changed. QA listed it as a coverage gap it did not exercise, it is pre-existing behaviour unrelated to the recursive walk.",
+      "release-notes-generate.mjs end to end is NOT driven. It needs a release branch, a version, a slug and a remote. The emptied-subdirectory side effect of unlinking a nested note's file is therefore still unverified by execution."
+    ],
+    "kind": "bug",
+    "confidence": 90,
+    "confidence_rationale": "High because all three bugs were reproduced by me against d4684c80 in a worktree at that commit, all three fixes were prototyped against the real modules, and the full suite is green afterwards, from a floor of 83. The plan reviewer's objection was not argued with but measured: AC-3's exclusive claim is empirically false (case B returns length 1) and AC-3 and AC-10 now say the same rule in the same words. Raised because this revision adds what the last one lacked: a verified-failing BUG-3 case in both harness variants, and a prototype detail (path.join vs a bare join) that would otherwise have cost an implement cycle. Not higher because release-notes-generate.mjs's unlink path is still reasoned from reading the script rather than from running it, even though I confirmed the line numbers that make throw-rather-than-skip load-bearing.",
+    "reproduced": true,
+    "evidence": [
+      "BUG-1, reproduced by me against d4684c80 in a worktree: a tmpdir holding sub-note.md containing '# no frontmatter'; parseReleaseNotes threw 'TypeError: Cannot read properties of undefined (reading map)'. QA's control shows the same dereference at the top level on the BASE commit, so the missing guard is pre-existing and the walk is what widened its reach.",
+      "BUG-2, reproduced by me against d4684c80: a tmpdir holding zzz-broken.md (category Nope, authors [github-actions]) and a chmod-000 subdir/locked. collectFailures returned exactly ['cannot read <dir>: EACCES: permission denied, scandir .../locked'] — both of zzz-broken.md's failures gone. After chmod 755 the same call returned exactly those two failures, proving they were always there and the try/catch discarded them.",
+      "BUG-3, reproduced by me against d4684c80, in a throwaway git repo with upcoming-release-notes/ absent: GITHUB_STEP_SUMMARY set + BASE_REF unset printed the guard's line and then '::error::BASE_REF env var is not set' (two errors, exit 1, stderr empty). With SUMMARY set + BASE_REF SET it printed only ONE error line — which is exactly why the harness-injected BASE_REF hides the symptom.",
+      "THE PLAN REVIEWER'S AC-3 OBJECTION, reproduced rather than conceded: with the fixed collectFailures, a directory holding one chmod-000 subdirectory and otherwise-VALID notes returns exactly ONE string, length 1. So AC-3's previous second sentence was false against the fix that same plan prescribed. AC-3 and AC-10 now state the rule as a scope and qa_script measures the count in both shapes.",
+      "THE REVIEWER'S BUG-3 OBJECTION, measured both ways against the UNFIXED check script with the new env-override parameter in place. With the previous order's prescribed call runCheck(repo.dir, { GITHUB_STEP_SUMMARY: tmp }) — BASE_REF left set by the harness — the case PASSED 85/85, vacuous, as he said. With the corrected call runCheck(repo.dir, { BASE_REF: undefined, GITHUB_STEP_SUMMARY: tmp }) the same case FAILED (1 failed, 84 passed). Restoring the fix, both variants pass and the corrected one reports noBaseLine=true. Node's execFile omits undefined-valued env keys entirely — verified directly — so the deletion is real, not a stringified 'undefined'.",
+      "BUG-1 and BUG-2 fixes, prototyped and verified against the real modules: with Array.isArray guarding the dereference, parseReleaseNotes rejected with 'Release note sub/notes.md has no usable `authors` list...' naming the file, and the same guard rejected a bare-string authors while a note WITH authors still published. With the try/catch moved inside the walk behind an onError callback, collectFailures over the locked-dir fixture returned the unreadable entry naming the SUBDIRECTORY plus both note failures in one array, while a missing top-level directory still returned exactly one 'cannot read ...' string.",
+      "BUG-3 fix, verified across all four env shapes against the real script: SUMMARY set + BASE_REF unset, SUMMARY set + BASE_REF set, and SUMMARY unset each print exactly one ::error:: line and exit 1; an unwritable SUMMARY path also exits 1 with zero bytes on stderr, which required wrapping appendFileSync in try/catch.",
+      "The sort requirement for the new 'cannot read' entries: creating five chmod-000 subdirectories in the order 5,1,3,2,4 and sorting the array returned them 1,2,3,4,5. Without the sort the report order would differ between contributors' machines, which AC-7 forbids.",
+      "Non-regression and static checks: with all three prototypes applied, yarn workspace @actual-app/ci-actions run test passed 85/85 across 6 files (83 pre-existing plus the two harness-variant probes), up from the 83/83 floor on d4684c80 with no existing case disturbed. yarn lint reported no errors and 'All matched files use the correct format' across 2546 files. @actual-app/ci-actions typecheck is SKIPPED (all .mjs), so lint is the only static gate here.",
+      "QA's report qa-evidence/qa-evidence/qa-report.json, verdict fail on PR #105 at d4684c8, attempt 1: all eight original acceptance criteria pass and the headline fix is confirmed real (T-11 shows the nested note reaching the generated docs page); three bugs recorded — BUG-1 major, BUG-2 and BUG-3 minor — all three reproducible: always and introduced_by_pr: true."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "For BUG-1, SKIP the malformed note — filter it out of the map and carry on, which is what a publisher arguably wants so one bad note cannot block a release.",
+        "rejected_because": "It silently loses data. release-notes-generate.mjs unlinks every entry of the returned `files` array at line 264, and `files` comes from listNotePaths at line 146 regardless of whether the note parsed — so a skipped note is deleted from upcoming-release-notes/ and never appears in any changelog. That is this ticket's original defect reappearing one layer down, and it would be invisible in CI because the gate never sees the file. Throwing aborts before the unlink and names the file."
+      },
+      {
+        "approach": "For BUG-1, give the publisher the gate's full validateNote and reuse it, so the two participants share one validator as they now share one walk.",
+        "rejected_because": "validateNote returns failure strings for a human and takes a dir plus a relative path; parseReleaseNotes needs the parsed data itself to build a changelog entry, not a verdict. Reusing the validator would mean either duplicating the parsing or reshaping validateNote into something neither caller wants. The one Array.isArray guard closes the actual crash at the actual dereference."
+      },
+      {
+        "approach": "For BUG-2, keep the single try/catch but have it return the paths accumulated so far alongside the failure string.",
+        "rejected_because": "The walk builds its result inside a closure over `paths` and a throw discards the function's return value entirely — there is nothing to salvage without restructuring the walk anyway. Catching at the point of failure is both smaller and the only version that keeps reporting later unreadable directories instead of stopping at the first."
+      },
+      {
+        "approach": "For BUG-2, leave the unreadable entries in walk order and let the implementer sort them only if AC-7's verification shows instability.",
+        "rejected_because": "The previous revision deferred this as an unknown, which hands the implementer a judgement call with no failing signal to decide it by — and the three-run check that motivated it was run only on one filesystem, where readdir happened to return creation order. Sorting unconditionally costs one line and makes AC-7 true by construction rather than by luck on ext4."
+      },
+      {
+        "approach": "For BUG-3, leave reportError non-terminating and make the module-scope guard set process.exitCode and skip the rest of the file with a guard flag or an early-return wrapper.",
+        "rejected_because": "It leaves reportError's contract as 'reports and maybe exits', which is the actual defect, and every one of its other seven call sites then has to know whether control really stopped. Making the function terminate unconditionally fixes the class rather than this call site."
+      },
+      {
+        "approach": "Flip runCheck's default to SET GITHUB_STEP_SUMMARY, so all existing subprocess cases exercise the real Actions shape without a new parameter.",
+        "rejected_because": "It silently redefines what six other assertions were written against, on a fix attempt, with no way to tell from the diff whether a later failure is the fix or the changed baseline. An explicit per-case override makes the environment difference visible in the test that depends on it."
+      },
+      {
+        "approach": "Satisfy the BUG-3 requirement without touching runCheck's env construction: have the new case delete BASE_REF by mutating process.env around the runCheck call.",
+        "rejected_because": "It would work, but it mutates the ambient environment of the whole vitest process to express one child variable, and the deletion would then be undone or not depending on which test runs next. An explicit override parameter is a three-line change confined to the helper that already owns the child env."
+      }
+    ],
+    "assumptions": [
+      "A release note that reaches the publisher without valid front matter indicates the gate was bypassed or bypassed after the fact, not that the publisher should tolerate it. This is why BUG-1's message tells the reader the gate rejects such a note.",
+      "parseReleaseNotes has no equivalent of the gate's 'report every problem in one run' contract, so throwing is the only signal available to it. Adding a failure-collecting return shape would change what both callers destructure.",
+      "release-notes-generate.mjs:264's unlink of every path in `files` applies to nested paths too, since `files` entries are relative and joined against the notes directory. I confirmed by reading the script that the parse at line 146 precedes the unlink at line 264, which is what makes skipping unsafe for BUG-1.",
+      "A real GitHub Actions runner always has GITHUB_STEP_SUMMARY set, which is what makes BUG-3 a live defect rather than a local-only one. QA confirmed the variable's presence changes the printed output at d4684c80, and I reproduced both shapes myself."
+    ],
+    "unknowns": [
+      "Whether readdir order for the unreadable entries was ever stable across filesystems. It no longer matters for the report, because collectFailures now sorts them — but the answer would have determined whether the sort was needed, and it is unknown.",
+      "Whether release-notes-generate.mjs's unlink leaves an emptied subdirectory behind when a nested note is published. Nothing in this attempt executes that script, so it stays a listed risk rather than a verified property."
+    ],
+    "residual_risks": [
+      "release-notes-generate.mjs is still never executed end to end — it needs a release branch, a version, a slug and a remote, and it writes into packages/docs/blog and packages/docs/docs/releases.md. The nested unlink path and the emptied-subdirectory side effect remain unverified by execution.",
+      ".github/scripts/count-points.mjs is not executed: it is a forbidden path for this ticket and it needs GitHub API credentials. Its glob was read and matches the shared walk's rule, but agreement is by inspection only.",
+      "The Windows path-separator disagreement between the walk's literal '/' and path.join's '\\\\' is unaddressed and unexercised — this runner is Linux and the repository's CI is ubuntu-only.",
+      "The gate's `Validated N release note(s)` count printed by main() is not asserted by any criterion, deliberately: a count-based criterion is how PR #91's AC-5 nearly failed a passing change.",
+      "@actual-app/ci-actions has no typecheck coverage (every file is .mjs and the task is skipped), so none of these changes is checked by a type checker."
+    ],
+    "mode": "committed"
   }
 }
