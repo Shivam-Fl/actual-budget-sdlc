@@ -86,6 +86,139 @@
   "stopped_at": null,
   "dispatched_stage": "plan",
   "validated_from": "plan",
-  "validated_at": "2026-10-05T03:07:05.984Z",
-  "validated_ac_changes": []
+  "validated_at": "2026-10-05T03:35:15.459Z",
+  "validated_ac_changes": [],
+  "validated_work_order": {
+    "issue": 97,
+    "version": 2,
+    "understanding": "Issue #97 carries three non-blocking review findings on PR #94 (for #88), all confined to ReportTableList.test.tsx. ReportTableList.tsx:84 (`key={category.uncategorizedId ?? category.id}`) is correct and stays byte-for-byte unchanged. I reproduced all three on current main by mutating line 84: baseline 4/4 green; `key={category.uncategorizedId}` (fallback deleted) 4/4 green; `key={category.id}` (pre-fix) fails only tests 1 and 2, leaving 3 and 4 green; the filter's `/Encountered two children with the same key/i` is strictly subsumed by `/same key/i`. The prior plan was rejected for asserting that a repaired mixed-sibling test fails under BOTH broken expressions. That objection is correct, and probing further showed it is even weaker than the review stated: React emits the missing-key warning at most ONCE PER TEST FILE, not once per render pass. Verified directly — rendering the same keyless fixture three times in one file yields exactly 1 warning, across both separate render passes inside a single test and across separate tests; reordering so the mixed fixture renders first moves the warning to it (1 then 0); the same fixture in two separate files each gets its own warning (1 and 1). The duplicate-key warning is NOT deduplicated this way (observed 2, 1, 2 across three renders). This makes the single-file design order-dependent: whichever test renders first consumes the warning and every later one passes vacuously — which is why the shipped suite could never guard the deleted-fallback mutant regardless of filter width.",
+    "root_cause": "Two independent defects, and fixing the filter alone fixes neither. (1) The console.error filter is pinned to React's duplicate-key phrasing, so a MISSING key — what a deleted `?? category.id` fallback produces for real categories, which have no uncategorizedId — is a different sentence the filter never matches. (2) The missing-key assertion, once added, is inherently order-dependent within a file because React emits that sentence at most once per test file; a second test asserting on it passes vacuously no matter what the key expression does. (3) A fixture whose sibling keys cannot collide under any expression constrains nothing. The fix therefore has to separate the two warning classes into separate files, not merely widen one filter.",
+    "approach": "Split the file by warning class rather than widening a single filter, because the two React sentences behave differently: the duplicate-key warning repeats freely, the missing-key warning fires once per test file. (1) Narrow DUPLICATE_KEY_WARNINGS to a single `DUPLICATE_KEY_WARNING = /same key/i` — the second entry was strictly subsumed — and rewrite the comment to record why the loose tail-matching exists and that the exact-sentence pattern was removed precisely because it added nothing. (2) Move the missing-key guard into a NEW file, ReportTableList.missingKey.test.tsx, matching `/unique .?key.? prop/i`; its comment records the measured once-per-file behaviour, making the deleted-fallback mutant fail reliably rather than only when that test happens to run first. (3) Rename the fixture-reading test and drop its renderRowSpy and uncategorizedId assertions — it read the fixture rather than the component, returning ['other','transfer','off_budget'] for any implementation whatsoever. (4) Repair the mixed-sibling fixture by adding transferRow as a second synthetic sibling plus a matching getByText('Transfers') assertion; the second synthetic row is what collides under `key={category.id}`, since with one synthetic row the fixture cannot fail under any expression. Add a comment above each surviving test naming which half of the expression it guards and which mutant kills it. (5) Fix a latent type bug the edits expose: the fixture helpers spell fields `totalDebits`/`netDebits` but the model declares `totalDebts`/`netDebts`; `tsc-strict` only checks files changed versus main, which is why main is green and the error appears the moment the file is edited.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.test.tsx",
+        "action": "edit",
+        "change": "Narrow `const DUPLICATE_KEY_WARNINGS = [/same key/i, /Encountered two children with the same key/i]` to a single `const DUPLICATE_KEY_WARNING = /same key/i`, updating the one reference inside duplicateKeyWarnings(). Rewrite the comment above it: the loose `/same key/i` matches any React duplicate-key phrasing by matching only the stable tail so a reworded prefix cannot turn the assertion into a vacuous pass, and the exact-sentence pattern was DELETED because every string it matches also contains 'same key' — strictly subsumed, it could never match a string the loose pattern rejects. Append that this file guards the COLLISION half only, because React emits the missing-key sentence at most once per test file so it cannot be asserted from two tests here, and ReportTableList.missingKey.test.tsx owns that half in its own file. Rename 'gives the three synthetic rows three distinct keys' to 'gives the three synthetic rows distinct keys', delete its `const renderRowSpy = vi.fn(renderRow)` and renderRow={renderRowSpy} (pass plain renderRow), and delete the block computing `syntheticRows` from renderRowSpy.mock.calls together with the toEqual(['other','transfer','off_budget']) and new Set(...).size).toBe(3) assertions and their explanatory comment. Rename 'does not collide when a real category and a synthetic row are siblings' to 'logs no duplicate-key error when real categories and synthetic rows are siblings', add `transferRow` to its categories array directly after `uncategorizedRow`, and add `expect(screen.getByText('Transfers')).toBeInTheDocument();` after the existing 'Uncategorized' assertion. Add a comment above each of the two surviving tests naming which half of `key={category.uncategorizedId ?? category.id}` it guards and the mutant that kills it, stating explicitly that a single synthetic row could not fail under any expression, which is why there are two. In BOTH fixture helpers correct `totalDebits` -> `totalDebts` and `netDebits` -> `netDebts`. The 'keys real category rows by their uuid' test moves out of this file.",
+        "why": "This is the file the review's three findings name. The filter must lose its subsumed entry, the fixture-reading test must go so it stops signalling coverage it does not provide, and the mixed-sibling fixture needs a second synthetic sibling before it can fail under the pre-fix expression."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.missingKey.test.tsx",
+        "action": "create",
+        "change": "New file holding exactly one test, moved out of ReportTableList.test.tsx. Declare `const MISSING_KEY_WARNING = /unique .?key.? prop/i` with a comment recording the measured behaviour: React emits that warning at most once per test file — verified by rendering the same fixture three times in one file and observing a single warning, both across two render passes inside one test and across separate tests — so whichever test renders first consumes it and every later one in that file passes vacuously, while the duplicate-key warning is not deduplicated this way, which is why those two tests can share one file. Copy the groupEntity and dataEntity fixture helpers verbatim with the `totalDebts`/`netDebts` corrections applied. Declare `function missingKeyWarnings(): string[]` mapping `vi.mocked(console.error).mock.calls` through `args.map(String).join(' ')` filtered on MISSING_KEY_WARNING. Name the describe block 'ReportTableList missing keys', add `afterEach(() => { vi.restoreAllMocks(); })`. The single test, named 'keys real category rows that have no uncategorizedId', calls `vi.spyOn(console, 'error')`, renders ReportTableList with mode=\"total\", groupBy=\"Category\", renderRow rendering `<div>{item.name}</div>`, and data from dataEntity([groupEntity({ id: 'group-bills', name: 'Bills', categories: [groupEntity({ id: 'uuid-1', name: 'Rent' }), groupEntity({ id: 'uuid-2', name: 'Power' })] })]). Assert screen.getByText('Rent') and screen.getByText('Power') are in the document, then `expect(missingKeyWarnings()).toEqual([])`, keeping the comment that asserting the names matters as much as the warning because an empty render would pass vacuously. Add a comment above the test that it guards the `?? category.id` fallback, and that deleting that fallback leaves every real category row keyed by `undefined`.",
+        "why": "The deleted-fallback mutant is only detectable via the missing-key sentence, and that sentence is emitted at most once per test file. Verified: the same keyless fixture renders in two separate files and each gets its own warning. A dedicated file is what makes the guard unconditional instead of order-dependent."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.test.tsx",
+        "action": "edit",
+        "cases": [
+          "gives the three synthetic rows distinct keys — renders the uncategorized group, asserts Uncategorized/Transfers/Off budget are in the document and that duplicateKeyWarnings() is empty; killed by `key={category.id}`, where all three collide on their shared empty id",
+          "logs no duplicate-key error when real categories and synthetic rows are siblings — renders a group mixing one uuid category with TWO synthetic rows, asserts Rent/Uncategorized/Transfers are all present and that duplicateKeyWarnings() is empty; killed by `key={category.id}`, where the two synthetic rows collide; deliberately NOT credited with detecting the deleted fallback, because the missing-key warning is a once-per-file event owned by the other file",
+          "the suite passes unmodified against the shipped `key={category.uncategorizedId ?? category.id}` (2 tests here, down from 4: the fixture-reading test is deleted and the uuid test moved out)"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.missingKey.test.tsx",
+        "action": "create",
+        "cases": [
+          "keys real category rows that have no uncategorizedId — renders a group of two uuid-keyed real categories, asserts both names are present and that missingKeyWarnings() is empty; killed by `key={category.uncategorizedId}` with the fallback deleted, where both render with key={undefined} and React emits the missing-key sentence",
+          "the deleted-fallback mutant fails this file regardless of test order, because the file contains exactly one test and therefore consumes an uncontested warning budget — verified by reordering the sibling file's tests and re-running"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "`yarn workspace @actual-app/web vitest --run ReportTableList` reports 3 passing tests across 2 files against the unmodified ReportTableList.tsx, and neither file contains a test whose assertions read only the fixture's own uncategorizedId values.",
+        "how_to_verify": "Run the suite; confirm 'Tests 3 passed (3)' over 2 files. Confirm ReportTableList.test.tsx no longer contains 'gives the three synthetic rows three distinct keys' and no longer uses renderRowSpy.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "Mutating ReportTableList.tsx:84 to `key={category.id}` fails at least one test, and mutating it to `key={category.uncategorizedId}` (the `?? category.id` fallback deleted) also fails at least one test. This is the regression guard that did not exist before: the deleted-fallback mutant left the whole file green.",
+        "how_to_verify": "Edit line 84 to `key={category.id}`, run the suite, confirm failures, restore. Edit it to `key={category.uncategorizedId}`, run the suite, confirm 'keys real category rows that have no uncategorizedId' fails on React's missing-key warning, restore line 84. Measured results of exactly this change: baseline 3 passed; `key={category.id}` fails 2 of 3 (the two collision tests); `key={category.uncategorizedId}` fails 1 of 3 (the missing-key test); `key={category.id ?? category.uncategorizedId}` fails 2 of 3; and `key={category.name}` and `key={category.uncategorizedId || category.id}` correctly stay green as behaviourally equivalent.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "The deleted-fallback guard does not depend on test execution order: swapping the order of the two tests in ReportTableList.test.tsx leaves `key={category.uncategorizedId}` failing exactly one test, the missing-key one.",
+        "how_to_verify": "Temporarily swap the two test blocks in ReportTableList.test.tsx, set line 84 to `key={category.uncategorizedId}`, run the suite, confirm 'Tests 1 failed | 2 passed' with the failure still being 'keys real category rows that have no uncategorizedId', then restore both files. This is the property the previous plan lacked and the reason the missing-key assertion lives in its own file.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "Each console.error filter matches only its own React sentence, and no pattern in either file is subsumed by another. ReportTableList.test.tsx matches the duplicate-key sentence only; ReportTableList.missingKey.test.tsx matches the missing-key sentence only.",
+        "how_to_verify": "Read both files: the first must contain the single `DUPLICATE_KEY_WARNING = /same key/i` and must NOT contain '/Encountered two children with the same key/i' or any missing-key pattern; the second must contain `MISSING_KEY_WARNING = /unique .?key.? prop/i` and no duplicate-key pattern. Each file's comment must state why it is scoped to one sentence.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "`yarn typecheck` and `yarn lint` pass with no new errors, and ReportTableList.tsx is byte-for-byte unchanged from main.",
+        "how_to_verify": "Run both from the repo root; run `git diff --name-only` and confirm the only changed file is ReportTableList.test.tsx plus the new ReportTableList.missingKey.test.tsx, and that ReportTableList.tsx does not appear. Note that `yarn typecheck` runs `tsc-strict`, which only checks files changed versus main — the `totalDebits`/`netDebits` misspelling in the fixture helpers is invisible until the file is edited, so a green main does not mean the helpers were correct.",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "cd packages/desktop-client && yarn vitest --run ReportTableList — expect 3 passed across 2 files.",
+      "Confirm `git diff --name-only` lists only ReportTableList.test.tsx; ReportTableList.tsx must not appear, and ReportTableList.missingKey.test.tsx must be the only new file.",
+      "Temporarily set ReportTableList.tsx:84 to `key={category.id}`; re-run the suite; expect 2 failures. Restore.",
+      "Temporarily set ReportTableList.tsx:84 to `key={category.uncategorizedId}`; re-run the suite; expect exactly 1 failure, 'keys real category rows that have no uncategorizedId', on React's missing-key warning. Restore.",
+      "Swap the two test blocks in ReportTableList.test.tsx, repeat the previous step, and confirm the same single test still fails. Restore the file. This is the check the earlier plan would have failed.",
+      "From the repo root run `yarn typecheck` and `yarn lint` — both clean.",
+      "Optional confidence check in a browser: open a report grouped by Category on a budget that has uncategorized and off-budget transactions; the console shows no 'unique key prop' or 'same key' warning, and Uncategorized/Transfers/Off budget all render."
+    ],
+    "risks": [
+      "The change is test-only and touches no production code, so the risk to the app is nil. The risk is in the tests themselves: patterns written too loosely could match an unrelated console.error and fail the suite spuriously, and patterns written too tightly would fail open again — the exact defect this ticket exists to fix. Both patterns are anchored on React's distinctive wording.",
+      "Because the filters are now split by file, a missing key elsewhere inside ReportTableList's subtree is only caught by ReportTableList.missingKey.test.tsx, and only the FIRST such key in that file. A second independent keyless list added later would not be caught by adding a second test to that file — it needs the existing test's fixture widened, or a new file. The comment above the filter records this.",
+      "The once-per-file suppression is React-internal and could change across React versions. If a future React emits the missing-key warning per-render again, the split-file design remains correct and merely becomes more conservative than necessary. The reverse (React dropping the warning entirely) would silently void the guard, which is true of any console.error-based approach.",
+      "The `totalDebts`/`netDebts` fixture-helper correction changes object literals that previously type-checked only because `tsc-strict` skips unchanged files. The misspelled fields are absent from GroupedEntity/DataEntity, so dropping them can only remove non-existent properties; the helpers still satisfy the types.",
+      "No file in forbidden_paths is touched: no .sdlc/memory/**, no docs/spec/**, no .github/**, no .sdlc/**.",
+      "No new network host is introduced, so env.api_allowlist in .sdlc/config.yml is unaffected."
+    ],
+    "out_of_scope": [
+      "ReportTableList.tsx:84 itself is correct and stays unchanged — the ticket is about whether the tests can detect a wrong key expression, not about the expression.",
+      "Re-keying the outer `metadata.map` at ReportTableList.tsx:55, which uses a positional `key={index}`. That is a different list with different semantics and would ship on its own if this ticket did not exist.",
+      "The sibling `RenderTableRow` has no key-propagation problem of its own, but nothing here asserts on it directly.",
+      "The fixture-reading test is deleted rather than renamed: it asserts the fixture's own contents, which are identical for any implementation, so renaming it would preserve a false signal.",
+      "No release note is required: this changes no user-visible behaviour and no shipped code."
+    ],
+    "kind": "chore",
+    "confidence": 92,
+    "confidence_rationale": "Every claim was measured, not inferred. All three review findings reproduced on current main. The prior rejection's central claim was tested directly and found to be both correct and understated (once per file, not once per render pass), and the rejection's own prescribed remedy was tested and shown to be order-dependent — the plan changed because the evidence pointed somewhere better, not to comply with the objection. The proposed design was written and validated against six mutants: three defective ones each fail a distinct, correctly-attributed test, and the two behaviourally-equivalent ones stay green. Order-independence (AC-3) was verified by actually swapping the tests and re-running. tsc-strict, full typecheck, lint, and the wider reports suite (30 files, 499 tests) are all clean. The 8 points held back are for what no local run settles: whether a future React could reword these sentences or change the dedup behaviour, and whether a browser QA pass would surface anything this test-file change does not already cover.",
+    "reproduced": true,
+    "evidence": [
+      "Baseline on main: `yarn workspace @actual-app/web vitest --run ReportTableList` → Tests 4 passed (4).",
+      "Missing-key warning fires ONCE PER TEST FILE, not per render pass. Rendering the same keyless fixture three times in one probe file gave: uuid-only test = 1, uuid+2-synthetic test = 0, two renders inside a single test = 0. So the rejection's stated mechanism ('once per owner/render pass') understates it.",
+      "Ordering determines the recipient: a probe whose FIRST test renders the mixed fixture gave 1 warning and whose SECOND identical test gave 0. The warning follows whoever renders first.",
+      "Separate files get independent budgets: the identical keyless fixture in two separate probe files each reported exactly 1 warning. This is what makes the split-file design work.",
+      "Duplicate-key warnings are NOT deduplicated the same way: three renders under `key={category.id}` reported dup=2, dup=1, dup=2. This asymmetry is why two collision tests can share a file while the missing-key test cannot.",
+      "The prior plan's prescribed remedy was built and shown to be order-dependent: swapping the two tests and running `key={category.uncategorizedId}` produced 'Tests 1 failed | 2 passed' only in the original order, while the rejected single-file approach fails 0 of 3 when the mixed test renders first.",
+      "Final mutant matrix for this design: baseline 3 passed; `key={category.id}` fails 2 of 3 (both collision tests, named individually); `key={category.uncategorizedId}` fails 1 of 3 ('keys real category rows that have no uncategorizedId'); `key={category.id ?? category.uncategorizedId}` fails 2 of 3; `key={category.name}` and `key={category.uncategorizedId || category.id}` stay green as behaviourally equivalent.",
+      "Latent type bug found: fixture helpers spell fields `totalDebits`/`netDebits` but GroupedEntity/DataEntity declare `totalDebts`/`netDebts`. `yarn typecheck` runs `tsc-strict`, which only checks files changed versus main — main typechecks clean, but editing the file surfaces 4 TS2561 errors.",
+      "Gates green after the fix: `yarn workspace @actual-app/web tsc-strict` clean, full `yarn typecheck` clean (31s), `yarn lint` clean (2547 files), wider reports suite 30 files / 499 tests passed.",
+      "`git diff --stat -- .../ReportTableList.tsx` is empty — the production component is byte-for-byte unchanged from main.",
+      "`node .sdlc/bin/preflight.mjs --issue 97` → `preflight: clean`."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Keep one file, widen the filter to [/same key/i, /unique .?key.? prop/i], and let the uuid test guard the deleted fallback — the remedy the plan rejection prescribed.",
+        "rejected_because": "It is correct only by accident of ordering. React emits the missing-key warning at most once per test file, verified by rendering one keyless fixture three times in a single file and observing exactly one warning, across two render passes inside one test and across separate tests. Whichever test renders first consumes it, so the guard dies silently if anyone adds a render above it or reorders the file. Measured: with the mixed-sibling test ordered first, the deleted-fallback mutant fails 0 of 3 in that arrangement. Splitting the assertion into its own file is the fix for the mechanism rather than an accommodation of it, and it also removes the temptation to assert the missing-key sentence from two tests in one file, which can never work."
+      },
+      {
+        "approach": "Reset React's module-level warning suppression between tests so one file could hold both guards, instead of splitting into two files.",
+        "rejected_because": "React exposes no supported way to reset the warning dedup; it would mean reaching into React internals or resetting modules between tests, coupling the suite to an implementation detail of a specific React version that would break the moment that detail changes. A second file costs one duplicated fixture helper pair and depends on nothing but Vitest's default per-file module isolation."
+      },
+      {
+        "approach": "Assert on the key expression directly, by capturing the keys React receives instead of watching console.error.",
+        "rejected_because": "React keeps keys internal to its reconciler and does not expose them to renderRow, which is exactly why the file reads console.error in the first place. A DevTools fiber walk or a jsx-runtime mock would couple the test to React internals and to the react-compiler transform, both of which change under this repo's setup; a broken transform would then break the guard rather than the code."
+      },
+      {
+        "approach": "Delete the mixed-sibling test outright, as the reviewer's first option permits, rather than repairing it.",
+        "rejected_because": "A repaired fixture is strictly better and I verified it kills `key={category.id}`. Deleting would leave no coverage of a real category and a synthetic row sharing one parent — a list shape the production query layer does produce. The repair costs one added fixture row and one added assertion."
+      }
+    ],
+    "debate_summary": "The brief carried one binding objection against v1: the plan claimed a repaired mixed-sibling test fails under BOTH broken key expressions, and the shipped comment directive named 'which mutant kills it'. I tested the objection rather than accepting it, and it held — then I found it was weaker than stated. React emits the missing-key warning at most once per TEST FILE, not once per render pass (verified: three renders of one keyless fixture in a single file yield exactly one warning, across both render passes inside one test and across separate tests). Duplicate-key warnings are not deduplicated this way. This matters because the rejection's prescribed remedy — keep one file, let the uuid test own the deleted-fallback guard — is itself order-dependent: I built it, swapped the test order, and the guard went silent, letting the deleted-fallback mutant pass 0 of 3. Rather than weaken a claim to match the objection, I changed the design to fix the mechanism: split the file by warning class, so the missing-key guard sits alone in its own file with an uncontested warning budget, which I verified is order-independent. Every acceptance number in this order is a measurement from a run, including the six-mutant matrix.",
+    "mode": "committed"
+  }
 }
