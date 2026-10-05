@@ -559,14 +559,11 @@ describe('forecast app', () => {
     // stamp, then split through the same reducer the register's Split
     // affordance uses, with the amount divided between the two children.
     //
-    // The schedules service is started and stopped HERE rather than in a
-    // describe-wide hook pair, matching the sibling cases in this file: the
-    // lifecycle is opened at the point of use, so a case added to this block
-    // later cannot silently inherit a running service, and a throw between
-    // the two does not leave one running for the rest of the file. It is
-    // needed because the `_account` and other rule-derived fields on a
-    // schedule only resolve once the JSON-path mappings are populated, and
-    // `schedule/post-transaction` bails out without them.
+    // The schedules service is started and stopped at the point of use rather
+    // than in a describe-wide hook pair, because the `_account` and other
+    // rule-derived fields on a schedule only resolve once the JSON-path
+    // mappings are populated, and `schedule/post-transaction` bails out
+    // without them.
     async function createForecastWithSplitPostedOccurrence(
       conditions?: RuleConditionEntity[],
     ) {

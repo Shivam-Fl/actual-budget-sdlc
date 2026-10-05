@@ -183,7 +183,7 @@ export async function buildFutureScheduleOccurrences(
   endDateObj: Date,
   accountsById: Map<string, AccountWithComputedBalance>,
   ruleAccountsById: Map<string, DbAccountForRules>,
-  /** Rows from `getPostedScheduleTransactionsQuery`; only the three columns `indexPostedScheduleTransactions` reads. */
+  /** Rows from `getPostedScheduleTransactionsQuery`; the narrow type documents the three columns `indexPostedScheduleTransactions` reads and enforces nothing. */
   postedTransactions: PostedScheduleTransaction[],
 ) {
   const postedByScheduleId =
