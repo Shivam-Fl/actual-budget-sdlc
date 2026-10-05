@@ -52,5 +52,7 @@
     },
     "councils": {},
     "decided_at": "2026-10-05T01:03:55.216Z"
-  }
+  },
+  "stopped_at": null,
+  "dispatched_stage": "debug"
 }
