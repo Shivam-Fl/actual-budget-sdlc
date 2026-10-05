@@ -594,7 +594,8 @@
         "detail": "AC-13's own test-verification method is not satisfiable as written, and the PR does not flag it. AC-13 requires browser verification that the surviving row \"is still found by searching the register for that payee\", and its how_to_verify insists the search filter is load-bearing. But the work order's own AC-5 carries a CORRECTED EXAMPLE note explaining that a split whose legs do not sum to the parent cannot be committed from the 'Add New' row at all — and AC-13's procedure depends on exactly that under-fill state. The correction pattern is already established in this work order and simply was not applied to AC-13.\n\n`upcoming-release-notes/fix-unsplit-preserves-parent-amount.md:6`\n\nEvidence: work-order.json AC-5 states that a split whose legs do not sum to the parent cannot be committed from the 'Add New' row, and gives the only reachable route: commit a correctly filled split, then edit one leg upward. AC-13's how_to_verify instead says to \"commit a correctly filled split on a 123.45 row under a payee you choose, blank one leg back to 0.00, unsplit both legs, and then search the register for that payee\" — blanking a leg back to 0.00 is the under-fill AC-5 says the editor will not let you commit. I cannot confirm from the code alone that QA will hit this (driving it needs a browser and is QA's call), which is why this is minor and not major: the unit coverage for AC-13/AC-14 is genuinely strong — I confirmed the four cases go red with the fix removed.\n\nFix: Apply AC-5's route to AC-13's worked example: commit a correctly filled split, edit one leg down to 0.00, unsplit, then search. If QA reports the route still cannot be performed, the criterion needs the same treatment AC-3 and AC-5 already got rather than a code change."
       }
     ],
-    "pr": "100"
+    "pr": "100",
+    "filed": 108
   },
   "qa": {
     "verdict": "pass",
