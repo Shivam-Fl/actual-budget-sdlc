@@ -155,7 +155,12 @@
     "debate_summary": "The brief carried one binding objection against v2, and it was a bookkeeping one, not a design one: files[] said the fixture-reading test was renamed and stripped to test 1's assertions, out_of_scope said it was deleted, and test 1 was never mentioned at all — so an implementer following files[] literally would ship 4 tests while every acceptance number said 3. I took the objection's own cheapest resolution and applied it everywhere at once: test 2 is deleted outright (stated in files[], removed from tests[], and its rationale kept in out_of_scope), test 1 survives unchanged as the synthetic-rows collision guard, test 4 is renamed and repaired with a second synthetic sibling, and test 3 moves to the new missing-key file. That is 2 + 1 = 3, so AC-1, AC-2, AC-3 and qa_script step 1 stand unedited. I then rebuilt the whole design and re-measured everything rather than trusting v2's numbers: baseline 3 passed across 2 files, `key={category.id}` fails 2 of 3, `key={category.uncategorizedId}` fails 1 of 3, the two equivalent mutants stay green, and swapping the two tests leaves the missing-key guard still failing exactly one test. The one design question v2 raised — that React emits the missing-key warning once per test FILE, making any single-file guard order-dependent — I re-verified from scratch (missing=1, missing=0, missing=0 across three renders in one file) and it held.",
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.test.tsx",
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.missingKey.test.tsx",
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.test.tsx",
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.missingKey.test.tsx"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
