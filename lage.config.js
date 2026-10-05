@@ -9,6 +9,12 @@ module.exports = {
     },
     test: {
       type: 'npmScript',
+      // `test` is cached, and its hash is built from files inside workspace
+      // packages. upcoming-release-notes/ is at the repo root and belongs to no
+      // package, so a note-only change cannot move that hash: lage would print
+      // `» skip @actual-app/ci-actions test` and exit 0 on a note the gate
+      // rejects. The gate therefore runs as its own uncached dependency.
+      dependsOn: ['release-notes'],
       options: {
         outputGlob: [
           'coverage/**',
@@ -16,6 +22,15 @@ module.exports = {
           '**/playwright-report/**',
         ],
       },
+    },
+    'release-notes': {
+      type: 'npmScript',
+      // Not cached, for the reason on `test`'s dependsOn: the notes this reads
+      // live outside every workspace package, so no note can appear in a cache
+      // key and a cache hit would skip the gate on the one change it exists to
+      // police. Only @actual-app/ci-actions defines the script; lage skips the
+      // task for every other package.
+      cache: false,
     },
     build: {
       type: 'npmScript',

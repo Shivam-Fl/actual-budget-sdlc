@@ -1,11 +1,17 @@
 import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { collectFailures, listNotePaths } from './release-notes-gate.mjs';
+
 const exec = promisify(execFile);
+
+// lage.config.js and this package's package.json are CommonJS; the suite is ESM.
+const require = createRequire(import.meta.url);
 
 // Driven as a subprocess against a real repository, because the defect is
 // which key the script destructures from selectReleaseNotePaths - a unit test of
@@ -197,5 +203,98 @@ describe('release-notes-check', () => {
 
     expect(code).toBe(1);
     expect(stdout).toContain('category "Nope" is not one of');
+  });
+});
+
+// The cases above are driven against throwaway repositories, because a diff is
+// the only way to control which paths the script sees and that is what the
+// script's own defect was about. But no workflow runs that script over the notes
+// this repository actually ships — the release-notes action exists and nothing
+// references it — so the file a release note is made of had no gate at all. This
+// block is that gate: the same rules, over the real directory, on every run of
+// the unit suite.
+//
+// It goes through util.mjs rather than importing validateFile() from the script,
+// because the script executes its git-diff IIFE at module load.
+//
+// It reads the whole directory rather than one note's exact bytes on purpose:
+// rewording a release note is routine and must not fail a test, while breaking
+// the published-changelog rules must.
+//
+// The rules and the walk live in release-notes-gate.mjs rather than here, so the
+// gate CI runs and the gate this suite runs cannot drift apart — which is exactly
+// how the two shipped: the walk below used to be a single non-recursive
+// readdirSync while the checker selected nested notes through its diff.
+describe('the real upcoming-release-notes/ directory', () => {
+  const NOTES_DIR = fileURLToPath(
+    new URL('../../../upcoming-release-notes', import.meta.url),
+  );
+
+  it('contains release notes to check', () => {
+    // A moved or mis-resolved NOTES_DIR would make the rule case below pass
+    // vacuously, so the set it reads is asserted to be non-empty first.
+    expect(listNotePaths().length).toBeGreaterThan(0);
+  });
+
+  it('every note carries a category the published changelog has a header for', () => {
+    expect(collectFailures()).toEqual([]);
+  });
+
+  it('holds a note in a subdirectory to the same rules', () => {
+    // Reproduces the defect this file shipped with: the walk was one level deep,
+    // so a nested note broke every rule and the gate still exited 0 — while the
+    // release-notes checker selected it through its diff, count-points.mjs counted
+    // it under `upcoming-release-notes/**/*` and the changelog generator listed it
+    // with `git ls-tree -r`. Nothing may treat a subdirectory as out of scope, and
+    // the path is named with forward slashes because that is what a contributor
+    // types into a shell and what the gate has to name for them to find it.
+    const nested = path.join(NOTES_DIR, 'qa-nested');
+
+    try {
+      fs.mkdirSync(nested, { recursive: true });
+      fs.writeFileSync(
+        path.join(nested, 'bad-note.md'),
+        releaseNote({
+          category: 'Chore',
+          authors: 'github-actions',
+          body: 'An automated change nobody should be thanked for',
+        }),
+      );
+
+      expect(collectFailures()).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^qa-nested\/bad-note\.md category "/),
+          'qa-nested/bad-note.md authors are not people: github-actions',
+        ]),
+      );
+    } finally {
+      fs.rmSync(nested, { recursive: true, force: true });
+    }
+  });
+
+  it('is reachable on every run, not only on a cold cache', () => {
+    // Reproduces the other defect: the gate lived inside lage's cached `test`
+    // task, and upcoming-release-notes/ is outside every workspace package, so no
+    // note can enter that task's hash. A note-only change left the key identical,
+    // lage printed `» skip @actual-app/ci-actions test` and exited 0 on bytes
+    // vitest rejects — a no-op on precisely the change it exists to police. What a
+    // unit test can see is the wiring, so that is what this asserts; AC-6 is the
+    // live behaviour.
+    // Resolved through new URL rather than a '../../..' specifier, both because
+    // the notes dir above already is and because the boundaries rule forbids
+    // backtracked specifiers — and a package.json "imports" entry cannot reach
+    // here, since its targets are not allowed to escape the package root.
+    const config = require(
+      fileURLToPath(new URL('../../../lage.config.js', import.meta.url)),
+    );
+    const pkg = require(
+      fileURLToPath(new URL('../package.json', import.meta.url)),
+    );
+
+    expect(config.pipeline['release-notes'].cache).toBe(false);
+    expect(config.pipeline.test.dependsOn).toContain('release-notes');
+    // One key in one package is what scopes the npmScript task to it: lage skips
+    // a task whose package.json does not define the script.
+    expect(pkg.scripts['release-notes']).toContain('release-notes-gate.mjs');
   });
 });
