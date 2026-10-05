@@ -20,6 +20,22 @@ import {
 
 import { NON_DRAGGABLE_AREA_CLASS_NAME } from './constants';
 
+// Everything a click can land on that owns the click itself. Used to tell a
+// card click apart from a click on a control the widget body rendered.
+const INTERACTIVE_SELECTOR = [
+  'button',
+  'input',
+  'select',
+  'textarea',
+  'a[href]',
+  '[contenteditable]',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="checkbox"]',
+  '[role="tab"]',
+  '[role="menuitem"]',
+].join(',');
+
 type ReportCardProps = {
   widgetId: string;
   isEditing?: boolean;
@@ -115,12 +131,40 @@ export function ReportCard({
     // inside a button, which is invalid HTML and trips React's
     // validateDOMNesting. A View with role="button" keeps the click target and
     // the contents-derived accessible name the e2e selectors rely on.
+    //
+    // That trades one nesting problem for another rather than removing it:
+    // role="button" with tabIndex={0} wrapping focusable descendants is the
+    // same nested-interactive shape, so this removed an HTML-validity error
+    // and left a semantic one. CalendarCard is the case that makes it visible —
+    // its month label is a focusable control inside a focusable card. Fixing it
+    // properly means restructuring so the card is not itself a button, which
+    // would change the click target and accessible name the e2e selectors
+    // depend on; that is a larger change than this one.
     return (
       <Layout {...layoutProps}>
         <View
           role="button"
           tabIndex={0}
-          onClick={goToReport}
+          onClick={e => {
+            // The keydown guard below asks "did this keypress start on a
+            // descendant control?", which works because a keydown can only ever
+            // start on a focusable element. A click can start anywhere, so the
+            // same question has to be asked differently: did this click land on
+            // something interactive? Comparing e.target to e.currentTarget
+            // instead would suppress every ordinary card click, because a user's
+            // target is the body View, a span, or a chart node rather than the
+            // surface itself.
+            const target = e.target;
+            const interactive =
+              target instanceof Element
+                ? target.closest(INTERACTIVE_SELECTOR)
+                : null;
+            // The currentTarget comparison is load-bearing: the surface carries
+            // role="button" and so matches INTERACTIVE_SELECTOR itself. Without
+            // this check the card would block its own clicks.
+            if (interactive && interactive !== e.currentTarget) return;
+            goToReport();
+          }}
           onKeyDown={e => {
             if (e.key !== 'Enter' && e.key !== ' ') return;
             // A keypress that starts on a control inside the widget body is

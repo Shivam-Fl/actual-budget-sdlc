@@ -1,5 +1,8 @@
 import type { ReactNode } from 'react';
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import { initServer } from '@actual-app/core/platform/client/connection';
 import type { CustomReportEntity } from '@actual-app/core/types/models';
 import { render, renderHook, screen, waitFor } from '@testing-library/react';
@@ -117,6 +120,32 @@ describe('useReport', () => {
     await waitFor(() => expect(result.current.isPending).toBe(false));
     expect(result.current.isLoading).toBe(false);
     expect(result.current.data?.name).toBe('Groceries');
+  });
+
+  // Spreading the react-query result would put these back next to a derived
+  // isPending that disagrees with them on bare /reports/custom.
+  it('does not expose status, isSuccess or isInitialLoading', () => {
+    const { wrapper } = setup();
+    const { result } = renderHook(() => useReport(), { wrapper });
+
+    expect(result.current).not.toHaveProperty('status');
+    expect(result.current).not.toHaveProperty('isSuccess');
+    expect(result.current).not.toHaveProperty('isInitialLoading');
+  });
+
+  it('records in a comment what isFirstLoad actually computes', () => {
+    const source = readFileSync(
+      path.resolve(import.meta.dirname, 'useReport.ts'),
+      'utf8',
+    )
+      .replaceAll(/^\s*\/\//gm, ' ')
+      .replaceAll(/\s+/g, ' ');
+
+    // This comment is a copy of useDashboardWidget's, so it is asserted the
+    // same way — the two must not drift apart.
+    expect(source).not.toContain("react-query's own isLoading definition");
+    expect(source).toContain('isPending && isFetching');
+    expect(source).toContain('paused');
   });
 
   it('stays loaded through a background refetch over cached data', async () => {
