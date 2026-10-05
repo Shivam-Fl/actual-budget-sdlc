@@ -19,13 +19,13 @@
   "halted": null,
   "pending": {
     "stage": "implement",
-    "rework": null,
-    "requested_at_head": null,
+    "rework": "fix:triage",
+    "requested_at_head": "942727ff6f1c42aeb4572ed8952e3bd3f3df2142",
     "qa_run": null,
     "from": null,
-    "pr": null,
+    "pr": 101,
     "work_order_version": 1,
-    "at": "2026-10-05T04:18:49.319Z"
+    "at": "2026-10-05T04:51:57.801Z"
   },
   "work_order": {
     "issue": 98,
