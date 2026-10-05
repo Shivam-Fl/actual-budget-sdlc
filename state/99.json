@@ -704,7 +704,7 @@
   },
   "qa": {
     "verdict": "fail",
-    "introduced_bugs": 3,
+    "introduced_bugs": 1,
     "ac_ids": [
       "AC-1",
       "AC-2",
@@ -713,25 +713,20 @@
       "AC-5",
       "AC-6",
       "AC-7",
-      "AC-8"
+      "AC-8",
+      "AC-9",
+      "AC-10",
+      "AC-11"
     ],
-    "sha": "d4684c80c47dc37f83228842574868925feeefb4",
-    "run_id": "37288116307",
-    "work_order_version": 1,
-    "at": "2026-10-05T09:48:39.974Z"
+    "sha": "ff4e8a40afdd71a982762a86028a56622cf7ede6",
+    "run_id": "37312483156",
+    "work_order_version": 2,
+    "at": "2026-10-05T13:38:11.065Z"
   },
   "qa_open_bugs": [
     {
-      "id": "BUG-1",
-      "title": "parseReleaseNotes throws an unhandled TypeError on any release note without an authors list, and the new recursive walk routes nested files into it"
-    },
-    {
-      "id": "BUG-2",
-      "title": "A single unreadable subdirectory suppresses every other release-note failure in the directory"
-    },
-    {
-      "id": "BUG-3",
-      "title": "The new missing-directory guard does not stop release-notes-check.mjs when GITHUB_STEP_SUMMARY is set"
+      "id": "BUG-4",
+      "title": "A subdirectory README.md is treated as a release note: it aborts the changelog build, and once the gate's own advice is followed it is published as a changelog entry and then unlinked"
     }
   ],
   "rejected_artifacts": {
