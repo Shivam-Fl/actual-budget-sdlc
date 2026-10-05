@@ -17,7 +17,15 @@ const execFile = promisify(childProcess.execFile);
 
 const NOTES_DIR = 'upcoming-release-notes';
 
-console.log('Looking in ' + fs.realpathSync(NOTES_DIR));
+try {
+  console.log('Looking in ' + fs.realpathSync(NOTES_DIR));
+} catch (error) {
+  // Reported rather than thrown, and through the same reportError as every
+  // other failure below: a missing notes directory is a fact about the checkout
+  // this job can explain, not a stack trace the contributor has to read. The
+  // exit code is unchanged — both of reportError's exits are 1.
+  reportError('Cannot read ' + NOTES_DIR + '/: ' + error.message);
+}
 
 const baseRef = process.env.BASE_REF;
 if (!baseRef) {

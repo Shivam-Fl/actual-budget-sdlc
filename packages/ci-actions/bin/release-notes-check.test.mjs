@@ -204,6 +204,22 @@ describe('release-notes-check', () => {
     expect(code).toBe(1);
     expect(stdout).toContain('category "Nope" is not one of');
   });
+
+  it('reports a missing upcoming-release-notes/ as one error line and exits 1, not a stack trace', async () => {
+    const repo = await setup();
+    await fs.promises.rm(path.join(repo.dir, NOTES_DIR), {
+      recursive: true,
+      force: true,
+    });
+
+    const { code, stdout } = await runCheck(repo.dir);
+
+    expect(code).toBe(1);
+    // Only the prefix: the ENOENT text after it varies by platform, and a
+    // stack trace reaching the log is the defect this covers.
+    expect(stdout).toContain('::error::Cannot read upcoming-release-notes/: ');
+    expect(stdout).not.toContain('ENOENT: no such file or directory, realpath');
+  });
 });
 
 // The cases above are driven against throwaway repositories, because a diff is
@@ -241,16 +257,24 @@ describe('the real upcoming-release-notes/ directory', () => {
   });
 
   it('holds a note in a subdirectory to the same rules', () => {
-    // Reproduces the defect this file shipped with: the walk was one level deep,
-    // so a nested note broke every rule and the gate still exited 0 — while the
-    // release-notes checker selected it through its diff, count-points.mjs counted
-    // it under `upcoming-release-notes/**/*` and the changelog generator listed it
-    // with `git ls-tree -r`. Nothing may treat a subdirectory as out of scope, and
-    // the path is named with forward slashes because that is what a contributor
-    // types into a shell and what the gate has to name for them to find it.
-    const nested = path.join(NOTES_DIR, 'qa-nested');
+    // Reproduces the defect this file shipped with: the publisher walked one
+    // level deep, so a nested note broke every rule and the gate still exited 0
+    // — while the release-notes checker selected it through its diff,
+    // count-points.mjs counted it under `upcoming-release-notes/**/*` and the
+    // changelog generator listed it with `git ls-tree -r`. Nothing may treat a
+    // subdirectory as out of scope, and the path is named with forward slashes
+    // because that is what a contributor types into a shell and what the gate has
+    // to name for them to find it.
+    //
+    // The fixture lives in the system temporary directory, not in the notes
+    // directory this suite also reads: a vitest killed between the write and the
+    // cleanup used to leave `qa-nested/` behind, where it fails every later run.
+    const fixtureDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'release-notes-gate-'),
+    );
 
     try {
+      const nested = path.join(fixtureDir, 'qa-nested');
       fs.mkdirSync(nested, { recursive: true });
       fs.writeFileSync(
         path.join(nested, 'bad-note.md'),
@@ -261,15 +285,34 @@ describe('the real upcoming-release-notes/ directory', () => {
         }),
       );
 
-      expect(collectFailures()).toEqual(
+      expect(collectFailures(fixtureDir)).toEqual(
         expect.arrayContaining([
           expect.stringMatching(/^qa-nested\/bad-note\.md category "/),
           'qa-nested/bad-note.md authors are not people: github-actions',
         ]),
       );
     } finally {
-      fs.rmSync(nested, { recursive: true, force: true });
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
     }
+  });
+
+  it('leaves no qa-nested directory in the real upcoming-release-notes/', () => {
+    // The property the case above is written to hold: the suite writes nothing
+    // inside the repository, so there is nothing for an interrupted run to
+    // strand and nothing for a later run to trip over.
+    expect(fs.existsSync(path.join(NOTES_DIR, 'qa-nested'))).toBe(false);
+  });
+
+  it('reports a directory it cannot read as one failure string naming that path, instead of throwing', () => {
+    const missing = path.join(os.tmpdir(), 'release-notes-gate-does-not-exist');
+
+    // Reported rather than thrown: the caller prints failure strings as
+    // `::error::` lines before exiting 1, so a missing directory should reach
+    // the log the same way a broken note does instead of as a stack trace.
+    const failures = collectFailures(missing);
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain(`cannot read ${missing}: `);
   });
 
   it('is reachable on every run, not only on a cold cache', () => {

@@ -1,11 +1,166 @@
-import { describe, expect, it } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   describeAuthor,
   findNonPersonAuthors,
+  listNotePaths,
+  parseReleaseNotes,
   sanitizeWorkflowCommandData,
   selectReleaseNotePaths,
 } from './util.mjs';
+
+/**
+ * A notes directory holding one note at the top level and one a level down,
+ * plus the two shapes that used to be filtered differently by each caller: a
+ * README.md at the top level (excluded by both) and a nested sub/README.md
+ * (excluded by neither, because only the top-level one is the README).
+ */
+const FIXTURE_NOTES = {
+  'README.md': '# Upcoming release notes\n',
+  'top.md': note('A top-level note'),
+  'sub/README.md': note('A note that happens to be called README'),
+  'sub/deep.md': note('A note published from a subdirectory'),
+  'sub/notes.txt': 'Not a release note\n',
+};
+
+function note(body) {
+  return `---\ncategory: Bugfixes\nauthors: [Shivam-Fl]\n---\n\n${body}\n`;
+}
+
+/**
+ * Built under the system temporary directory rather than in the repository, so
+ * an interrupted run cannot strand a fixture in the tree this suite shares with
+ * every other run and every contributor.
+ */
+function createNotesFixture() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-'));
+
+  for (const [relative, contents] of Object.entries(FIXTURE_NOTES)) {
+    const target = path.join(dir, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, contents);
+  }
+
+  return dir;
+}
+
+describe('listNotePaths', () => {
+  let dir;
+
+  beforeEach(() => {
+    dir = createNotesFixture();
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('lists a top-level note and a nested one as relative forward-slashed paths', () => {
+    // Relative to `dir`, not absolute: these strings are what a contributor
+    // types into a shell, what the `only` filter is handed and what the gate
+    // names a failure by.
+    expect(listNotePaths(dir)).toEqual(
+      expect.arrayContaining(['top.md', 'sub/deep.md']),
+    );
+    expect(listNotePaths(dir).every(note => !note.startsWith('/'))).toBe(true);
+  });
+
+  it("excludes a top-level README.md, includes sub/README.md, and skips a nested non-markdown file, matching selectReleaseNotePaths' rule", () => {
+    // The exclusion is on the relative path, not the basename: only the
+    // directory's own README is the directory's README, and selectReleaseNotePaths
+    // drops only that one too.
+    expect(listNotePaths(dir)).toEqual([
+      'sub/README.md',
+      'sub/deep.md',
+      'top.md',
+    ]);
+    expect(listNotePaths(dir)).not.toContain('README.md');
+    expect(listNotePaths(dir)).not.toContain('sub/notes.txt');
+  });
+
+  it('returns paths in the default sort order, so the report order does not shift with the filesystem or the host locale', () => {
+    // `Array.prototype.sort` with no comparator, which compares UTF-16 code
+    // units. `sub/README.md` before `sub/deep.md` is that order and not
+    // alphabetical order, so this pins the behaviour down rather than restating
+    // whichever sort happened to run.
+    expect(listNotePaths(dir)).toEqual(
+      [...listNotePaths(dir)].sort((a, b) => (a < b ? -1 : 1)),
+    );
+    expect(listNotePaths(dir)[0]).toBe('sub/README.md');
+  });
+});
+
+describe('parseReleaseNotes', () => {
+  let dir;
+
+  beforeEach(() => {
+    dir = createNotesFixture();
+    // resolvePrNumber shells out to git with a path outside any repository; it
+    // catches and returns null, logging a warning on the way. The warning is not
+    // what this block is about, and its text is free to change.
+    vi.spyOn(console, 'log').mockImplementation(() => null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('with no `only` argument, parseReleaseNotes enumerates exactly what listNotePaths returns for the same directory', async () => {
+    // The publisher calls the walk rather than re-implementing it, so the two
+    // cannot disagree about which notes exist. Scoped to the no-`only` case on
+    // purpose: with a filter, parseReleaseNotes is meant to return a subset.
+    const { files } = await parseReleaseNotes(dir, 'actualbudget', 'actual');
+
+    expect(files).toEqual(listNotePaths(dir));
+  });
+
+  it("publishes a nested note's body and category into notesByCategory", async () => {
+    // The defect: a flat readdir dropped sub/deep.md, so a note the gate
+    // validated, count-points counted and `git ls-tree -r` listed never reached
+    // the changelog, credited to nobody.
+    const { notesByCategory } = await parseReleaseNotes(
+      dir,
+      'actualbudget',
+      'actual',
+    );
+
+    expect(notesByCategory.Bugfixes.join('\n')).toContain(
+      'A note published from a subdirectory',
+    );
+  });
+
+  it("filters on the relative path, so only = ['sub/deep.md'] selects the nested note alone", async () => {
+    const { files } = await parseReleaseNotes(
+      dir,
+      'actualbudget',
+      'actual',
+      undefined,
+      ['sub/deep.md'],
+    );
+
+    expect(files).toEqual(['sub/deep.md']);
+  });
+
+  it("does not match a nested note by its flat basename, so only = ['deep.md'] selects nothing", async () => {
+    // release-notes-generate.mjs strips the directory prefix off its `git
+    // ls-tree -r` allow-list, so the filter is handed relative paths. A flat
+    // basename must not select a note it does not name.
+    const { files } = await parseReleaseNotes(
+      dir,
+      'actualbudget',
+      'actual',
+      undefined,
+      ['deep.md'],
+    );
+
+    expect(files).toEqual([]);
+  });
+});
 
 describe('findNonPersonAuthors', () => {
   it('passes a real person', () => {

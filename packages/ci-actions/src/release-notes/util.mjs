@@ -1,4 +1,5 @@
 import * as childProcess from 'node:child_process';
+import * as fsSync from 'node:fs';
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -155,13 +156,59 @@ export function selectReleaseNotePaths(diffOutput, notesDir) {
   };
 }
 
+/**
+ * Every release note under `dir`, as paths relative to it with forward slashes,
+ * sorted.
+ *
+ * This is the one enumeration of the notes directory, shared with the gate in
+ * bin/release-notes-gate.mjs because both sides have to agree: the checker
+ * selects a nested note through a recursive `git diff` pathspec, the changelog
+ * generator lists it with `git ls-tree -r` and count-points.mjs counts it under
+ * a recursive glob over `upcoming-release-notes`. A publisher that walked one
+ * level deep would drop a note every other participant had already accepted —
+ * validated, counted, and then published nowhere and credited to nobody, which
+ * is the defect this function exists to prevent.
+ *
+ * The walk is recursive, and README.md is excluded only at the top level —
+ * `selectReleaseNotePaths`' rule rather than "any basename called README", since
+ * only the directory's own README is the directory's README.
+ *
+ * Synchronous, deliberately. The gate is a CLI whose every other operation is
+ * `node:fs` sync, and a walk that had to be awaited could be awaited at one call
+ * site and missed at the next — where `expect(collectFailures()).toEqual([])`
+ * asserts on a Promise and passes without having run anything. parseReleaseNotes
+ * is async and calls this without awaiting, which costs it nothing.
+ */
+export function listNotePaths(dir) {
+  const paths = [];
+
+  function walk(current, prefix) {
+    for (const entry of fsSync.readdirSync(current, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+
+      if (entry.isDirectory()) {
+        walk(join(current, entry.name), relative);
+      } else if (entry.name.endsWith('.md') && relative !== 'README.md') {
+        paths.push(relative);
+      }
+    }
+  }
+
+  walk(dir, '');
+  // No comparator, and the rule that asks for one is off for this line on
+  // purpose. The default sorts by UTF-16 code unit, which is deterministic
+  // across hosts and locales — and the report order is part of what a
+  // contributor reads when several notes fail at once, so it must not shift
+  // with the input locale. A hand-written comparator here would only restate
+  // that default, which is what this comparator used to be.
+  // oxlint-disable-next-line typescript/require-array-sort-compare -- the default comparator already is the deterministic, locale-independent order
+  return paths.sort();
+}
+
 export async function parseReleaseNotes(dir, owner, repo, historyRef, only) {
   const allowed = only == null ? null : new Set(only);
-  const files = (await fs.readdir(dir)).filter(
-    f =>
-      f.endsWith('.md') &&
-      f !== 'README.md' &&
-      (allowed == null || allowed.has(f)),
+  const files = listNotePaths(dir).filter(
+    f => allowed == null || allowed.has(f),
   );
   const notes = files.map(async name => {
     const content = await fs.readFile(join(dir, name), 'utf-8');
