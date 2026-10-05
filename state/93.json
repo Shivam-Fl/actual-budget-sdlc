@@ -68,5 +68,236 @@
     "decided_at": "2026-10-05T01:03:55.216Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "debug"
+  "dispatched_stage": "debug",
+  "validated_work_order": {
+    "issue": 93,
+    "version": 1,
+    "kind": "bug",
+    "mode": "committed",
+    "reproduced": true,
+    "confidence": 85,
+    "confidence_rationale": "I did not take the proposal on trust: I drove the real makeAsNonChildTransactions with probe fixtures and reproduced findings 1, 2, 4 and 5 exactly as described, then patched the proposed rule in and ran the full loot-core node suite, which gave 1288 passed / 2 failed with the only two failures being the two tests this ticket deliberately reverses — including confirmation that the filled-three-child test still expects 8345 and still passes, which is the load-bearing 'no behaviour change where the old code is right' claim. I also verified both callers, both comment targets, and the Math.abs argument on both arms. Confidence is held below 90 for two reasons: finding 2's correct resolution needs a maintainer's call I do not have (whether the parent or the first selected child should win the category), and the overshoot-in-keep-branch outcome is now pinned to 5345 by arithmetic and a probe rather than by any prior art in the repo. I also corrected one of the proposal's claims — the new badge risk in the keep branch — because my probe showed the function inherits rather than creates the error; had that gone unchecked it would have shipped a wrong statement in the PR description. The proposal's own confidence of 84 was honest and I am two points above it only because I re-verified independently.",
+    "understanding": "PR #81 added a guard to `makeAsNonChildTransactions` that keeps a split parent alive when the rows replacing it are all 0.00, so a never-filled split no longer loses its money (and its schedule occurrence stamp) on unsplit. It implements `every(t => num(t.amount) === 0)` rather than the old work order's sum test, and PR #81 argued at length why: children that OVERSHOOT the parent must still split out, or the surplus the user typed is destroyed. That argument is sound and the two overshooting tests pinning it are correct. The argument does not cover the other side. Every rule that splits out on `=== 0` also splits out when the promoted rows merely FALL SHORT of the parent, and that destroys the parent's amount by the shortfall — 7345 on a 12345 parent with children 5000/0, the whole 12345 on a 5000/-5000 pair. The guard was placed on only one of the two branches in the function: the one that deletes the parent. The neighbouring branch, where two or more children remain and the parent's amount is rewritten as their sum, has no such protection and destroys the parent's amount the same way, one branch below the fix. Three smaller findings round it out: the single-child early return still promotes the parent carrying a stale SplitTransactionError while the newer branch clears it; a test on the surviving row's category asserts the opposite of what the code does and cannot fail on that axis; and two comments describe a rule the code no longer implements.\n\nThe council's critic wrote nothing this round (plan/critique.json is `{}`), so there was no critique to judge. Every finding below was therefore reproduced by me directly against the tree, not taken from the proposal on trust: I drove the real `makeAsNonChildTransactions` with probe fixtures for findings 1, 2, 4 and 5, then patched in the proposed rule and ran the whole `loot-core` suite. Five findings hold and are in scope. One (the missing `[AI]` on PR #81's title) is a GitHub action on a merged PR, not a code change. One is bookkeeping about PR #81's work order, which this work order does not repeat. The remaining two are comment restorations.",
+    "root_cause": "The guard tests a property of the promoted rows (`all zero`) rather than a relation between the promoted rows and the parent (`do they account for it`), so it fires only on one end of a two-sided condition, and it is placed on one of the two branches that write an amount. In both places the surviving arithmetic is the sum of whatever happens to be there, which silently discards the parent's own value whenever that sum does not equal it.",
+    "approach": "One relation, stated once, applied to both branches.\n\nIn the branch that DELETES the parent, replace `promotedRowsAreAllZero` with a test of the relation the guard was always trying to state: the parent may only be deleted when the rows that would replace it account for it. `promotedRowsAccountForParent = !promotedRowsAreAllZero && Math.abs(promotedTotal) >= Math.abs(num(parentTransaction.amount))`, and the guard becomes `if (deleteParentTransaction && !promotedRowsAccountForParent)`. This keeps the all-zero case, keeps the exact-fill case, and — the point — now also keeps the parent when the promoted rows fall SHORT of it, which is the shape the ticket exists for. It deliberately does NOT fire on overshoot, so PR #81's two overshooting tests and its stated reasoning survive unchanged. The comparison is on absolute values, not signed ones: a plain `promotedTotal >= parentAmount` reads `-5000 >= -12345` as true for an under-filled expense, so a 123.45 expense split into -50.00 and 0.00 would still be destroyed. `Math.abs` is load-bearing for negatives and I verified both arms of it by probe.\n\nIn the branch that KEEPS the parent, stop recomputing its amount as the sum of the remaining children. The parent's amount after an unsplit is its own amount less what left, which is `num(parentTransaction.amount) - promotedTotal`. For a correctly filled split this is identical to the sum of the remaining children — I verified `12345 - 4000 = 8345`, and the existing test expects `8345` — so the existing filled-three-child test passes untouched. For an unfilled one it is the difference between destroying the parent's amount and preserving it: 12345 with children 5000/4000/0 and one leg unsplit goes to 7345 (conserved: 7345 + 5000 promoted = 12345) instead of 4000, and 12345 with three 0.00 children goes to 12345 instead of 0.\n\nAlso: give the single-child early return `error: null` so both branches producing the same surviving row agree, and fix the category test so it can fail on the axis it claims.\n\nOn the category finding I am fixing the TEST, not the behaviour. `makeTransactionWithChildCategory` takes the category off the promoted row, and the test at :507 gives parent and both children the same category, so it passes whatever the implementation does while its comment and name assert the opposite. Child-category-wins is established, deliberate behaviour elsewhere in the same file — the single-child test at :398 pins exactly that — so the two-child branch agreeing with it is consistent, not a bug. The test gets three distinct categories, the real provenance asserted, and a name that says which category lands. Whether the parent SHOULD win is a maintainer's call, recorded in risks rather than silently taken.\n\nOne correction to the proposal, from my own probes: it claims the new keep-branch rule introduces a fresh `SplitTransactionError` on an overshoot. It does not. `makeAsNonChildTransactions` never creates a split error — it spreads `...parentTransaction` and so passes the parent's EXISTING error through untouched on both the old and the new code. I verified this by running the overshoot shape against original and patched code: old gives `p:7000` with the error, new gives `p:5345` with the same error. The difference is that the OLD amount (7000) happened to equal the sum of the remaining children, leaving a stale badge on a now-balanced split, while the NEW amount (5345) does not, which is the arithmetically honest outcome. So the badge is inherited in both cases and the new rule does not add one. Do not treat this as a new risk in the PR description; it is an improvement, and the underlying staleness is a separate pre-existing gap noted in residual_risks.",
+    "debate_summary": "There was no debate to arbitrate: plan/critique.json is `{}`, so the critic produced nothing this round. Rather than treat an empty critique as a clean bill of health, I re-verified the proposal myself against the code, and that was worth doing — it caught one wrong claim.\n\nWhat I confirmed. All four behavioural findings reproduce exactly as the proposal described, driven through the real function rather than by reading it: the 7345 destroyed on 5000/0, the whole 12345 destroyed on 5000/-5000, the parent surviving at 0 on three-zero children, the 2945 destroyed on 5000/4000/0, the category coming from the first SELECTED child, and the single-child return keeping its SplitTransactionError. I patched the proposed rule into the tree and ran the full loot-core node suite: 1288 passed, 2 failed, and the only two failures are precisely the two tests this ticket says are wrong. The proposal's evidence and its confidence of 84 were honest and load-bearing.\n\nWhat I corrected. The proposal lists as a residual risk that an overshoot in the keep-parent branch 'now leaves a SplitTransactionError on the remaining split where the old code balanced it'. I ran that exact shape against both versions of the function and it is not what happens. `makeAsNonChildTransactions` spreads `...parentTransaction` and never calls `recalculateSplit`, so it does not create split errors — it passes the parent's existing one through. Original code: p=7000 with the inherited error. Patched code: p=5345 with the same error. The badge appears in both cases; what differs is that the OLD amount happened to equal the sum of the remaining children, leaving a stale badge on a balanced split, whereas the new amount is the arithmetically honest one. So the risk as written is not merely overstated, it is inverted, and shipping it would have put a false statement in the PR description. I dropped it from risks and moved the underlying, genuinely pre-existing gap — a parent whose amount changes without its error being recomputed — to out_of_scope with a reason, since fixing it means touching error handling and would widen a defect-shaped change.\n\nWhere I sided against the proposal. Two places. First, I kept both overshoot cases as tests to preserve, but I explicitly told the implementer not to assert a SplitTransactionError in the new multi-remaining overshoot case, because the function never mints one — the proposal's test list would have had someone write a failing assertion. Second, I added AC-7 (zero-amount parent keeps its schedule stamp) as its own criterion, which the proposal folded into evidence rather than acceptance; that arm is the one the original guard existed for and the rewrite must not regress it, so it deserves to be checked rather than assumed.\n\nWhat I did not overturn. The proposal's judgement call on finding 2 — fix the test, not the behaviour — is right, and I verified the thing that justifies it: the single-child test at :398 already pins child-category-wins as deliberate, so the two-child branch agreeing is consistency rather than a bug. Whether the parent should win is a maintainer's call, recorded in risks rather than taken silently. I also agree with dropping findings 3 and 8 (a merged PR's title, and bookkeeping about a past work order), with the two comment restorations, and with every rejection in alternatives_considered — I re-derived the `Math.abs` argument independently and it holds.\n\nOne thing the council did not examine and I could not settle: the rewrite's effect on how the register renders a kept-but-unbalanced parent. I traced the badge path far enough to know the function does not recompute the error, but I did not read TransactionsTable.tsx:2339 or run the app. That is in unknowns and is the first place QA should look.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/shared/transactions.ts",
+        "action": "edit",
+        "change": "In `makeAsNonChildTransactions`: (1) compute `promotedTotal` as the sum of `nonChildTransactionsToUpdate`'s amounts, and replace the `promotedRowsAreAllZero` gate with `promotedRowsAccountForParent = !promotedRowsAreAllZero && Math.abs(promotedTotal) >= Math.abs(num(parentTransaction.amount))`, inverting the `if` to `if (deleteParentTransaction && !promotedRowsAccountForParent)`. (2) In the `!deleteParentTransaction` branch, replace `amount: remainingChildTransactions.map(t => t.amount).reduce((total, amount) => total + amount, 0)` with `amount: num(parentTransaction.amount) - promotedTotal`. (3) Add `error: null` to the single-child early return at :457-465. (4) Rewrite the comment block above the guard to state the two-sided rule — split out when the promoted rows account for the parent or exceed it, keep the parent when they fall short or are all zero — and drop the 'Deliberately NOT the sum test' paragraph, which the new code supersedes; keep the note that the comparison is on magnitudes, and why.",
+        "why": "Findings 1, 4 and 5. The amount-destroying rule and the missing guard on the second branch are one defect; the stale error is the same defect class on the path beside the fix."
+      },
+      {
+        "path": "packages/loot-core/src/server/forecast/forecast-schedules.ts",
+        "action": "edit",
+        "change": "Restore the caveat PR #81's second commit dropped from the JSDoc on `buildFutureScheduleOccurrences`'s `postedTransactions` parameter (line 186): that the narrow `PostedScheduleTransaction` type documents the three-column projection `getPostedScheduleTransactionsQuery` selects and enforces nothing. Keep it inside the existing single-line comment form if that reads better in context.",
+        "why": "Finding 6. The narrowing is safe because of what AQL's projection returns, not because of the type, and this is the only place in the diff that says so. The line currently reads 'Rows from getPostedScheduleTransactionsQuery; only the three columns indexPostedScheduleTransactions reads.'"
+      },
+      {
+        "path": "packages/loot-core/src/server/forecast/app.test.ts",
+        "action": "edit",
+        "change": "Cut the twelve-line comment above `createForecastWithSplitPostedOccurrence` (lines 562-570) down to the sentence that actually justifies it — that the schedules service is started and stopped at the point of use rather than in a describe-wide hook pair. Keep the two-function shape; the reviewer accepts it and reverting to hooks is a larger change to already-passing tests. Do not touch the tests themselves.",
+        "why": "Finding 9. The comment argues a case the hook pair already made and defends a relocation as an addition; the honest remainder is one sentence. The genuinely load-bearing half — that `_account` and other rule-derived fields only resolve once the JSON-path mappings are populated, and `schedule/post-transaction` bails without them — must be kept."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/shared/transactions.test.ts",
+        "action": "edit",
+        "cases": [
+          "Rewrite the header comment above `describe('unsplitting a split')` (lines 423-427) to state the shipped rule — the parent may only be deleted when every row that would replace it accounts for it or exceeds it — since the sum test it describes is no longer what the code does.",
+          "Flip `splits out the typed amounts when two of three partly-typed children are unsplit` (line 621): parent 12345 with children 5000/4000/0 and two legs unsplit now yields the parent at 12345 with the children deleted, not the 9000 of typed rows. Replace its comment with the reason: the rows do not account for the parent, so the parent stays. This is the test whose expectation PR #81 deliberately overrode and that this ticket reverses; say so in the comment so the next reader knows it was a decision, not an accident.",
+          "Flip `still splits out when one child of an under-filled split is unsplit` (line 697): parent 12345 with children 5000/4000 and only the 5000 leg selected now yields the parent at 12345, because the promoted set (selected plus the one remaining child) sums to 9000. Its current comment argues the opposite at length and must go.",
+          "Keep the two overshooting cases at lines 655 and 677 exactly as they are, and keep the comment on the first that explains why the rule is not a strict equality — that children exceeding the parent must still split out. They are the arm the new rule must not reach, and pinning them is what stops a future edit from over-correcting.",
+          "Add a case for the under-filled pair that nets to zero: parent 12345 with children 5000/-5000, both unsplit, keeps the parent at 12345. This is the shape the review named and no shipped test covers it.",
+          "Add a case pinning the multi-remaining branch: parent 12345 with children 5000/4000/0 and only the 5000 leg unsplit yields the parent reduced to 7345 (12345 - 5000), not 4000. State in the comment that 7345 + the promoted 5000 conserves the parent's 12345 and the old sum-of-remaining destroyed 2945 of it.",
+          "Add a case pinning the all-zero multi-remaining branch: parent 12345 with three 0.00 children and one leg unsplit leaves the parent at 12345 and deletes nothing. This is finding 4's headline shape and the diff currently has no test for it.",
+          "Add a case for the overshoot in the multi-remaining branch: parent 12345 with children 7000/7000/0 and the first leg unsplit reduces the parent to 5345. Say why that is correct — 5345 + the promoted 7000 is the parent's 12345, whereas the old sum gave 7000 + 7000 and invented 1655. Do NOT assert anything about a `SplitTransactionError` appearing here: this function never creates one, it passes the parent's existing error through unchanged on both the old and the new code.",
+          "Add a negative-amount case: parent -12345 with children -5000/0, both unsplit, keeps the parent at -12345, and parent -12345 with children -5000/-7345 splits out. These pin the `Math.abs`, without which the first reads as accounted-for and the expense is destroyed.",
+          "Add a case pinning that a zero-amount parent keeps its schedule stamp when both 0.00 children are unsplit — this is the arm the original all-zero guard existed for, and the rewrite must not regress it.",
+          "Rewrite `takes the surviving row category from the parent, not a child` (line 507) as `takes the surviving row category from the first selected child`, with parent `cat-parent` and children `cat-c1`/`cat-c2`, asserting the surviving row carries `cat-c1`; add the reversed selection `[c2, c1]` asserting `cat-c2` and a single-selection `[c2]` case asserting `cat-c2`, so the order dependence the old comment claimed to rule out is pinned as real. Delete the comment claiming the category cannot depend on selection order.",
+          "Add a case that the single-child early return clears the error: parent carrying a `SplitTransactionError` with one 0.00 child unsplit promotes a row with `error` null, matching the two-child branch. Add `error: null` to the existing `toMatchObject` in `unsplitting last remaining child converts parent to regular transaction`."
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "A never-filled split unsplit in the register leaves the parent row at its full amount with no row left behind at 0.00, and no schedule occurrence is lost.",
+        "how_to_verify": "In the demo budget, split a transaction that came from a schedule, type nothing into either leg, unsplit both. One row at the original amount remains. Repeat on a plain transaction.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "A split where one leg is typed and the other left empty does not lose the parent's amount when both legs are unsplit; the parent row survives at its full amount.",
+        "how_to_verify": "Split a 123.45 row, type 50.00 into one child, leave the other empty, unsplit both. Expect one row at 123.45. This is the case PR #81's qa_script told QA to expect and the shipped guard did not deliver.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "Unsplitting ONE leg of a split that has three or more children and was never filled leaves the parent at its original amount, not at the sum of the remaining (empty) children.",
+        "how_to_verify": "Split a 123.45 row into three legs, type nothing, unsplit one leg. The parent row reads 123.45 and the unsplit leg stands alone at 0.00.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-4",
+        "check": "A split whose children were filled in correctly still splits out — parent deleted, the typed rows standing alone at their typed amounts — including when only one leg is unsplit.",
+        "how_to_verify": "Split a 123.45 row, type 50.00 and 73.45, unsplit both: two rows at 50.00 and 73.45. Unsplit only the 50.00 leg: still two rows, 50.00 and 73.45.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-5",
+        "check": "A split whose children sum to MORE than the parent still splits out, so the surplus the user typed is not collapsed onto the parent.",
+        "how_to_verify": "Split a 123.45 row, type 70.00 and 70.00 (140.00 total), unsplit both: two rows at 70.00 each. This arm must not be over-corrected by the new rule.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-6",
+        "check": "An expense behaves like an income under the new rule: an under-filled expense split keeps its parent, a correctly filled one splits out.",
+        "how_to_verify": "In the demo budget, split an expense of 123.45, type -50.00 into one leg, leave the other empty, unsplit both. Expect one row at -123.45. Then fill -50.00 / -73.45 and unsplit both: two rows at -50.00 and -73.45.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-7",
+        "check": "A zero-amount split whose schedule occurrence is stamped is still kept intact by the rewritten guard — the all-zero arm the original guard existed for is not regressed by the change to a two-sided relation.",
+        "how_to_verify": "Unit case in tests[]. The existing covered behaviour must survive the rewrite; the all-zero term is kept as a separate clause in promotedRowsAccountForParent precisely so this holds.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-8",
+        "check": "The surviving row after an unsplit carries no stale split error on the single-child path.",
+        "how_to_verify": "Unit case in tests[]: a parent carrying a SplitTransactionError with one 0.00 child unsplit promotes a row with `error` null, matching the two-child branch.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-9",
+        "check": "The test that covers the surviving row's category uses three distinct categories, is named for the provenance it actually pins, and fails if the implementation changes.",
+        "how_to_verify": "Unit case in tests[]. Flip the implementation to read the category off the parent and confirm the test goes red.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-10",
+        "check": "`buildFutureScheduleOccurrences`'s `postedTransactions` JSDoc says the narrow type documents the three-column projection and enforces nothing.",
+        "how_to_verify": "Read the comment on the parameter at packages/loot-core/src/server/forecast/forecast-schedules.ts:186 and confirm the non-enforcement caveat is present.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-11",
+        "check": "The comment justifying the forecast test's per-test service lifecycle is one sentence of justification plus the load-bearing technical reason, not twelve lines.",
+        "how_to_verify": "Read the comment above `createForecastWithSplitPostedOccurrence` in packages/loot-core/src/server/forecast/app.test.ts. The claim that `_account` and rule-derived fields need the JSON-path mappings populated must survive the trim.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-12",
+        "check": "`yarn workspace @actual-app/core run test` and `yarn typecheck` pass, with the two previously-flipping under-fill tests rewritten to the new expectation rather than deleted.",
+        "how_to_verify": "Run both from the repository root. I verified the baseline for this: with the proposed rule patched in, the full loot-core node suite gives 1288 passed / 2 failed, and the only two failures are `splits out the typed amounts when two of three partly-typed children are unsplit` and `still splits out when one child of an under-filled split is unsplit` — the two tests this ticket reverses. After flipping them the suite must be fully green. Also run the web config (test:web) since the guard is shared.",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "Run `yarn workspace @actual-app/core run test` from the repository root (this runs both `test:node` and `test:web`). Expect all of packages/loot-core green, including the whole src/server/forecast/ suite — the forecast changes are comment-only, so a failure there means the diff touched more than it claims.",
+      "Run `yarn typecheck` from the repository root.",
+      "Start the app (`yarn start`), open the demo budget via 'View demo' from the setup screen — the demo data is pre-populated, which an empty budget is not.",
+      "Unsplit, never filled: split a transaction, type nothing into either leg, unsplit both legs. Expect ONE row at the original amount. Not two rows, and not a 0.00.",
+      "Unsplit, one leg typed (the case PR #81's qa_script promised and did not deliver): split a 123.45 row, type 50.00 into ONE child, leave the other empty, then unsplit both. Expect one row at 123.45. PR #81 shipped two rows of 50.00 and 0.00 here.",
+      "Unsplit, three legs never filled: split a 123.45 row into three legs, type nothing, unsplit ONE leg. Expect the parent row still at 123.45 and the unsplit leg standing alone at 0.00. Before the fix the parent read 0.00 and 123.45 was gone.",
+      "Unsplit, three legs partly typed: same split, type 50.00 into the first leg and nothing into the others, unsplit that one leg. Expect the parent reduced to 73.45 and the 50.00 leg standing alone — 73.45 + 50.00 is the original 123.45. Before the fix the parent read 0.00.",
+      "Unsplit, correctly filled: split a 123.45 row, type 50.00 and 73.45, unsplit both. Expect two rows at 50.00 and 73.45 and no 123.45 row. Repeat unsplitting only the 50.00 leg: still two rows at 50.00 and 73.45.",
+      "Unsplit, overshoot: split a 123.45 row, type 70.00 and 70.00, unsplit both. Expect two rows at 70.00 each. This arm must NOT be over-corrected — it is the reasoning PR #81 argued for and the two tests pinning it are kept unchanged.",
+      "Unsplit, an expense: split an expense of 123.45, type -50.00 into one leg, leave the other empty, unsplit both. Expect one row at -123.45, not two. Then fill -50.00 / -73.45 and unsplit both: two rows at -50.00 and -73.45. The sign matters: without Math.abs on the comparison this case destroys the expense.",
+      "Unsplit, overshoot across three legs: split a 123.45 row into 70.00 / 70.00 / 0.00, unsplit the first leg. Expect the parent at 53.45 and the 70.00 leg standing alone. This is the money-conserving result; the old code showed 70.00 and invented 16.55.",
+      "Unsplit a scheduled occurrence: on a transaction that came from a schedule, split it, type nothing, unsplit both. Confirm on /schedules that the occurrence still reads Paid, not Due.",
+      "Look at the surviving row after each of the above: on a row that is no longer a split, check the one-child path leaves no red unassigned-amount badge.",
+      "Read the surviving row's category in the category-provenance case and note what it is. The unit test now pins the first SELECTED child's category, which does depend on selection order; the code is unchanged, only the test. Do not file this as a regression.",
+      "`yarn lint` from the repository root.",
+      "Confirm the PR title begins with `[AI] ` — `.github/agents/pr-and-commit-rules.md` makes it mandatory for every agent-authored PR, and PR #81 merged without it. Do not fill in the PR template."
+    ],
+    "risks": [
+      "The surviving row's category comes from the first SELECTED child, so it depends on selection order. A user who categorizes one leg of a partly typed split and then unsplits loses the parent's category to that leg's. This is unchanged behaviour that the old test hid; the new test pins it. It is NOT fixed here — the fix is a behaviour change that needs a maintainer's call.",
+      "Under-filling a split and unsplitting it now discards the amounts the user typed into the children — the parent keeps its full amount and the children are deleted. That is the ticket's explicit instruction (its qa_script told QA to expect exactly this) and PR #81's shipped behaviour differed, so the two shipped tests flip. Anyone who liked the old behaviour will read this as a regression; it is the intended correction.",
+      "Findings 8 and 9 of the review were accepted in part only. The comment trim for finding 9 is done; the structural suggestion (hook pair plus a construction-only helper) is not, and the review's own first option goes unaddressed.",
+      "PR #81's title still lacks the `[AI]` prefix and this diff does not fix it — it is a merged PR. The prefix requirement is carried onto this ticket's own PR via the qa_script instead."
+    ],
+    "out_of_scope": [
+      "Finding 3 (PR #81's title lacks the `[AI]` prefix): PR #81 is merged as of 2026-10-04T22:19:55Z. There is no code to change; the fix is a GitHub title edit on a merged PR, outside this diff. The qa_script carries the requirement forward onto this ticket's PR.",
+      "Finding 8 (PR #81's diff touched two files its work order did not list in files[]): bookkeeping about a past work order, not a defect in the code. This work order avoids the same shape — every changed test path appears in tests[] with its cases enumerated.",
+      "Recomputing the parent's split error when the keep-parent branch changes its amount. `makeAsNonChildTransactions` spreads `...parentTransaction` and never calls `recalculateSplit`, so a parent whose amount changes can carry a stale error — this predates the fix and is unchanged by it. Verified: the overshoot shape returns the same inherited error before and after. Worth its own ticket; touching it here would widen a defect-shaped change into an error-handling one.",
+      "RepairTransactions.tsx's sweep for 'non-split transactions with split errors': finding 5 makes the unsplit path stop minting that shape, but the settings repair flow itself is untouched."
+    ],
+    "evidence": [
+      "Critique was empty: plan/critique.json is `{}`. There was nothing to judge, so I reproduced the findings myself rather than adopting the proposal's.",
+      "Probe against the real makeAsNonChildTransactions (temporary file, deleted after): finding 1, parent 12345 with children 5000/0 both unsplit -> updated [[c1,5000],[c2,0]], deleted [[p,12345]] — 7345 destroyed. Parent 12345 with children 5000/-5000 -> updated [[c1,5000],[c2,-5000]], deleted [[p,12345]] — surviving rows net 0 against a 12345 parent.",
+      "Finding 4, parent 12345 with three 0.00 children, one unsplit -> updated [[p,0],[c1,0]], deleted [] — the parent survives carrying 0. Parent 12345 with children 5000/4000/0, one unsplit -> updated [[p,4000],[c1,5000]] — 2945 destroyed.",
+      "Finding 2, parent catPARENT with children catC1/catC2: selecting [c1,c2] yields catC1; selecting [c2,c1] yields catC2. The surviving row's category is the first SELECTED child's, so it does depend on selection order — the exact property the test's comment claims to rule out. The test passes only because its fixture gives all three rows the same category.",
+      "Finding 5, parent carrying a SplitTransactionError with one 0.00 child unsplit -> updated [{id:'p', amount:12345, is_parent:false, error:{type:'SplitTransactionError',...}}]. The two-child branch returns `error: null` for the same end state.",
+      "Prototyped the proposed rule and ran the full loot-core node suite: 1288 passed, 2 failed, 1 expected fail, 2 skipped. The only two failures are `splits out the typed amounts when two of three partly-typed children are unsplit` and `still splits out when one child of an under-filled split is unsplit` — the two tests whose expectations this ticket reverses. Every other test passes, including both overshoot cases and the filled-three-child case. The prototype was reverted; the tree is clean (`git status --porcelain` shows only the untracked plan/ directory).",
+      "Prototype outcomes on every shape: 5000/0 both selected -> p=12345; 5000/-5000 -> p=12345; three 0.00 children one unsplit -> p=12345; 5000/4000/0 with the 5000 leg unsplit -> p=7345; filled 4000/4000/4345 -> p=8345 (unchanged, the existing passing test); overshoot 7000/7000 both -> splits out to [[c1,7000],[c2,7000]]; exact fill 5000/7345 -> splits out; parent -12345 with -5000/0 -> p=-12345; parent -12345 with -5000/-7345 -> splits out; zero parent with a schedule stamp and 0/0 children -> parent kept; single-child error -> `error: null`.",
+      "The Math.abs arm is load-bearing and both sides were verified: parent -12345 with children -5000/0 keeps the parent at -12345 (a signed `promotedTotal >= parentAmount` would read -5000 >= -12345 as true and destroy it), while parent -12345 with -5000/-7345 splits out.",
+      "CORRECTION to the proposal, verified by running the overshoot keep-branch shape against BOTH versions: original code gives p=7000 with the parent's inherited error, patched code gives p=5345 with the same error. The function spreads `...parentTransaction` and never calls `recalculateSplit`, so it never creates a split error. The proposal's claim that the new rule leaves a fresh SplitTransactionError is unfounded; the badge is inherited in both cases, and the old amount was the one that was stale (7000 equalled the sum of remaining children, leaving a badge on a balanced split).",
+      "Callers of makeAsNonChildTransactions grepped exhaustively: packages/desktop-client/src/components/accounts/Account.tsx:1242 (parent selected, unsplit all children) and :1266 (only some children selected). No other caller. Both build `transactions-batch-update` diffs through handleBatchUpdateTransactions -> batchUpdateTransactions, neither of which recomputes a parent's split error.",
+      "Both comment-restoration targets confirmed on disk: forecast-schedules.ts:186 reads 'Rows from `getPostedScheduleTransactionsQuery`; only the three columns `indexPostedScheduleTransactions` reads.' with no non-enforcement caveat, and app.test.ts:562-570 carries the twelve-line comment above `createForecastWithSplitPostedOccurrence`, including the load-bearing sentence about `_account` needing the JSON-path mappings populated."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Adopt the original work order's rule verbatim: `promotedTotal !== num(parentTransaction.amount)`, so the parent survives on any inequality.",
+        "rejected_because": "It destroys the overshoot case. Children of 7000/7000 against a 12345 parent would collapse onto 12345 and throw away 1655 the user typed — which is precisely the reasoning PR #81 argued and shipped two tests for, and which the review explicitly called sound. The rule needs the two-sided form, not equality."
+      },
+      {
+        "approach": "Keep `every(t => num(t.amount) === 0)` and only ADD an under-fill test, leaving the comment's 'Deliberately NOT the sum test' paragraph in place.",
+        "rejected_because": "That is the same behaviour as the approach, with a comment that no longer describes the code. The paragraph argues the equality rule is wrong; the new code agrees and says why in one clause. Leaving it would put finding 7's defect back in the file being edited."
+      },
+      {
+        "approach": "Fix only the branch that deletes the parent, and file the multi-remaining branch (finding 4) as a follow-up, noting it in the PR description.",
+        "rejected_because": "It is the same defect one branch below, reached by the same user gesture, and it is a two-line change in a line already being edited. The 'say so in the PR description' escape is exactly how finding 4 exists today."
+      },
+      {
+        "approach": "In the keep-parent branch, special-case only the all-zero case — leave the parent's amount alone when every remaining child is 0.00 — rather than using `parentAmount - promotedTotal` generally.",
+        "rejected_because": "Narrows the fix to the shape the reporter happened to name and leaves 5000/4000/0 (2945 destroyed) and 7000/7000/0 (1655 invented) broken. `parentAmount - promotedTotal` is one expression, identical to the sum on every correctly filled split — verified at 8345 — so it costs nothing where the current code is right, and it conserves the parent's money everywhere else."
+      },
+      {
+        "approach": "Change `makeTransactionWithChildCategory`'s caller to pass `parentTransaction` so the surviving row keeps the PARENT's category, fixing finding 2 in code.",
+        "rejected_because": "A behaviour change, and the review itself says it needs a maintainer's call. Child-category-wins is established and deliberate here — the single-child test at :398 pins it — so the branch agreeing with it is consistent. Fixing the test to tell the truth is the part of finding 2 that is unambiguously right; the behaviour question goes to a human in risks."
+      },
+      {
+        "approach": "Retitle PR #81 to carry the `[AI]` prefix, as finding 3 asks.",
+        "rejected_because": "PR #81 is MERGED (mergedAt 2026-10-04). There is no code to change; the only action is a GitHub edit on a merged PR, which is a repository action rather than part of this diff. Recorded in out_of_scope with the reason, and the qa_script carries the prefix forward onto this ticket's own PR, which is where it can still matter."
+      },
+      {
+        "approach": "Revert the forecast test's service lifecycle from the two-function shape back to a describe-level `beforeEach`/`afterEach` pair, as the reviewer's first option suggests.",
+        "rejected_because": "The review offers the comment trim as an equally acceptable resolution and it touches no test. Reverting a lifecycle that three currently-passing tests depend on is a larger blast radius for no behavioural gain."
+      },
+      {
+        "approach": "Add a new helper (e.g. `promotedRowsAccountFor(transaction, rows)`) shared by both branches, or extract the guard into a named function.",
+        "rejected_because": "One caller, one use site after the rewrite — the arithmetic is three lines. A helper with a single caller is the abstraction this repo's conventions warn against."
+      }
+    ],
+    "assumptions": [
+      "`nonChildTransactionsToUpdate` is the complete set of rows that will exist after the unsplit whenever `deleteParentTransaction` is true — i.e. the selected children plus the one remaining child appended at :468-474. The probes exercise both shapes and both behave as the rule predicts, but I have not proved the partition by exhaustion; a caller passing an id set that is neither the children nor the parent would break the invariant.",
+      "The parent row's `amount` is authoritative for the parent's money and the children's amounts are the user's allocation of it. Every rule here follows from that: a shortfall belongs to the parent, and a surplus cannot. If the product intends the reverse for under-filled splits, AC-2 and the two flipped tests are the wrong answer and the approach needs revisiting rather than adjusting.",
+      "`Math.abs` on the comparison is right rather than a signed comparison with an explicit sign check. Arithmetic supports it and both probe arms confirm it, but no shipped test covers expenses through this function, so this rests on reasoning and probe rather than prior art in the repo.",
+      "Nothing downstream depends on the parent's amount being the sum of the remaining children. I grepped every caller; both build `transactions-batch-update` diffs and neither the client handler nor `batchUpdateTransactions` recomputes or reconciles a split total from the parent's amount.",
+      "Clearing `error` to `null` on the single-child early return cannot hide a real problem. The row it produces is a plain transaction with no children, for which a split error is meaningless by construction — and RepairTransactions.tsx already exists to sweep non-split rows carrying split errors.",
+      "The demo budget from 'View demo' contains both income and expense transactions large enough to split, so the expense cases in AC-6 and the qa_script are reachable without hand-building a budget. Not verified by running the app — I did not launch it."
+    ],
+    "unknowns": [
+      "Whether the parent or the child SHOULD win the category on the surviving row. The test is fixed to pin current behaviour and the code is unchanged; a maintainer may want the opposite, which is a one-token change at :506 plus the flipped test. Recorded in risks.",
+      "Whether the reviewer's intent on finding 4 was the narrow all-zero test or the general relation. The general relation was chosen because it is identical on every filled split and correct on every unfilled one, but a reviewer reading it as scope creep is not misreading it.",
+      "Whether `error: null` on the single-child return is reachable through any UI gesture. Neither the review nor I could construct it through `deleteTransaction`; it is fixed because the two paths produce the same row and disagree, which is a consistency defect whether or not a user can currently reach it.",
+      "How the register renders a parent whose children no longer sum to its amount after the keep-branch rewrite. The badge path is TransactionsTable.tsx:2339 and the mobile editor is TransactionEdit.tsx:306; neither was read in detail and the app was not run, so the visual consequence of a kept-but-unbalanced parent is unverified.",
+      "Whether any e2e test in packages/desktop-client/e2e covers unsplitting. A grep for 'unsplit' across that directory found nothing, so the function appears to be covered only by unit tests — which means AC-1 through AC-6 are browser-verified for the first time."
+    ],
+    "residual_risks": [
+      "The keep-parent rewrite deliberately leaves the parent's amount not equal to the sum of its remaining children whenever the split was under- or over-filled. The money is conserved, but the parent is now an unbalanced split, and nothing in this path recomputes its error. QA should look here first: unsplit one leg of a partly-typed three-leg split and check what the register renders on the parent — a red unassigned-amount badge is the arithmetically honest outcome, but it is new on screen and nobody has looked at it.",
+      "The surviving row's category comes from the first SELECTED child, so it depends on selection order. A user who categorizes one leg of a partly typed split and then unsplits loses the parent's category to that leg's. Unchanged behaviour that the old test hid; the new test pins it. NOT fixed here — that is a behaviour change needing a maintainer's call.",
+      "Under-filling a split and unsplitting it now discards the amounts the user typed into the children. This is the ticket's explicit instruction and PR #81 shipped the opposite, so two shipped tests flip. Anyone who liked the old behaviour will read this as a regression; it is the intended correction, and the PR description should say so plainly rather than letting QA discover it.",
+      "The negative-amount (expense) arm is pinned only by tests written in this change. No shipped test covered expenses through this function, so if `Math.abs` is later 'simplified' away, the new tests are the only thing standing between that and a regression.",
+      "Findings 8 and 9 of the review were accepted in part only. The comment trim for finding 9 is done; the structural suggestion (hook pair plus a construction-only helper) is not, and the review's own first option goes unaddressed. If a reviewer re-raises it, the answer is that it was considered and traded for blast radius — that reasoning is in alternatives_considered and should be repeated in the PR description.",
+      "PR #81's title still lacks the `[AI]` prefix and this diff does not fix it — it is a merged PR. The prefix requirement is carried onto this ticket's own PR via the qa_script instead, so QA must actually check it; it is exactly the kind of step that gets skipped.",
+      "AC-1 through AC-6 are browser-verified for the first time — no e2e test covers unsplitting. If the demo budget lacks a splittable expense, AC-6 cannot be checked as written and needs a hand-built one."
+    ]
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-05T02:11:38.151Z",
+  "validated_ac_changes": []
 }
