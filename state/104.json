@@ -69,5 +69,163 @@
     "decided_at": "2026-10-05T08:17:49.222Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "plan"
+  "dispatched_stage": "plan",
+  "validated_work_order": {
+    "issue": 104,
+    "version": 1,
+    "understanding": "PR #103 (for #97) split ReportTableList's key guard into two test files so each React warning sentence could be asserted where its warning budget allows. The split is correct about the mechanism it fixed: React emits the missing-key sentence at most once per test FILE, so a guard sharing a file with another render goes vacuously green. But the split moved the pre-split 'keys real category rows by their uuid' test into the missing-key file and dropped that test's duplicate-key assertion in the move, so the shipped tree is weaker than main at detecting a wrong key expression. I confirmed this by running the mutant matrix myself, not by reading it: on the shipped tree, mutating ReportTableList.tsx:84 to key={String(category.uncategorizedId)} — which keys every real category to the string 'undefined' — gives Tests 3 passed (3), fully green, where main failed one of four. The uuid fixture already renders the colliding shape (two real categories as siblings, which both collapse to 'undefined'); only the assertion that could see it was lost. Three of the five review findings are this one root cause seen from different angles. I verified each against the code and one (finding 1) does not survive as actionable here.",
+    "root_cause": "Splitting the guard by warning sentence moved the one fixture that renders two real categories — the shape that collides under a wrong key expression for real rows — into a file whose only assertion covers the other sentence. The file split is right (the missing-key sentence really does have a once-per-file budget, which I re-confirmed); the assertion split that followed it was wrong. A second, independent cause compounds it: the two files duplicate their scaffolding verbatim, so a fix to one half has to be hand-copied to the other.",
+    "approach": "Three changes, all in test files. No production code changes — ReportTableList.tsx's key expression is correct and stays exactly as it is.\n\n1. Restore the lost capability (finding 0). In ReportTableList.missingKey.test.tsx, split the console.error read into a shared consoleErrors() helper and add a second filter, DUPLICATE_KEY_WARNING = /same key/i, beside MISSING_KEY_WARNING; then assert both sentences on the same render. The missing-key file's budget is uncontested — the file still renders exactly one fixture, and the duplicate-key sentence is not deduplicated per file (three renders under key={category.id} each reported a duplicate, which is why the two collision tests could share a file while this one cannot). I built this design and re-ran the matrix: key={String(category.uncategorizedId)} and key={category.uncategorizedId} each fail exactly the missing-key test, key={category.id} still fails exactly the collision test, and the shipped expression is green.\n\n2. Fold the redundant mixed-sibling test into the fixture it duplicates (findings 2 and 3). Add the uuid-1 real category to the synthetic-rows test's group and delete the second test outright. The single remaining fixture then renders both shapes — the all-synthetic group production actually builds, and an adversarial real-category-among-synthetic-row group — in one render. I built this and ran the matrix: detection is identical (key={category.id} fails the collision test; String(...) and key={category.uncategorizedId} each fail the missing-key test), the suite drops from 3 tests to 2, and no mutant loses its killer.\n\n3. Extract the duplicated scaffolding (finding 4). Create ReportTableList.fixtures.tsx exporting groupEntity, dataEntity, renderRow and consoleErrors; both test files import from it. The two *.test.tsx files stay separate — that separation is the load-bearing part of the split. consoleErrors() lands in the shared module because step 1 gives both files a use for the raw read: each file keeps its own sentence patterns and its own one-line filter over consoleErrors(), so no filter is shared and none can be subsumed by another.",
+    "files": [
+      {
+        "path": "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.fixtures.tsx",
+        "action": "create",
+        "change": "New module exporting the four helpers currently duplicated byte-for-byte across the two test files: groupEntity(entity: Partial<GroupedEntity>): GroupedEntity, dataEntity(groupedData: GroupedEntity[]): DataEntity, renderRow({ item }: renderRowProps) returning <div>{item.name}</div>, and consoleErrors(): string[] returning vi.mocked(console.error).mock.calls.map(args => args.map(String).join(' ')). The file is .tsx because renderRow returns JSX. It is not named *.test.tsx, and I confirmed against packages/desktop-client/vite.config.mts:406 that the vitest include is 'src/**/*.{test,spec}.?(c|m)[jt]s?(x)', so it is not collected as a test; nothing in production imports it.",
+        "why": "Finding 4. The scaffolding copy is incidental to the load-bearing split and will drift the moment a fixture field changes — the totalDebts/netDebts spelling PR #103 fixed is exactly the kind of field that does."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.missingKey.test.tsx",
+        "action": "edit",
+        "change": "Import groupEntity, dataEntity, renderRow and consoleErrors from ./ReportTableList.fixtures and delete the four local copies. Add DUPLICATE_KEY_WARNING = /same key/i beside MISSING_KEY_WARNING; rewrite missingKeyWarnings() as consoleErrors().filter(message => MISSING_KEY_WARNING.test(message)) and add a sibling duplicateKeyWarnings() over /same key/i. Add expect(duplicateKeyWarnings()).toEqual([]); immediately after the existing missing-key assertion, so the one render in this file is asserted against both sentences. Reword the file header comment: keep the once-per-file budget explanation (it is why this file exists) but stop claiming the file is scoped to the missing-key half only — it now asserts both sentences on the one uncontested render.",
+        "why": "Finding 0. Restores the duplicate-key assertion that main had and the move into this file dropped, and keeps it in the file whose fixture already renders the colliding shape."
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.test.tsx",
+        "action": "edit",
+        "change": "Import groupEntity, dataEntity, renderRow and consoleErrors from ./ReportTableList.fixtures and delete the four local copies, including the local duplicateKeyWarnings(), which becomes a one-line filter over the shared consoleErrors(). Add groupEntity({ id: 'uuid-1', name: 'Rent' }) to the uncategorizedGroup fixture's categories array, ahead of the three synthetic rows, and add expect(screen.getByText('Rent')).toBeInTheDocument(); to the surviving test. Delete the mixed-sibling test entirely. Reword both comments to state the fixture's actual purpose: the three id:'' synthetic rows are what categoryLists() builds and what collides under key={category.id}; the uuid-1 real category is deliberately adversarial, there to prove the expression stays collision-free when a real uuid repeats alongside distinct uncategorizedIds, and the query layer does not currently build that shape. Delete the header comment's claim that this file guards the collision half 'only', which the merge makes false.",
+        "why": "Findings 2, 3 and 4. The mixed-sibling test cannot fail independently of the test above it under any key expression I ran, and its comment claimed a production shape the query layer never builds."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.test.tsx",
+        "action": "edit",
+        "cases": [
+          "renders the three synthetic rows without logging a duplicate-key error — now renders Rent, Uncategorized, Transfers and Off budget as siblings, and fails under key={category.id}",
+          "deleting the whole mixed-sibling test removes no mutant's only killer"
+        ]
+      },
+      {
+        "path": "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.missingKey.test.tsx",
+        "action": "edit",
+        "cases": [
+          "keys real category rows that have no uncategorizedId — fails under key={category.uncategorizedId} (missing-key sentence) and under key={String(category.uncategorizedId)} (duplicate-key sentence, restored by this change)"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "key={String(category.uncategorizedId)} in ReportTableList.tsx fails at least one of the two ReportTableList tests. On the shipped tree it passes all three; that is the regression this ticket exists to close.",
+        "how_to_verify": "yarn workspace @actual-app/web run vitest --run src/components/reports/graphs/tableGraph/ with the mutation applied, then revert it. Expect 1 failed | 1 passed (2), the failure being the missing-key test's duplicate-key assertion.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "Every key expression that is behaviourally DIFFERENT from the shipped one is matched by a test that fails under it. key={category.id} must fail the collision test; key={category.uncategorizedId} and key={String(category.uncategorizedId)} must fail the missing-key test; the shipped key={category.uncategorizedId ?? category.id} must pass both. This is the AC-2 matrix of PR #103, preserved, plus the capability main had, restored.",
+        "how_to_verify": "Run the mutant matrix in qa_script and compare each failure set against the expected one. Note the deliberate exclusions below — key={category.uncategorizedId ?? String(category.id)}, key={category.uncategorizedId ?? category.name.toLowerCase()} and key={category.name} are NOT required to fail, because each produces keys identical to the shipped expression on every row of both fixtures, so no key-warning assertion could ever see them.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "groupEntity, dataEntity, renderRow and the console.error read are declared once, in ReportTableList.fixtures.tsx, and neither *.test.tsx file declares its own copy. The two *.test.tsx files still exist separately.",
+        "how_to_verify": "grep -c 'function groupEntity' across the three files: 1 in the fixtures module, 0 in each test file.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "Each React sentence is matched by a filter that is not subsumed by another, and every fixture capable of producing a given sentence asserts it. This criterion is deliberately behavioural, not structural: it does NOT require one sentence per file, and it does NOT forbid a file from asserting both. The structural rule that forbade the missing-key file from containing /same key/i is what caused the regression, and it is not carried forward.",
+        "how_to_verify": "Read the two files' filters: MISSING_KEY_WARNING and DUPLICATE_KEY_WARNING are distinct, neither matches a substring of the other's matches, and both appear in the missing-key file.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "No comment in either file claims the mixed real-plus-synthetic fixture is a production shape. The comment states instead that it is deliberately adversarial, and that categoryLists() builds the three synthetic rows as their own top-level group (ReportOptions.ts:375-381 and :403-406) with no real category in it.",
+        "how_to_verify": "Read the comment above the surviving test. I confirmed the code claim independently: ReportOptions.ts:375-381 hardcodes uncategorizedGroup.categories to exactly the three synthetic rows, and :403-406 appends it to [...categories.grouped, uncategorizedGroup] as its own group.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "yarn typecheck and yarn lint pass with no new errors, and the format check reports the three files correctly formatted.",
+        "how_to_verify": "yarn typecheck && yarn lint:fix && yarn lint. I ran all three against a built copy of this exact design and they passed (6/6 workspaces typecheck success; clean format check).",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "yarn install (if node_modules is absent).",
+      "yarn workspace @actual-app/web run vitest --run src/components/reports/graphs/tableGraph/ — baseline after the change: 2 passed (2).",
+      "Save ReportTableList.tsx, then for each mutant below replace `key={category.uncategorizedId ?? category.id}` at line 84 with the mutant, run the same vitest command, and record which tests fail. EXPECTED: `key={category.id}` → the collision test fails; `key={category.uncategorizedId}` → the missing-key test fails; `key={String(category.uncategorizedId)}` → the missing-key test fails. EXPECTED GREEN (these are equivalent mutants, not gaps — do not fail QA over them): `key={category.uncategorizedId ?? String(category.id)}`, `key={category.uncategorizedId ?? category.name.toLowerCase()}`, `key={category.name}`.",
+      "Restore ReportTableList.tsx from the saved copy and re-run: 2 passed (2).",
+      "Confirm the restoration against the pre-change baseline: on the shipped tree `key={String(category.uncategorizedId)}` gives 3 passed (3) — all green, the regression. After the change it must give 1 failed. That before/after pair is the point of the ticket.",
+      "yarn typecheck && yarn lint:fix && yarn lint — expect no errors and a clean format check."
+    ],
+    "risks": [
+      "ReportTableList.fixtures.tsx is a non-test .tsx module inside src/. It is reachable only from the two test files and no production code imports it, so it cannot enter a bundle, but it does become part of the desktop-client TypeScript program. Typecheck and lint were run against it and pass.",
+      "The once-per-file missing-key budget is now spent by a test that also asserts the duplicate-key sentence. This is safe because the two sentences have independent budgets, but it means the missing-key file cannot grow a second fixture without the budget argument being redone. Recorded as a residual risk rather than guarded by an assertion.",
+      "If a future React version changes either warning's phrasing, both filters are tail-anchored (/same key/i, /unique .?key.? prop/i) so a reworded prefix is still caught, but a reworded tail is not."
+    ],
+    "out_of_scope": [
+      "Reviewer finding 1 (AC-4 of the #97 work order as written forbids the duplicate-key fix): there is nothing to edit. The criterion lives in a work order for a shipped issue, not in this repository — grep finds no such text in the tree. Its diagnosis is correct and is answered by AC-4 above, which is behavioural rather than structural.",
+      "No release note. This changes only test files; packages/docs requires one for a user-visible change and PR #103, also test-only, shipped without one.",
+      "No change to ReportTableList.tsx. The key expression is correct and its surrounding comment is accurate; the review raised no finding against production code.",
+      "No change to the query layer. Finding 2 confirms the mixed shape is not produced today, but making categoryLists() merge synthetic rows into real groups would be a behaviour change nobody asked for; the fixture stays adversarial and says so."
+    ],
+    "kind": "chore",
+    "confidence": 85,
+    "confidence_rationale": "The root cause is confirmed by my own runs rather than by reading the proposal, and so is the fix: I reproduced the regression on the shipped tree, built the proposed design, and ran a six-mutant matrix against it, and every failure set matched what the acceptance criteria state. I also read the query layer myself for finding 2 and the vitest include for finding 4's file-naming risk, and ran typecheck and lint against the candidate. What holds it below 90: I ran a vitest scoped to this one directory rather than the full yarn test; two premises are inherited rather than re-measured (that the duplicate-key sentence has no per-file budget, and that no test elsewhere imports these modules — I grepped and found only build artifacts, which is suggestive, not proof); and the one design call (merging rather than deleting the mixed fixture, which deletes a test the reviewer had argued should stay) is a judgement a maintainer could reasonably make the other way without changing detection. A full yarn test and a maintainer glance at that call would move this into the 90s.",
+    "reproduced": true,
+    "evidence": [
+      "Shipped tree, baseline: yarn workspace @actual-app/web run vitest --run src/components/reports/graphs/tableGraph/ → Tests 3 passed (3).",
+      "Finding 0 REPRODUCED BY ME, not taken on trust: key={String(category.uncategorizedId)} → Tests 3 passed (3), all green. Also green on the shipped tree: key={category.uncategorizedId ?? String(category.id)}.",
+      "Shipped-tree working mutants: key={category.uncategorizedId} → 1 failed (missingKey); key={category.id} → 2 failed (both collision tests, at ReportTableList.test.tsx:116 and :152).",
+      "I built the proposal's full candidate design (fixtures module + both test files edited) and re-ran the matrix: shipped expression → 2 passed (2); key={category.uncategorizedId} → missing-key test fails; key={String(category.uncategorizedId)} → missing-key test fails (the restored assertion, at missingKey.test.tsx:54); key={category.id} → collision test fails; key={category.uncategorizedId ?? String(category.id)} and key={category.name} → 2 passed (2). No mutant lost its killer versus the shipped tree.",
+      "Finding 2 CONFIRMED BY READING: ReportOptions.ts:375-381 gives uncategorizedGroup a hardcoded categories array of exactly the three synthetic rows; :403-406 appends it to [...categories.grouped, uncategorizedGroup] as its own top-level group. So no real category shares a parent with a synthetic row and the mixed fixture is adversarial.",
+      "Finding 4's file-naming risk checked: packages/desktop-client/vite.config.mts:406 sets test.include to 'src/**/*.{test,spec}.?(c|m)[jt]s?(x)', so a fixtures.tsx sibling is not collected as a test.",
+      "Finding 1 not actionable: the AC-4 text the reviewer objects to lives in the work order for shipped issue #97, not in this repository.",
+      "yarn typecheck passed (6/6 workspaces success, 0 aborted) and yarn lint reported 'All matched files use the correct format' with the candidate files in place.",
+      "All probe edits reverted; git status shows only untracked plan/ and the new work-order.json."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Keep the mixed-sibling test and reword its comment to call it a defensive guard over a shape production does not build (the reviewer's second option under finding 3).",
+        "rejected_because": "The test cannot fail independently of the one above it under any key expression I ran, so it has no detection power the first lacks. Keeping it preserves a third render and a third set of comments asserting nothing extra. Folding uuid-1 into the first test's fixture gives the same coverage in one test — I verified the failure sets are identical — with a smaller suite."
+      },
+      {
+        "approach": "Merge the two test files back into one and rely on ordering to work around the once-per-file missing-key budget.",
+        "rejected_because": "This is exactly the arrangement PR #103 removed, and the reason it was removed still holds: whichever test renders first consumes the file's budget and the other goes vacuously green. The split is load-bearing; only the duplicated scaffolding around it is not."
+      },
+      {
+        "approach": "Replace the per-sentence regexes with a single filter matching any React key warning, so one assertion covers both sentences.",
+        "rejected_because": "That restores the subsumption the original array had — a filter that matches both sentences can never distinguish which half of the key expression broke, and it would make a duplicate-key regression report as a missing-key failure. Two distinct tails, one per sentence, is the minimum that keeps the failure attributable."
+      },
+      {
+        "approach": "Widen the missing-key file's filter to an array of both patterns and keep one missingKeyWarnings() helper, as the reviewer suggested splitting.",
+        "rejected_because": "That is the subsumed-filter shape the review criticises elsewhere in the same ticket (the deleted /Encountered two children with the same key/i entry). Splitting the raw read from the per-sentence filters keeps each pattern independently meaningful while sharing the one piece that is genuinely common."
+      }
+    ],
+    "assumptions": [
+      "The missing-key file's single render still spends its file's missing-key budget exactly once after the change. Verified empirically — the mutant run reports one missing-key failure, not two, and the shipped run is green — but React's warning bookkeeping was not instrumented directly.",
+      "That the duplicate-key sentence is not deduplicated per file (the property that lets two collision renders share ReportTableList.test.tsx and that makes asserting both sentences on one render in the missing-key file safe). Inherited from PR #103's measurement, but consistent with my own runs: key={category.id} fails the collision test exactly once rather than twice.",
+      "That no test outside this directory imports the two test files. I grepped and found only build artifacts under packages/desktop-client/build/ts/, which are generated output, not source.",
+      "That a desktop-client vitest run scoped to this directory is representative. Each file calls vi.restoreAllMocks() in afterEach, and both pass standalone and together.",
+      "That 'chore' is the right kind: no user-visible behaviour changes, and no test asserts a production behaviour that was previously unguarded.",
+      "That this issue carries no '## Acceptance (from the split)' section, so no acceptance criterion needs a source id. I read the issue body in full."
+    ],
+    "unknowns": [
+      "Whether the reviewer would prefer the mixed fixture deleted outright rather than merged. Merging is the strictly stronger option (one render covering both shapes) and I verified it, so I committed to it rather than hedging.",
+      "Whether maintainers want ReportTableList.fixtures.tsx or a __fixtures__ directory. The reviewer suggested either; the flat sibling name matches the news/fixtures.ts precedent already in this package and keeps the import to one line.",
+      "Whether any VRT or E2E test depends on the number of tests in these files. The vitest include and the Playwright suites are disjoint from *.test.tsx under src/, so I expect no coupling, but I did not run yarn e2e or yarn vrt.",
+      "Whether a full yarn test across all workspaces changes anything. I ran a scoped vitest plus typecheck and lint; the desktop-client suite as a whole was not run."
+    ],
+    "debate_summary": "There was no critique to judge: plan/critique.json is empty ({}), so the council's second voice produced nothing and I verified the proposal's load-bearing claims myself instead of taking them on trust. That matters here, because I did not simply confirm it — I found a defect in the proposal that the (absent) critique would plausibly have caught. The proposal's AC-1 demanded that key={category.uncategorizedId ?? String(category.id)} fail at least one test, listing it alongside the String(category.uncategorizedId) mutant. I ran it against both the shipped tree and the proposal's own candidate design: it goes green on both, and it must. GroupedEntity.id is typed `string` (packages/loot-core/src/types/models/reports.ts:115), so String(category.id) is identity on every real category and the synthetic rows take the uncategorizedId branch regardless — it produces keys identical to the shipped expression on every row of every fixture. It is an equivalent mutant, not a gap, and no key-warning assertion can ever see it. The proposal's own qa_script asked QA to expect it to fail, which would have failed a correct implementation on an unsatisfiable criterion. I rewrote AC-1 and AC-2 to require failure only for expressions that are behaviourally different from the shipped one, and moved the three equivalent mutants into qa_script as explicitly-expected-green so QA does not fail the implementer over them. On the substance I agree with the proposal on all five findings, having reproduced each: finding 0 is real and I watched the shipped tree pass String(category.uncategorizedId) 3/3; the proposal's fix restores it and I watched the mutant fail exactly the missing-key test. Findings 2 and 4 I confirmed by reading (ReportOptions.ts:375-381 and :403-406; the duplicated helpers, and the vitest include that keeps a fixtures.tsx out of collection). Finding 3 — the mixed-sibling test being redundant — I accept over the reviewer's objection that it 'has verified discriminating power and should stay': the reviewer's own evidence undercuts that, since the discriminating power it cites (removing transferRow drops dup to 0) applies equally to the test above. The one place I am knowingly going against the reviewer's stated preference is deleting that test, and I record it as a judgement call in the acceptance criteria rather than hiding it in residual_risks. Finding 1 I dismiss as un-actionable, agreeing with the proposal: the AC-4 text it objects to lives in a work order for shipped issue #97, not in this repository, so there is nothing to edit. The proposal's own AC-4 already answers the finding's diagnosis by being behavioural rather than structural.",
+    "residual_risks": [
+      "key={category.uncategorizedId ?? String(category.id)}, key={category.uncategorizedId ?? category.name.toLowerCase()} and key={category.name} stay green, as they did on main and on the PR. The first is provably equivalent to the shipped expression (id is typed string) and no test can ever catch it. The other two collide only categories whose names differ only in case, and no fixture contains such a pair. Catching them would mean adding a case-colliding fixture — beyond what this ticket asks for, and QA should look here first if name-keyed mutants are the concern.",
+      "The duplicate-key half of the guard now lives only in the missing-key file's one render. If someone later adds a second real-category fixture to that file, the missing-key budget is spent twice and one assertion goes vacuous. No assertion guards this; it rests on the header comment.",
+      "The mixed real-plus-synthetic fixture is deliberately adversarial and the query layer does not build it today. If categoryLists() is ever changed to merge synthetic rows into real groups, this fixture becomes the only thing covering that shape — which is the intent, but it means the file's coverage claim is ahead of the production shape."
+    ],
+    "mode": "proposal"
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-05T09:11:10.437Z",
+  "validated_ac_changes": []
 }
