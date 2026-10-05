@@ -162,6 +162,145 @@ describe('parseReleaseNotes', () => {
   });
 });
 
+describe('parseReleaseNotes on a note the gate would have rejected', () => {
+  let dir;
+
+  beforeEach(() => {
+    dir = createNotesFixture();
+    vi.spyOn(console, 'log').mockImplementation(() => null);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeNested(name, contents) {
+    const target = path.join(dir, 'sub', name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, contents);
+  }
+
+  it('rejects a nested note with no `authors` front matter, naming the file rather than dying on `Cannot read properties of undefined`', async () => {
+    // The defect: `data.authors.map` with no guard, on a note the shared walk now
+    // routes here. Before the walk reached subdirectories this was latent —
+    // unreachable in practice, because the publisher only ever read top-level
+    // files the gate had already cleared.
+    writeNested(
+      'noauthors.md',
+      '---\ncategory: Bugfixes\n---\n\nNo authors key\n',
+    );
+
+    // Rejected, not skipped: release-notes-generate.mjs unlinks every entry of
+    // the returned `files` array, and `files` comes from listNotePaths whether or
+    // not the note parsed — so skipping this note would delete it from the tree
+    // and it would never reach a changelog. Throwing aborts before that unlink.
+    await expect(
+      parseReleaseNotes(dir, 'actualbudget', 'actual'),
+    ).rejects.toThrow(/sub\/noauthors\.md/);
+
+    // The named error, not the TypeError: a message naming the file is what
+    // tells a contributor which note to fix.
+    await expect(
+      parseReleaseNotes(dir, 'actualbudget', 'actual'),
+    ).rejects.toThrow(/authors/);
+  });
+
+  it('rejects a note whose `authors` is a bare string instead of a list, the same way', async () => {
+    // `authors: Shivam-Fl` parses to a string, which has no `.map` — a second
+    // route to the same crash, and one the gate already names as "authors should
+    // be a list".
+    writeNested(
+      'stringauthors.md',
+      '---\ncategory: Bugfixes\nauthors: Shivam-Fl\n---\n\nString authors\n',
+    );
+
+    await expect(
+      parseReleaseNotes(dir, 'actualbudget', 'actual'),
+    ).rejects.toThrow(/sub\/stringauthors\.md/);
+  });
+
+  it('still publishes a note that has an authors list, so the guard is not satisfied by rejecting everything', async () => {
+    // The control for the two above: the guard rejects a malformed list, not the
+    // presence of the block. Every note in the shared fixture is well formed, so
+    // publishing them all is the shape the release process depends on.
+    const { files, notesByCategory } = await parseReleaseNotes(
+      dir,
+      'actualbudget',
+      'actual',
+    );
+
+    expect(files).toEqual(listNotePaths(dir));
+    expect(notesByCategory.Bugfixes).toHaveLength(3);
+    expect(notesByCategory.Bugfixes.join('\n')).toContain('@Shivam-Fl');
+  });
+});
+
+describe('listNotePaths with an onError callback', () => {
+  let dir;
+
+  beforeEach(() => {
+    dir = createNotesFixture();
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  // root ignores the permission bits, so every case that needs a genuinely
+  // unreadable directory has to skip rather than assert nothing.
+  const itAsNonRoot = process.getuid && process.getuid() === 0 ? it.skip : it;
+
+  itAsNonRoot(
+    'reports an unreadable subdirectory and still returns every note outside it',
+    () => {
+      // The regression: catching the throw around the whole walk turned a partial
+      // walk into a total one, so one unreadable subdirectory discarded every note
+      // already read. The walk catches at the point of failure instead.
+      const locked = path.join(dir, 'sub', 'locked');
+      fs.mkdirSync(locked, { recursive: true });
+      fs.chmodSync(locked, 0o000);
+
+      const errors = [];
+
+      try {
+        const paths = listNotePaths(dir, (prefix, error) =>
+          errors.push({ prefix, error }),
+        );
+
+        expect(errors).toHaveLength(1);
+        // The prefix is the unreadable directory's own path relative to `dir`, so
+        // the caller can name what it could not read rather than the root.
+        expect(errors[0].prefix).toBe('sub/locked');
+        expect(errors[0].error.code).toBe('EACCES');
+
+        // The half that was the regression: top-level and readable nested notes
+        // still come back in the same run.
+        expect(paths).toEqual(
+          expect.arrayContaining(['top.md', 'sub/deep.md', 'sub/README.md']),
+        );
+      } finally {
+        fs.chmodSync(locked, 0o755);
+      }
+    },
+  );
+
+  it('throws on an unreadable directory when no callback is passed, preserving what the publisher relies on', () => {
+    // parseReleaseNotes has no way to report and recover, so an unreadable
+    // directory is an abort there. Making the walk always continue would turn a
+    // loud failure into a silently shortened changelog.
+    const locked = path.join(dir, 'sub', 'locked');
+    fs.mkdirSync(locked, { recursive: true });
+    fs.chmodSync(locked, 0o000);
+
+    try {
+      expect(() => listNotePaths(dir)).toThrow(/EACCES/);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+    }
+  });
+});
+
 describe('findNonPersonAuthors', () => {
   it('passes a real person', () => {
     expect(findNonPersonAuthors(['Shivam-Fl'])).toEqual([]);

@@ -33,9 +33,13 @@ const NOTES_DIR = fileURLToPath(
  * publisher calls this very function. One implementation, so a note nobody can
  * see is no longer a note that gets validated, counted, and then published
  * nowhere and credited to nobody.
+ *
+ * `onError` is forwarded rather than reimplemented: the gate is the caller that
+ * reports an unreadable directory instead of throwing on it, and it can only do
+ * that if the walk does not stop there.
  */
-export function listNotePaths(dir = NOTES_DIR) {
-  return walkNotePaths(dir);
+export function listNotePaths(dir = NOTES_DIR, onError) {
+  return walkNotePaths(dir, onError);
 }
 
 /**
@@ -99,21 +103,39 @@ function validateNote(relativePath, dir = NOTES_DIR) {
   return failures;
 }
 
-/** Every rule failure across every note in the directory, in path order. */
+/**
+ * Every rule failure across every note in the directory, in path order.
+ *
+ * A directory the walk cannot read is a failure like any other, and it is
+ * reported alongside the note failures rather than instead of them: catching it
+ * around the whole walk meant one unreadable subdirectory discarded every note
+ * already read, so the next run met a previously hidden failure for the first
+ * time. The top-level directory is the same case with an empty prefix, and still
+ * yields exactly one string — the caller prints each entry as an `::error::` line
+ * and exits 1, which is how an unreadable directory reaches the log instead of a
+ * stack trace.
+ */
 export function collectFailures(dir = NOTES_DIR) {
-  let paths;
-  try {
-    paths = listNotePaths(dir);
-  } catch (error) {
-    // Returned as a failure rather than thrown: the caller prints failure
-    // strings as `::error::` lines before exiting 1, so a directory it cannot
-    // read should reach the log the same way a broken note does instead of as a
-    // stack trace. Named rather than a fixed string, because the suite hands
-    // this a temporary directory and a fixed one would misreport it.
-    return [`cannot read ${dir}: ${error.message}`];
-  }
+  const unreadable = [];
+  const paths = listNotePaths(dir, (prefix, error) => {
+    // Named rather than a fixed string, because the suite hands this a temporary
+    // directory and a fixed one would misreport it.
+    unreadable.push(
+      `cannot read ${prefix ? path.join(dir, prefix) : dir}: ${error.message}`,
+    );
+  });
 
-  return paths.flatMap(relativePath => validateNote(relativePath, dir));
+  // Sorted like the walk's own paths, and for the same reason: these entries
+  // arrive in readdir order, which is the filesystem's and not ours, and a
+  // contributor reading several failures at once must not see them reordered by
+  // which machine they ran on.
+  // oxlint-disable-next-line typescript/require-array-sort-compare -- the default comparator already is the deterministic, locale-independent order
+  const sorted = unreadable.sort();
+
+  return [
+    ...sorted,
+    ...paths.flatMap(relativePath => validateNote(relativePath, dir)),
+  ];
 }
 
 function main() {

@@ -178,12 +178,32 @@ export function selectReleaseNotePaths(diffOutput, notesDir) {
  * site and missed at the next — where `expect(collectFailures()).toEqual([])`
  * asserts on a Promise and passes without having run anything. parseReleaseNotes
  * is async and calls this without awaiting, which costs it nothing.
+ *
+ * `onError` is how the gate asks for an unreadable directory to be reported
+ * rather than thrown: it is called with the directory's path relative to `dir`
+ * (empty for the top level) and the read error, and the walk continues past it.
+ * Without a callback the walk throws, which is what the publisher wants — it has
+ * no way to report and recover, so an unreadable directory is an abort. Catching
+ * once around the whole walk instead would report the unreadable directory and
+ * discard every note already read, so a contributor who fixed it and re-ran would
+ * meet a second, previously hidden failure for the first time.
  */
-export function listNotePaths(dir) {
+export function listNotePaths(dir, onError) {
   const paths = [];
 
   function walk(current, prefix) {
-    for (const entry of fsSync.readdirSync(current, { withFileTypes: true })) {
+    let entries;
+    try {
+      entries = fsSync.readdirSync(current, { withFileTypes: true });
+    } catch (error) {
+      if (onError) {
+        onError(prefix, error);
+        return;
+      }
+      throw error;
+    }
+
+    for (const entry of entries) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
 
       if (entry.isDirectory()) {
@@ -213,6 +233,17 @@ export async function parseReleaseNotes(dir, owner, repo, historyRef, only) {
   const notes = files.map(async name => {
     const content = await fs.readFile(join(dir, name), 'utf-8');
     const { data, content: body } = matter(content);
+    // Thrown rather than skipped, because a skipped note is a deleted note:
+    // release-notes-generate.mjs unlinks every entry of the returned `files`
+    // array, and `files` is built from listNotePaths whether or not the note
+    // parsed. It aborts before that unlink and names the file, where skipping
+    // would lose it from every future changelog without a word in CI — the gate
+    // rejects such a note, so reaching here means the gate was bypassed.
+    if (!Array.isArray(data.authors)) {
+      throw new Error(
+        `Release note ${name} has no usable \`authors\` list in its front matter. The release-notes gate rejects a note without one, so this file was not validated; fix its authors list and re-run.`,
+      );
+    }
     const authors = listify(
       data.authors.map(a => `@${a}`),
       { finalWord: '&' },

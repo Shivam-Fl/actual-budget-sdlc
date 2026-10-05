@@ -73,11 +73,32 @@ async function createRepo() {
   return repo;
 }
 
-async function runCheck(dir) {
+/**
+ * `overrides` is applied AFTER the BASE_REF injection above, and an undefined
+ * value DELETES the key rather than being stringified into it. Node's execFile
+ * omits undefined-valued env entries entirely, so the deletion reaches the child
+ * as an absence.
+ *
+ * The order is the whole point. Applied before the BASE_REF injection, a
+ * `BASE_REF: undefined` override would be overwritten by the line above and the
+ * child would still have a base ref — which is exactly the state in which the
+ * script's reportError does not stop at the missing-notes-directory guard, so the
+ * case asserting that it does would pass vacuously.
+ */
+async function runCheck(dir, overrides = {}) {
   const env = { ...process.env, BASE_REF: BASE_BRANCH };
-  // reportError only reaches its exit through the step summary when the runner
-  // supplies one; unset so a failure takes the exit-1 path CI would.
+  // reportError reaches its exit without a step summary, which is the path a
+  // local run takes; unset so a failure takes the exit-1 path CI would. A case
+  // that needs the runner's shape sets it back through `overrides` below.
   delete env.GITHUB_STEP_SUMMARY;
+
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      delete env[key];
+    } else {
+      env[key] = value;
+    }
+  }
 
   try {
     const { stdout } = await exec(process.execPath, [SCRIPT_PATH], {
@@ -220,6 +241,36 @@ describe('release-notes-check', () => {
     expect(stdout).toContain('::error::Cannot read upcoming-release-notes/: ');
     expect(stdout).not.toContain('ENOENT: no such file or directory, realpath');
   });
+
+  it('halts at the missing-notes-directory guard with GITHUB_STEP_SUMMARY set, as a runner has it', async () => {
+    // The other half of the guard above, and the half this harness hid: the
+    // script's reportError reached its exit only through the step summary, so
+    // with one set — which is every real Actions run, and the environment this
+    // suite deleted by default — it returned instead of exiting, and the
+    // module-scope call above carried on into the BASE_REF check and printed a
+    // second error over the first.
+    const repo = await setup();
+    await fs.promises.rm(path.join(repo.dir, NOTES_DIR), {
+      recursive: true,
+      force: true,
+    });
+    const summary = path.join(repo.root, 'step-summary.md');
+
+    const { code, stdout } = await runCheck(repo.dir, {
+      GITHUB_STEP_SUMMARY: summary,
+      // Must be deleted, not stringified. With BASE_REF left set by this helper
+      // the script finds its base ref, so the guard's own line is the only
+      // failure reported and this case passes against the unfixed script —
+      // vacuously. Measured both ways: 92 passed with it set, 1 failed here.
+      BASE_REF: undefined,
+    });
+
+    expect(code).toBe(1);
+    expect(stdout).toContain('::error::Cannot read upcoming-release-notes/: ');
+    // The symptom, stated as an absence: the run stopped at the guard rather
+    // than reporting an unrelated second failure over it.
+    expect(stdout).not.toContain('BASE_REF env var is not set');
+  });
 });
 
 // The cases above are driven against throwaway repositories, because a diff is
@@ -314,6 +365,135 @@ describe('the real upcoming-release-notes/ directory', () => {
     expect(failures).toHaveLength(1);
     expect(failures[0]).toContain(`cannot read ${missing}: `);
   });
+
+  // root ignores the permission bits, so a chmod-000 directory is readable to it
+  // and every case that needs a genuinely unreadable one has to skip rather than
+  // assert nothing.
+  const itAsNonRoot =
+    typeof process.getuid === 'function' && process.getuid() === 0
+      ? it.skip
+      : it;
+
+  /**
+   * A notes directory holding one chmod-000 subdirectory plus whatever `notes`
+   * describes, handed to `run` as (dir, lockedPath), with the permissions
+   * restored in a finally so the fixture can be removed on every path out.
+   */
+  function withLockedSubdirectory(notes, run) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-locked-'));
+    const locked = path.join(dir, 'subdir', 'locked');
+
+    fs.mkdirSync(locked, { recursive: true });
+    for (const [relative, contents] of Object.entries(notes)) {
+      const target = path.join(dir, relative);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, contents);
+    }
+    fs.chmodSync(locked, 0o000);
+
+    try {
+      return run(dir, locked);
+    } finally {
+      fs.chmodSync(locked, 0o755);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  itAsNonRoot(
+    'reports an unreadable subdirectory alongside the failures of the notes outside it',
+    () => {
+      // The regression: the try/catch wrapped the entire walk, so a throw at depth
+      // one discarded every note already read. A contributor who fixed the
+      // unreadable directory and re-ran would meet this broken note's two
+      // failures for the first time.
+      const failures = withLockedSubdirectory(
+        {
+          'zzz-broken.md': releaseNote({
+            category: 'Nope',
+            authors: 'github-actions',
+            body: 'Broken in two ways',
+          }),
+        },
+        dir => collectFailures(dir),
+      );
+
+      expect(failures).toHaveLength(3);
+      const [unreadable, ...noteFailures] = failures;
+      // The unreadable subdirectory is named as itself rather than as the root
+      // it sits under: "cannot read <notes dir>" would send a contributor looking
+      // in the wrong place for a directory whose siblings are right there.
+      expect(unreadable).toContain(`${path.sep}subdir${path.sep}locked: `);
+      expect(unreadable).toContain('EACCES');
+      expect(noteFailures).toEqual([
+        expect.stringMatching(/^zzz-broken\.md category "Nope" is not one of/),
+        'zzz-broken.md authors are not people: github-actions',
+      ]);
+    },
+  );
+
+  itAsNonRoot(
+    'prints exactly one line for an unreadable subdirectory when every other note is clean',
+    () => {
+      // What AC-3's and AC-10's shared scoping clause predicts, asserted as a
+      // count rather than assumed: one 'cannot read' entry for the subdirectory,
+      // and zero entries from the clean notes outside it.
+      const failures = withLockedSubdirectory(
+        {
+          'top.md': releaseNote({ body: 'A valid note' }),
+          'sub/deep.md': releaseNote({ body: 'Another valid note' }),
+        },
+        dir => collectFailures(dir),
+      );
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain('cannot read ');
+    },
+  );
+
+  itAsNonRoot(
+    'orders unreadable directories the same way whatever order they were created in',
+    () => {
+      // The unreadable entries arrive in readdir order, which is the filesystem's
+      // and not ours, so they are sorted the way the walk's own paths are. Two
+      // runs over the same names created in opposite orders must report
+      // identically, or the report order shifts between contributors' machines.
+      const readBack = order => {
+        const dir = fs.mkdtempSync(
+          path.join(os.tmpdir(), 'release-notes-order-'),
+        );
+        const locked = order.map(name => {
+          const target = path.join(dir, name);
+          fs.mkdirSync(target, { recursive: true });
+          fs.chmodSync(target, 0o000);
+          return target;
+        });
+
+        try {
+          return (
+            collectFailures(dir)
+              .filter(failure => failure.startsWith('cannot read '))
+              // The directory's own name, so two runs over different temporary
+              // directories are comparable.
+              .map(failure => path.basename(failure.split(':')[0]))
+          );
+        } finally {
+          for (const target of locked) {
+            fs.chmodSync(target, 0o755);
+          }
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      };
+
+      const ba = readBack(['b', 'a']);
+      const ab = readBack(['a', 'b']);
+
+      expect(ba).toHaveLength(2);
+      expect(ba).toEqual(ab);
+      // And it is the sort order rather than the creation order, which is what
+      // makes the report identical on two contributors' machines.
+      expect(ba).toEqual(['a', 'b']);
+    },
+  );
 
   it('is reachable on every run, not only on a cold cache', () => {
     // Reproduces the other defect: the gate lived inside lage's cached `test`
