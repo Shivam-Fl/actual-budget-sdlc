@@ -382,6 +382,21 @@
         "ci-verify"
       ],
       "prior_signatures": []
+    },
+    "triage": {
+      "verdict": "repair",
+      "diagnosis": "Not a flaky check and not an outage: PR #100's release note is malformed. The new file upcoming-release-notes/fix-unsplit-preserves-parent-amount.md contains no YAML front matter at all — it opens straight into the prose sentence 'Unsplitting a split no longer destroys...' — so gray-matter returns empty data and packages/ci-actions/bin/release-notes-gate.mjs reports all three rules it breaks at once (missing a category, missing authors, body should contain exactly one line, at validateNote(), gate lines 62-105). The body is a three-paragraph essay, which independently breaks the one-line rule. I reproduced it exactly: extracted the file from the PR head and ran validateNote() against it, getting the same three strings verbatim. Every other check was green — lage typecheck 10/10, lage test 8 of 9 tasks succeeding (@actual-app/core 1288 tests, web, sync-server, api, components, cli, crdt, eslint-plugin-actual), verify.build and verify.e2e both correctly skipped as unconfigured. The only red task was '@actual-app/ci-actions release-notes'. This is a real defect in the project's own code, inside what the work order already covers (PR #100's own release note), so the fix is a repair: prepend `---\\ncategory: Bugfixes\\nauthors: [Shivam-Fl]\\n---` and collapse the body to the one sentence the contributor docs ask for. I confirmed the corrected shape passes — a front-matter-plus-one-line version returns [] from validateNote(). One caveat worth recording: the digest that routed this to triage found no pattern because .sdlc/bin/lib/digest.js has no matcher for '::error::' workflow-command lines, so the only red task in the log was invisible to the summariser. That is a framework observation, not the cause of this failure, and it did not change the outcome — triage is the correct destination for an unrecognised failure — so I am not escalating on it.",
+      "evidence": "failed-run.log:1780-1787 — '@actual-app/ci-actions release-notes failed, took 0.98s' with '::error::fix-unsplit-preserves-parent-amount.md is missing a category', '::error::... is missing authors', '::error::... body should contain exactly one line', then '[Tasks Count] success: 8, skipped: 0, pending: 1' (failed-run.log:2469-2471) and '##[error]Build failed' (2472). Reproduced: node -e importing packages/ci-actions/bin/release-notes-gate.mjs and calling validateNote('fix-unsplit-preserves-parent-amount.md', <extracted file>) returns exactly [\"fix-unsplit-preserves-parent-amount.md is missing a category\",\"fix-unsplit-preserves-parent-amount.md is missing authors\",\"fix-unsplit-preserves-parent-amount.md body should contain exactly one line\"]. `gh api .../contents/...?ref=5470fbde` shows the file begins 'Unsplitting a split no longer destroys the parent transaction's amount' with no '---' delimiter. Control case: the same gate returns [] for a front-matter-plus-one-line version. failed-run.log:579 shows typecheck '[Tasks Count] success: 10'."
     }
-  }
+  },
+  "triage_history": [
+    {
+      "at": "2026-10-05T04:05:01.631Z",
+      "stage": "ci",
+      "verdict": "repair",
+      "confidence": 95,
+      "diagnosis": "Not a flaky check and not an outage: PR #100's release note is malformed. The new file upcoming-release-notes/fix-unsplit-preserves-parent-amount.md contains no YAML front matter at all — it opens straight into the prose sentence 'Unsplitting a split no longer destroys...' — so gray-matter returns empty data and packages/ci-actions/bin/release-notes-gate.mjs reports all three rules it breaks at once (missing a category, missing authors, body should contain exactly one line, at validateNote(), ga",
+      "run": "37261112522"
+    }
+  ]
 }
