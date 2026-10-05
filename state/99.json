@@ -710,7 +710,30 @@
         "detail": "The root guard added to util.test.js and the one added to release-notes-check.test.mjs are the same predicate written two different ways in the same PR: `process.getuid && process.getuid() === 0` here, versus `typeof process.getuid === 'function' && process.getuid() === 0` there. Neither is wrong and both behave identically on every platform this repo runs, which is exactly why the divergence is safe to lose rather than deliberate — but it is two spellings of one rule, and the file with the safer spelling is not the one a reader copies from when adding a third permission case.\n\n`packages/ci-actions/src/release-notes/util.test.js:252`\n\nEvidence: util.test.js:252 is `const itAsNonRoot = process.getuid && process.getuid() === 0 ? it.skip : it;`. release-notes-check.test.mjs:372-375 is the `typeof process.getuid === 'function' &&` form across three lines. Same variable name, same purpose, same comment above it ('root ignores the permission bits'), both added by this PR.\n\nFix: Make both read `typeof process.getuid === 'function' && process.getuid() === 0`. If a shared helper is preferred, neither file can import from the other (one is `.js`, one is `.mjs`, under `src/` and `bin/`), so matching text is the cheaper fix."
       }
     ],
-    "pr": "105"
+    "pr": "105",
+    "qa": [
+      {
+        "id": "BUG-5",
+        "severity": "minor",
+        "area": "release-notes publisher `only` filter",
+        "title": "release-notes-generate.mjs builds its `only` list with `git ls-tree` without -z, so a note whose path git quotes is silently never published",
+        "expected": "Every note in the tree reaches parseReleaseNotes, in the same path form the walk produces, so a note with a non-ASCII or otherwise quoted path is published like any other.",
+        "actual": "release-notes-generate.mjs:120-127 runs `git ls-tree -r --name-only origin/<branch> -- upcoming-release-notes` with no -z, so git quotes and backslash-escapes any path needing it: a note at upcoming-release-notes/sub/café.md comes back as \"upcoming-release-notes/sub/caf\\303\\251.md\". parseReleaseNotes then filters against the walked relative path ('sub/café.md'), which that string can never equal, and the note is dropped with no warning. Measured on a throwaway repo holding sub/café.md, sub/my note.md and sub/plain.md: the walk yields ['sub/café.md','sub/my note.md','sub/plain.md'] but the no--z `only` list publishes only [\"sub/my note.md\",\"sub/plain.md\"]; the same list built with -z publishes all three. This is the same -z hazard selectReleaseNotePaths' own doc comment calls out and handles, one caller over. The mechanism is pre-existing and not this PR's: at top level the base commit drops café.md too (files=[\"plain.md\"]). What this PR changes is the reach — nested notes are now routed through the same filter, so a subdirectory of notes with a quoted path loses entries.",
+        "repro": [
+          "Create a throwaway git repo with upcoming-release-notes/sub/café.md, upcoming-release-notes/sub/my note.md and upcoming-release-notes/sub/plain.md, each a valid note.",
+          "Run `git ls-tree -r --name-only HEAD -- upcoming-release-notes` and observe the quoted, octal-escaped path for café.md.",
+          "Build the `only` list from that output, strip the upcoming-release-notes/ prefix, and pass it to parseReleaseNotes against the same directory.",
+          "Observe files=[\"sub/my note.md\",\"sub/plain.md\"] — café.md is absent.",
+          "Repeat with `git ls-tree -rz` and observe all three notes published."
+        ],
+        "evidence": [
+          "qa-evidence/exchanges/T-18.txt"
+        ],
+        "suspected_cause": "packages/ci-actions/bin/release-notes-generate.mjs:120-127, the `only` list is derived from `git ls-tree -r --name-only` without -z, so git's path quoting survives into the filter argument. Pre-existing; this PR widens its blast radius by routing nested notes through it. Fix is a one-word change to -z plus splitting on NUL, matching what selectReleaseNotePaths already does.",
+        "introduced_by_pr": false,
+        "reproducible": "always"
+      }
+    ]
   },
   "qa": {
     "verdict": "fail",
