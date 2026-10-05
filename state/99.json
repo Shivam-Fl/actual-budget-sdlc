@@ -70,5 +70,201 @@
     "decided_at": "2026-10-05T06:50:58.615Z"
   },
   "stopped_at": null,
-  "dispatched_stage": "plan"
+  "dispatched_stage": "plan",
+  "validated_work_order": {
+    "issue": 99,
+    "version": 1,
+    "understanding": "PR #91 shipped a release-notes gate whose walk is recursive, while the publisher that turns notes into a changelog (parseReleaseNotes in packages/ci-actions/src/release-notes/util.mjs) is still a single non-recursive fs.readdir at line 160. The two disagree about the same directory and the disagreement is invisible to every check in the repo: release-notes-check.mjs selects nested notes through a recursive git diff pathspec, count-points.mjs counts them under 'upcoming-release-notes/**/*', release-notes-generate.mjs lists them with 'git ls-tree -r', and the docs generator shares parseReleaseNotes. Only the publisher drops them. A note in a subdirectory is validated by the gate (exit 0), counted for points, listed for unlinking, and then silently omitted from the changelog and the docs page, credited to nobody. The gate's own doc comment already asserts nested notes are published, so the code claims the opposite of what it does. Six smaller findings travel with it: the test suite writes its hostile fixture into the real shared notes directory with only a finally to clean it up and no gitignore entry, so a killed vitest poisons every later run; both gate scripts throw a raw ENOENT stack trace when the notes directory is missing; the gate exports three defaulted dir parameters and a validateNote no caller passes or imports; and its sort comparator is a three-line copy of Array.prototype.sort's default under a comment that misattributes the property to avoiding a locale-sensitive comparison. Two of the ten reported items are not code changes: the stale 'Validated 92' count lived in PR #91's work-order.json (a file this repo does not keep), and the understated PR body is GitHub metadata on a merged PR. Both are answered here rather than implemented.",
+    "root_cause": "Two independent enumerations of one directory, one rule each. The gate's walk (release-notes-gate.mjs:36-56) recurses; the publisher's (util.mjs:160) does not. Every other participant — the git diff pathspec, the count-points glob, the ls-tree -r at release-notes-generate.mjs:139 — is recursive, so the non-recursive readdir is the single outlier, and the gate added in #91 widened the split rather than closing it.",
+    "approach": "One walk, one rule, in the module both sides already import. Move the recursive walk out of the gate and into packages/ci-actions/src/release-notes/util.mjs as an exported function returning every note path relative to the directory, forward-slashed and sorted by the default Array.prototype.sort (which compares UTF-16 code units, is deterministic, and is not the locale-sensitive localeCompare the old comment claimed to avoid). parseReleaseNotes uses that walk, so the publisher selects exactly what the gate selects. The gate imports the walk and keeps its exported listNotePaths as a one-line wrapper supplying its NOTES_DIR default, so the gate's public surface is unchanged and there is exactly one implementation of the rule.\n\nThe `only` filter keeps working by matching on the relative path: release-notes-generate.mjs:143-144 already builds its allow-list from 'git ls-tree -r' with the prefix stripped, so a nested note already arrives as 'sub/deep.md'; the filter was written against flat basenames and now compares the same relative string it is handed. A top-level basename therefore no longer matches a nested note, which is correct.\n\nresolvePrNumber needs no change: it calls join(dir, name) for both the read and the git log pathspec, which resolves 'sub/deep.md' correctly, and its numeric shortcut now falls through to git log and returns the same number it would have. Do not 'fix' that. The README rule is the gate's rule exactly — exclude README.md only at the top level, matching selectReleaseNotePaths and the existing gate walk; a nested README.md being validated as a note is the correct outcome of that shared rule, not a bug to route around.\n\nFindings 2 and 6 pull in opposite directions — 2 asks for a temporary directory collectFailures accepts as an override, 6 asks for the dir parameter to be deleted because no caller passes it. Both are satisfied by the same edit: the fixture moves to os.tmpdir() and passes its path, giving the parameter a real caller, while validateNote keeps dir (collectFailures passes it; it is the one function that needs it to join the relative path) and loses its export since nothing imports it. That is the reviewer's own stated alternative, so no gitignore entry and no beforeAll/afterAll assertion is needed — the fixture is outside the repository, so a killed vitest cannot poison a later run.\n\nThe ENOENT guard goes in collectFailures rather than main(), where the reviewer put it. Same output — a failure string main() already prints as '::error::' before process.exit(1) — but reachable by the unit suite, which cannot reach main() (not exported, imported by nothing, and NOTES_DIR is resolved from import.meta.url so a subprocess cannot be pointed elsewhere without deleting the real directory). The message names the directory it was handed, 'cannot read <dir>: <error.message>', rather than a fixed string, because a fixed one would misreport the tmpdir the test passes.\n\nThe same guard goes into release-notes-check.mjs:20, which QA measured producing an identical stack trace on an unchanged file. That is pre-existing behaviour rather than a regression and the reviewer named only the gate, but the two scripts sit in the same package and ship the same defect. reportError is a hoisted function declaration, so the top-level call site can use it, and it exits 1 on both paths, so the exit code is unchanged.\n\nmain() loses its export; with the ENOENT guard in collectFailures, both behaviours worth covering are covered. Acceptance criteria assert exit codes and message shapes, never a literal note count — the direct lesson from AC-5 of PR #91, where 'Validated 92' on a branch yielding 93 nearly failed a passing change.",
+    "files": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.mjs",
+        "action": "edit",
+        "change": "Add an exported listNotePaths(dir) that walks dir recursively with fs.readdir(current, { withFileTypes: true }), recursing into every subdirectory, returning each .md file relative to dir with forward slashes, excluding README.md only when it is the top-level entry (matching selectReleaseNotePaths and the gate's existing walk, not excluding any basename called README). Return paths.sort() with no comparator. Add a doc comment naming the three participants that must agree. Rewrite parseReleaseNotes (lines 158-166) to call this walk instead of await fs.readdir(dir), keeping the `only` filter comparing against the relative path. Leave resolvePrNumber untouched.",
+        "why": "This is the root cause: the publisher is the only non-recursive participant in the pipeline. Fixing it here means the gate and the publisher cannot drift apart again, because they call the same function."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-gate.mjs",
+        "action": "edit",
+        "change": "Import the new walk from '../src/release-notes/util.mjs' as `listNotePaths as walkNotePaths` and replace the module's own recursive walk (lines 36-56) with `export function listNotePaths(dir = NOTES_DIR) { return walkNotePaths(dir); }`. In collectFailures (line 120), wrap the listNotePaths(dir) call in try/catch returning [`cannot read ${dir}: ${error.message}`]. Remove `export` from validateNote (line 67), keeping its dir parameter. Remove `export` from main (line 126). Delete the three-line comparator comment above line 55 along with the comparator.",
+        "why": "Closes findings 2, 3, 6, 7 and 8 without adding a gitignore entry or a second walk."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.mjs",
+        "action": "edit",
+        "change": "Wrap the top-level `console.log('Looking in ' + fs.realpathSync(NOTES_DIR));` (line 20) in a try/catch whose catch calls reportError('Cannot read ' + NOTES_DIR + '/: ' + error.message + '.'). reportError is a hoisted function declaration so it is callable from module scope. Both of its exits are process.exit(1), so the exit code is unchanged.",
+        "why": "QA finding 2 measured this script producing an identical stack trace on a file PR #91 never touched. Same package, same defect, same one-line fix."
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.test.mjs",
+        "action": "edit",
+        "change": "Rewrite the 'holds a note in a subdirectory to the same rules' case (lines 243-273) so its fixture is built under os.tmpdir() via mkdtempSync rather than the shared notes directory, asserting collectFailures(fixture) names the note by its sub/-prefixed relative path. Update the comment block to say the fixture lives in a temporary directory and why. Add a case asserting collectFailures on a missing directory returns a single 'cannot read …' string instead of throwing. Update every existing listNotePaths()/collectFailures() call site to await. Leave the six pre-existing cases as they are."
+      },
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "change": "Add a describe('parseReleaseNotes') block covering the recursion and the filter, with fixtures built by mkdtemp under os.tmpdir. Cases: the walk returns both top.md and sub/deep.md as relative forward-slashed paths; a nested note's body and category reach notesByCategory; only = ['sub/deep.md'] yields exactly that file; only = ['deep.md'] yields zero files; a top-level README.md is excluded while sub/README.md is included."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/ci-actions/src/release-notes/util.test.js",
+        "action": "edit",
+        "cases": [
+          "lists a top-level note and a nested one as relative forward-slashed paths",
+          "publishes a nested note's body and category into notesByCategory",
+          "filters on the relative path, so only = ['sub/deep.md'] selects the nested note alone",
+          "does not match a nested note by its flat basename, so only = ['deep.md'] selects nothing",
+          "excludes a top-level README.md and includes sub/README.md, matching selectReleaseNotePaths",
+          "returns paths in the default sort order, so the report order does not shift with the filesystem"
+        ]
+      },
+      {
+        "path": "packages/ci-actions/bin/release-notes-check.test.mjs",
+        "action": "edit",
+        "cases": [
+          "holds a note in a subdirectory to the same rules, using a fixture built under os.tmpdir() rather than the shared upcoming-release-notes/ directory",
+          "names the nested note by its sub/-prefixed relative path in both the category and the authors failure",
+          "reports a directory it cannot read as one 'cannot read …' failure string instead of throwing",
+          "still passes every pre-existing case: real notes carry a valid category, the directory is non-empty, and the lage wiring holds"
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "A release note in a subdirectory of upcoming-release-notes/ reaches the published changelog: given a directory holding both top.md and sub/deep.md, parseReleaseNotes returns files containing 'sub/deep.md' and a notesByCategory entry whose text contains deep.md's body.",
+        "how_to_verify": "Not a browser surface — release tooling with no screen. Run 'publishes a nested note's body and category into notesByCategory' in packages/ci-actions/src/release-notes/util.test.js. It fails today: parseReleaseNotes filters a flat fs.readdir, so files omits sub/deep.md.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-2",
+        "check": "The gate and the publisher select the same notes from the same directory: for any directory the set listNotePaths returns equals the set parseReleaseNotes enumerates, including a nested note and a nested README.md, and excluding only the top-level README.md.",
+        "how_to_verify": "yarn workspace @actual-app/ci-actions run test, cases 'lists a top-level note and a nested one as relative forward-slashed paths' and 'excludes a top-level README.md and includes sub/README.md'. Both walk the same exported function from util.mjs so they cannot disagree by construction.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-3",
+        "check": "Running the release-notes gate against a notes directory that does not exist prints a single line beginning '::error::cannot read ' and naming the directory, and exits 1. It does not print a Node stack trace.",
+        "how_to_verify": "Not browser-visible. Run 'reports a directory it cannot read instead of throwing' in release-notes-check.test.mjs. For the process shape: mv upcoming-release-notes /tmp/notes-backup && node packages/ci-actions/bin/release-notes-gate.mjs; echo $? — expect exit 1 and one ::error:: line naming the directory; restore. Today it prints a nine-line ENOENT stack.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-4",
+        "check": "Running release-notes-check.mjs against a notes directory that does not exist prints an '::error::' line naming what to restore and exits 1, rather than a stack trace.",
+        "how_to_verify": "Not browser-visible — the script resolves its base ref against a remote. BASE_REF=main node packages/ci-actions/bin/release-notes-check.mjs with the directory moved aside; echo $? — expect exit 1 and '::error::Cannot read upcoming-release-notes/: …'. The unit suite cannot cover this path, so this is the manual check.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-5",
+        "check": "Running the full @actual-app/ci-actions unit suite leaves upcoming-release-notes/ byte-identical to HEAD: git status --porcelain -- upcoming-release-notes/ prints nothing, whether the suite passed, failed, or was killed part-way through.",
+        "how_to_verify": "yarn workspace @actual-app/ci-actions run test, then git status --porcelain -- upcoming-release-notes/ — expect empty. To confirm the kill path, kill the vitest process mid-run and re-check.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-6",
+        "check": "release-notes-gate.mjs exports exactly listNotePaths and collectFailures; neither validateNote nor main carries the export keyword, and no dir parameter exists that no caller can supply — the suite passes a temporary directory to both.",
+        "how_to_verify": "grep -n '^export' packages/ci-actions/bin/release-notes-gate.mjs — expect two names. grep -rn release-notes-gate packages/ — expect only release-notes-check.test.mjs, importing those two.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-7",
+        "check": "The gate's failure report order is deterministic across runs and unaffected by the host locale: two notes failing at once always report in the same order, and that order is UTF-16 code-unit order, not locale-alphabetical.",
+        "how_to_verify": "util.test.js case 'returns paths in the default sort order'. End to end: run the gate under LC_ALL=C and LC_ALL=en_US.UTF-8 against the same failing fixtures and confirm the ::error:: lines appear in the same order.",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "yarn install (node_modules is absent in this checkout — gray-matter, listify and vitest are unresolvable until then, and every check below fails for that reason alone)",
+      "yarn workspace @actual-app/ci-actions run test — expect green, including the new util.test.js cases and the rewritten/added release-notes-check.test.mjs cases",
+      "git status --porcelain -- upcoming-release-notes/ — expect empty. This distinguishes the fix from the defect: today the suite writes upcoming-release-notes/qa-nested/ into the real tree and only a finally cleans it up",
+      "Confirm AC-3: mv upcoming-release-notes /tmp/notes-backup; node packages/ci-actions/bin/release-notes-gate.mjs; echo \"exit=$?\" — expect one '::error::cannot read …' line and exit=1, no stack; restore the directory",
+      "Confirm AC-4: mv upcoming-release-notes /tmp/notes-backup; BASE_REF=main node packages/ci-actions/bin/release-notes-check.mjs; echo \"exit=$?\" — expect one '::error::Cannot read upcoming-release-notes/: …' line and exit=1; restore",
+      "Confirm AC-1 against the real publisher, which no test can reach (it needs a remote and a release branch): create upcoming-release-notes/qa-nested/good-note.md with a unique marker in its body, run the gate (expect exit 0), then call parseReleaseNotes against the directory and confirm the marker appears in a notesByCategory entry and files contains the qa-nested path. Remove the fixture afterwards",
+      "Confirm AC-7: run the gate under LC_ALL=C and LC_ALL=en_US.UTF-8 against the same failing fixtures and compare the order of the ::error:: lines",
+      "yarn typecheck and yarn lint — lint covers the removed comparator and the removed exports",
+      "yarn test from the repository root — the gate runs as an uncached dependency of the ci-actions test task, so a note-only change is policed on a cold and a warm cache alike"
+    ],
+    "risks": [
+      "packages/docs/scripts/generate-upcoming-release-notes.mjs calls parseReleaseNotes with no `only` argument, so nested notes now appear on the upcoming-release-notes docs page as well as in the changelog. That is the intended fix and the page is regenerated on every docs build, but the diff will be empty until someone adds a nested note.",
+      "release-notes-generate.mjs unlinks each published note with fs.unlink(join('upcoming-release-notes', f)), which resolves correctly for a nested relative path but leaves the emptied subdirectory in the runner's working tree. Git does not track empty directories, so it cannot reach the commit; cosmetic.",
+      "Moving the walk into util.mjs makes the gate's listNotePaths and collectFailures async. Every call site must await, including main() and the three existing assertions in release-notes-check.test.mjs. A missed await turns an assertion on an array into one on a Promise and passes vacuously — the six pre-existing cases are the ones to re-read after the edit.",
+      "AC-4's check cannot be automated: release-notes-check.mjs resolves its base ref against a remote, so it needs a hand-run step. It is the one criterion whose verification is a manual command rather than a suite case, and QA should not treat the suite going green as covering it.",
+      "release-notes-check.mjs is an unchanged file and widening its behaviour is a judgement call: the review named only the gate, and QA explicitly noted this script's ENOENT is established repository behaviour rather than a regression. If a maintainer would rather keep it exactly as is, dropping it from files[] costs nothing else in this order.",
+      ".github/** is a forbidden path. count-points.mjs lives at .github/scripts/count-points.mjs and was checked rather than touched: it already globs 'upcoming-release-notes/**/*' recursively and excludes only the top-level README, so it agrees with the rule this change unifies and needs no edit.",
+      "No new host is contacted. parseReleaseNotes already shelled out to git and the change adds no network call; every host touched is already inside env.api_allowlist."
+    ],
+    "out_of_scope": [
+      "Review finding 4 — AC-5 of PR #91's work order expected 'Validated 92 release note(s).' on a branch yielding 93. That work-order.json is a pipeline artifact this repository does not keep and PR #91 is merged, so there is no file in which to correct it. The fix is applied forward: every criterion in this order asserts an exit code or a message shape and never a literal note count.",
+      "Review finding 5 — PR #91's body understates its own diff. A merged pull request's description is GitHub metadata, not a repository artifact, and this pipeline's rules forbid an agent writing a PR body.",
+      "Rewriting release-notes-check.mjs's own per-note validateFile (lines 58-104) to share the gate's rules. It is a fourth implementation of the same category/authors/body rules the gate was extracted from; collapsing it is a real improvement but a separate change, and this ticket is already the union of ten reported findings.",
+      "Adding a .gitignore entry for upcoming-release-notes/qa-nested/ or a beforeAll/afterAll assertion that the fixture path is absent. Both were the reviewer's alternatives to moving the fixture; moving it makes them unnecessary since the suite now writes nothing inside the repository.",
+      "Making the release-notes-check.mjs subprocess suite cover a missing upcoming-release-notes/ directory. Its createRepo() helper (lines 34-74) always mkdirs the directory so the case is reachable, but it belongs with any future rework of that suite rather than in a fix for the publisher's walk."
+    ],
+    "kind": "bug",
+    "confidence": 88,
+    "confidence_rationale": "Every change is anchored to a line I read in this checkout and each finding's mechanism is confirmed by reading its call chain end to end; the sort claim is confirmed by executing the comparison. What I could not do is execute the release-notes scripts themselves: node_modules is absent in this runner (gray-matter, listify and vitest are not installed), so the nested-note drop is reproduced by code-level analysis of the readdir at util.mjs:160 and the ls-tree -r call at release-notes-generate.mjs:139 rather than by a run. The remaining uncertainty is small and confined to the exact shape of the new util.test.js cases, which the implementer settles against the code it has already read.",
+    "reproduced": true,
+    "evidence": [
+      "packages/ci-actions/src/release-notes/util.mjs:160 — `const files = (await fs.readdir(dir)).filter(...)` is the only non-recursive enumeration in the release pipeline; the filter matches on the flat basename.",
+      "packages/ci-actions/src/release-notes/util.mjs:149 — selectReleaseNotePaths filters `path !== `${notesDir}/README.md``, i.e. top-level README only, so the publisher's inclusion rule must match that, not a basename check.",
+      "packages/ci-actions/bin/release-notes-generate.mjs:138-147 — the allow-list passed as `only` is built from 'git ls-tree -r --name-only' with the 'upcoming-release-notes/' prefix stripped, so nested entries already arrive as relative paths like 'sub/deep.md'. The filter must compare the relative path.",
+      "packages/ci-actions/bin/release-notes-gate.mjs:36-56 — the gate's walk is already recursive with withFileTypes, and its comment at lines 22-35 already states that the two enumerations disagree and that a note the gate cannot see is published and credited to nobody.",
+      "packages/ci-actions/bin/release-notes-gate.mjs:52-55 — executed `node -e` over ['b.md','A.md','é.md','B.md','a.md']: the default sort and the shipped comparator produce byte-identical output (A.md,B.md,a.md,b.md,é.md), confirming review finding 7.",
+      "packages/ci-actions/bin/release-notes-check.test.mjs:251-272 — the nested-note fixture is built with fs.mkdirSync/fs.writeFileSync inside the real NOTES_DIR and removed only in a finally; grep for 'qa-nested' across .gitignore and packages/*/.gitignore returns no match.",
+      "grep for 'validateNote' across all .mjs/.js/.ts returns only its definition at release-notes-gate.mjs:67 and the internal use at :122 — it is exported but never imported. grep for 'main' imported from release-notes-gate returns nothing; the only call is main() at :152 inside the isMain guard.",
+      "grep for listNotePaths/collectFailures across the repo returns only the definition at release-notes-gate.mjs:36 and :120, the test's import at release-notes-check.test.mjs:9, and four argument-less call sites in that test plus main() at :127 — no caller passes the dir parameter today.",
+      "packages/ci-actions/bin/release-notes-check.mjs:20 — `console.log('Looking in ' + fs.realpathSync(NOTES_DIR))` runs at module load and throws ENOENT uncaught, matching QA finding 2; reportError is a hoisted function declaration so it is callable from that call site.",
+      "lage.config.js:10-34 — `release-notes` is a separate uncached npmScript task that `test` dependsOn, and packages/ci-actions/package.json:7 defines the script, so the gate is wired correctly today and this change does not touch that wiring.",
+      "NOT VERIFIED BY EXECUTION: node_modules is absent in this checkout, so `import('./packages/ci-actions/src/release-notes/util.mjs')` fails with ERR_MODULE_NOT_FOUND for gray-matter. No test was run and no script was executed end to end; the reproductions above are code-level."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Make the gate's walk non-recursive to match parseReleaseNotes instead of fixing parseReleaseNotes.",
+        "rejected_because": "That is the direction the repository has been pushed twice already and it is the defect, not a fix. Three participants recurse and one does not. Narrowing the gate would drop nested notes from validation while continuing to count them for points and list them for unlinking — the same class of silent drop QA reported, one layer earlier."
+      },
+      {
+        "approach": "Delete the dir parameter from listNotePaths, collectFailures and validateNote, as review finding 6's first option suggests, and move the test fixture to a temporary directory some other way.",
+        "rejected_because": "There is no other way: the fixture has to live somewhere the gate can be pointed at, and that is what the parameter is for. Deleting it would force the test back into the real notes directory — the exact hazard finding 2 reports. Making the test pass a tempdir and keeping the parameter satisfies both findings at once, which is the reviewer's own second option."
+      },
+      {
+        "approach": "Put the ENOENT guard in main(), as review finding 3 specifies, and cover it by exporting main() or driving the CLI as a subprocess.",
+        "rejected_because": "It leaves the only meaningful new behaviour untested. The gate has no subprocess test harness and NOTES_DIR is resolved from import.meta.url, so a subprocess cannot be pointed at a missing directory without deleting the real one. Putting the guard in collectFailures produces byte-identical output and is reachable by a unit test."
+      },
+      {
+        "approach": "Keep the custom comparator and rewrite its comment to say the real reason is report-order determinism.",
+        "rejected_because": "The comparator is exactly Array.prototype.sort's default for string arrays, confirmed by running both. The determinism it claims to buy is the default's, not its own. Keeping three lines that do nothing, under any comment, leaves a reader looking for a behaviour that is not there."
+      },
+      {
+        "approach": "Leave parseReleaseNotes alone and have release-notes-generate.mjs flatten its recursive ls-tree list to basenames before calling it.",
+        "rejected_because": "That drops nested notes at the call site instead of the parser, leaves the docs generator (which passes no `only` and shares the parser) still dropping them, and trades a defect in one function for a defect in two."
+      },
+      {
+        "approach": "Split the ticket: one issue for the publisher's walk, one for the gate's leftover-fixture hazard, one for the small dead-surface findings.",
+        "rejected_because": "The findings share a single cause — two enumerations of one directory with one rule each — and the fixture move and the dir-parameter cleanup only make sense together. Splitting would put the dir parameter in a ticket whose motivation does not mention it."
+      }
+    ],
+    "assumptions": [
+      "release-notes-generate.mjs is the only caller that passes the `only` argument, and its allow-list is relative to upcoming-release-notes/ — confirmed by reading lines 138-147, where each 'git ls-tree -r' line has the prefix stripped before parseReleaseNotes receives it.",
+      "A nested README.md should be treated as a release note by all three participants, because selectReleaseNotePaths filters only the top-level one and the gate's walk already excludes only the top-level one. Changing that rule is a product decision and is not part of this ticket.",
+      "The gate runs under lage and `yarn workspace`, which execute npm scripts from the package directory; NOTES_DIR is therefore resolved from import.meta.url and stays that way.",
+      "'Validated N release note(s).' is the gate's only success line and its count is informational — nothing parses it, so no criterion in this order depends on its value."
+    ],
+    "unknowns": [
+      "node_modules is not installed in this runner, so no test was executed and no script was run end to end; every reproduction here is code-level. The first command in qa_script is therefore yarn install, and the reviewer or QA agent should treat the first suite run as the real reproduction of AC-1.",
+      "Whether any nested directory currently exists under upcoming-release-notes/. If one does, AC-1 and the docs-page change become immediately visible rather than latent.",
+      "The exact console WARNING text parseReleaseNotes emits for a note outside a git repository (resolvePrNumber's catch) is not asserted by any proposed test case, so a change to that string will not break the suite — but a strict snapshot assertion added later would."
+    ],
+    "debate_summary": "No decisions are recorded in plan/brief.md and no plan for this issue has been rejected before, so nothing was overridden and no prior plan needed answering. The issue body reports ten findings; two are not code changes and are answered rather than implemented — review finding 4 concerns PR #91's work-order.json, a pipeline artifact this repository does not keep, and review finding 5 concerns a merged PR's body, which is GitHub metadata this pipeline's rules forbid an agent writing. The remaining eight collapse into six changes because QA finding 1 restates review finding 1 and QA finding 2 restates review finding 3; implementing each once, in the root-cause location, is the point of the deduplication. Two of the ten pull against each other and are worth flagging: review finding 2 asks for a test fixture under a temporary directory that collectFailures accepts as an override, while review finding 6 asks for that dir parameter to be deleted because no caller passes it. Both are satisfied by the same edit — the fixture moves to os.tmpdir() and passes its path, which gives the parameter a real caller — so no gitignore entry and no stale-leftover assertion is needed, and the fixture leaves the repository entirely rather than relying on a finally block. One place departs from a reviewer's literal wording, deliberately: the ENOENT guard goes in collectFailures rather than main(), because main() is not exported and no subprocess harness can point the gate at a missing directory without deleting the real one, and the guard's output is byte-identical either way. Where that message text differs too — 'cannot read <dir>' rather than the reviewer's fixed 'cannot read upcoming-release-notes/' — the reason is the same parameter: a fixed string would misreport the temporary directory the test passes. The other judgement call is release-notes-check.mjs, which QA measured throwing an identical stack trace on a file PR #91 never touched and which review finding 3 did not name; it is fixed here because it is the same defect in the same package, and dropping it is a one-file edit if a maintainer disagrees.",
+    "residual_risks": [
+      "The rule is now in one function, but nothing enforces that a future fourth participant recurses. A release-notes publisher added outside packages/ci-actions would reintroduce exactly this defect, and the gate would again validate a note that no reader sees.",
+      "collectFailures now returns a synthetic failure string on a read error rather than throwing. A caller that distinguished 'the notes are valid' from 'the notes could not be read' by catching an exception would now see a failure list instead — correct for main(), but it changes the function's contract for any future caller.",
+      "The two QA-reported behaviours and six review-reported behaviours are fixed together in one branch. A regression anywhere in that branch is harder to attribute than six independent changes would be; the split was rejected because the findings share a cause, and that trade is being made deliberately."
+    ],
+    "mode": "committed"
+  },
+  "validated_from": "plan",
+  "validated_at": "2026-10-05T07:07:46.441Z",
+  "validated_ac_changes": []
 }
