@@ -231,7 +231,12 @@
     ],
     "version": 1
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/reports/spreadsheets/weekly-end-date.test.ts",
+    "packages/desktop-client/src/components/reports/spreadsheets/custom-spreadsheet.test.ts",
+    "upcoming-release-notes/remove-duplicate-weekly-end-date-suite.md",
+    "packages/desktop-client/src/components/reports/spreadsheets/weekly-end-date.test.ts"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
