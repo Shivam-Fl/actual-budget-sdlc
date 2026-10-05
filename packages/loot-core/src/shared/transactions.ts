@@ -456,10 +456,16 @@ export function makeAsNonChildTransactions(
   ) {
     return {
       updated: [
-        makeTransactionWithChildCategory(
-          parentTransaction,
-          childTransactionsToUpdate[0],
-        ),
+        {
+          ...makeTransactionWithChildCategory(
+            parentTransaction,
+            childTransactionsToUpdate[0],
+          ),
+          // The row is no longer part of a split, so it must not keep the
+          // split error its child earned — the same clearing the branch below
+          // does for the same end state.
+          error: null,
+        },
       ],
       deleted: [childTransactionsToUpdate[0]],
     };
@@ -475,29 +481,38 @@ export function makeAsNonChildTransactions(
 
   const deleteParentTransaction = remainingChildTransactions.length <= 1;
 
-  // The parent may only be deleted when at least one row that replaces it
-  // carries an amount — i.e. when NOT every promoted row is 0.
-  //
-  // The child count alone is not enough. A split opened from the register
-  // starts as two 0.00 children, so the count says 'safe' while the amounts say
-  // the parent is the only row carrying any value — and, if it came from a
-  // schedule, the occurrence stamp with it. Deleting it there loses the money
-  // and makes /schedules read the occurrence as Due again. The single-child
-  // branch above already behaves this way; this generalises it.
+  // The parent may only be deleted when the rows that would replace it account
+  // for it. The child count alone is not enough: a split opened from the
+  // register starts as two 0.00 children, so the count says 'safe' while the
+  // amounts say the parent is the only row carrying any value — and, if it came
+  // from a schedule, the occurrence stamp with it. A shortfall says the same
+  // thing: 5000 promoted against a 12345 parent leaves 7345 of the parent's own
+  // value with nowhere to go, so it stays.
   //
   // `nonChildTransactionsToUpdate` — the selected children plus the one
   // remaining child when exactly one is left — is the set that will exist
   // afterwards, which is why the test is over it and not the selection.
   //
-  // Deliberately NOT "the promoted rows do not sum to the parent". Children
-  // summing to MORE than the parent account for it and more: the user typed
-  // those amounts, and collapsing them onto the parent destroys the surplus.
-  // That case splits out below, exactly as it did before this guard existed.
+  // Two-sided, and deliberately not an equality test: children summing to MORE
+  // than the parent account for it and more, and the user typed those amounts.
+  // Collapsing them onto the parent destroys the surplus, so an overshoot
+  // splits out exactly as it did before this guard existed.
+  //
+  // The comparison is on magnitudes. A signed `promotedTotal >= parentAmount`
+  // reads -5000 >= -12345 as true for an under-filled expense, which is the
+  // same destruction the guard exists to prevent.
+  const promotedTotal = nonChildTransactionsToUpdate.reduce(
+    (total, t) => total + num(t.amount),
+    0,
+  );
   const promotedRowsAreAllZero = nonChildTransactionsToUpdate.every(
     t => num(t.amount) === 0,
   );
+  const promotedRowsAccountForParent =
+    !promotedRowsAreAllZero &&
+    Math.abs(promotedTotal) >= Math.abs(num(parentTransaction.amount));
 
-  if (deleteParentTransaction && promotedRowsAreAllZero) {
+  if (deleteParentTransaction && !promotedRowsAccountForParent) {
     return {
       updated: [
         {
@@ -514,14 +529,16 @@ export function makeAsNonChildTransactions(
     };
   }
 
+  // When the parent survives it is the parent's OWN amount less what was
+  // promoted out of it — not the sum of the children that stayed. The two are
+  // identical on a correctly filled split (12345 - 4000 = 8345 = 4000 + 4345),
+  // and differ exactly where summing destroys value: on an under-filled split
+  // the sum drops the parent's shortfall, and on an overshooting one it invents
+  // the surplus. Subtracting conserves the parent's money either way.
   const updatedParentTransaction = {
     ...parentTransaction,
     ...(!deleteParentTransaction
-      ? {
-          amount: remainingChildTransactions
-            .map(t => t.amount)
-            .reduce((total, amount) => total + amount, 0),
-        }
+      ? { amount: num(parentTransaction.amount) - promotedTotal }
       : {}),
   };
 
