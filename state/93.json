@@ -583,7 +583,7 @@
     "pr": "100"
   },
   "qa": {
-    "verdict": "blocked",
+    "verdict": "pass",
     "introduced_bugs": 0,
     "ac_ids": [
       "AC-1",
@@ -597,12 +597,15 @@
       "AC-9",
       "AC-10",
       "AC-11",
-      "AC-12"
+      "AC-12",
+      "AC-13",
+      "AC-14",
+      "AC-15"
     ],
-    "sha": "0261aa0aca0aef66a823101b00e5778a903b1850",
-    "run_id": "37267356508",
-    "work_order_version": 1,
-    "at": "2026-10-05T07:50:42.197Z"
+    "sha": "3f96711b5aa2457292acb8d6cee71d18b6f8608b",
+    "run_id": "37298686566",
+    "work_order_version": 2,
+    "at": "2026-10-05T14:18:53.046Z"
   },
   "qa_open_bugs": []
 }
