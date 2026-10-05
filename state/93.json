@@ -775,5 +775,215 @@
       "AC-3's corrected example states a five-row expectation where the old one implied four. If QA's assertion is written from the old example rather than the corrected one, T-4 and T-13 will fail again for the same arithmetic reason, on a correct implementation.",
       "The unit block is now payee-aware only in the new cases. A future change to `asRows`, or a rewrite of the block that consolidates the new assertions back through it, would silently restore the blindness that let this ship."
     ]
+  },
+  "approved_work_order": {
+    "issue": 93,
+    "version": 2,
+    "kind": "bug",
+    "mode": "committed",
+    "reproduced": true,
+    "confidence": 88,
+    "confidence_rationale": "I did not take either the QA report or the previous plan on trust. I unpacked the failing run's trace, read the page snapshot and the screenshot behind T-2, and then drove the real makeAsNonChildTransactions through a probe on the PR head: the never-filled, the under-filled, the single-child and the opposite-sign shapes all return a survivor with payee: null, and the split-out shape returns rows with the payee intact. That set is exactly the set QA failed and the set QA passed, which is what makes this a cause and not a correlation. I then applied the one-line fix and ran the full loot-core node suite from the repository root: 87 files passed, 1297 tests passed, 1 expected failure, and nothing regressed. Held below 90 for two reasons: I verified the survivor's field set against the two code paths that build one, not against every producer of a split parent in the app, and the corrected AC-3 and AC-5 examples are corrections to how QA should drive the register, which I reasoned from the error-context snapshot and the helper's own header comment rather than by driving a browser myself in this session.",
+    "understanding": "THE PREVIOUS PLAN WAS RIGHT ABOUT THE AMOUNTS AND WRONG ABOUT WHICH FUNCTION WAS DEFECTIVE, AND IT SHIPPED NO TEST THAT COULD HAVE SEEN THE DEFECT.\n\nWhat the previous plan got right: its arithmetic rewrite is correct and is now on the branch. The two-sided `promotedRowsAccountForParent` relation, the magnitude comparison, the parent-less-what-left subtraction on the keep branch, the `error: null` on the single-child return, and the three-distinct-categories test are all sound, all shipped, and all still pass on the PR head. I did not disturb any of it.\n\nWhat it got wrong: it enumerated the fields the surviving row needs and got `error` and `amount` right, but it never checked `payee` — the one field `splitTransaction` deliberately moves OFF the parent and onto the children. So it built a survivor that is arithmetically perfect and semantically a different transaction from the one the user split. The plan's diagnosis pointed at `makeAsNonChildTransactions`'s guard, where the amounts are written; the defect is one level down in the helper that builds the row, `makeTransactionWithChildCategory`, which is called on both keep-parent paths and takes `category` from the promoted row but leaves `payee` inherited from the parent.\n\nThat is why the whole unit suite is green while 10 of 15 browser checks fail. Every one of the 19 cases in the `unsplitting a split` block asserts through the `asRows` helper, which destructures `{ id, amount }` and nothing else, or asserts `error` / `category` / `schedule`. Not one asserts `payee`. The suite is not weakly passing; it is blind to this axis by construction, and the previous plan's own test list kept it that way.\n\nWhat QA actually saw. The five tests that pass are the ones whose rows come back with the payee attached: T-5, T-6, T-9 and T-14 take the split-OUT branch, which returns the promoted children, and `makeChild` copies the parent's payee onto them, so those rows render normally. The ten that fail are the ones that go through `makeTransactionWithChildCategory`: T-1, T-2, T-3, T-8, T-12 and T-15 report `Array []` — no rows matching the payee at all — and T-4 and T-13 report one EXTRA row. Not one of the ten reports a wrong amount. `error-context.md` for T-2 settles it: the search box holds \"QA Fixture A\" and the register body reads \"No transactions\", and the screenshot confirms it. The row was never lost. It is invisible to a payee-filtered view because it has no payee.\n\nDate of the bug. I probed the pre-PR code too. On main, the all-zero arm already returned a payee-less survivor, so this defect predates PR #100. What PR #100 did was widen the keep-parent branch from \"all promoted rows are zero\" to \"promoted rows do not account for the parent\", which drags every under-fill shape — 5000/0, opposite-sign pairs, partially typed legs — onto the path that loses the payee. So the previous plan did not create the bug; it multiplied its reach and shipped no test that could see it.\n\nTWO OF QA'S TEN FAILURES ARE NOT PRODUCT DEFECTS, AND I AM NOT CHASING THEM AS IF THEY WERE.\n\n(a) T-7 and T-11 never reach the product. Both die inside QA's own `addSplit` helper at `waiting for getByTestId('add-button')`. The helper's own header comment states why: the editing row replaces its Add button with an \"Amount left: …\" strip whenever the split has an outstanding difference, so an under-filled or over-filled split cannot be committed from the new-transaction row at all. Both fixtures ask for legs that do not sum to the parent. The product is never exercised, so there is nothing in the register to fix. The reachable route is to commit a correctly filled split and then edit one leg upward — which is also the only route AC-5's worked example should name, so I corrected that example (below) rather than leaving a criterion QA cannot execute.\n\n(b) T-4 and T-13 report a row count that is off by one, in QA's favour of being too small. The fixture builds FOUR legs, unsplits one, and expects four rows total. One promoted leg plus three legs still standing behind the kept parent is four rows at 0.00, plus the parent at 123.45 — five. AC-3's own rule already says the unsplit leg \"stands alone at 0.00\", which is a row, not an absence. The product's arithmetic here is right and money-conserving, and I verified it by probe.\n\nBoth (a) and (b) are criterion-example problems, and root-cause.md puts correcting a criterion in my hands. In each case the RULE the criterion states is correct and the code agrees with it; what is wrong is the worked example, which describes a route the register will not perform (a) or miscounts the rows the rule produces (b). I am correcting the examples and saying exactly that. I am not touching AC-1, AC-2, AC-4, AC-6 through AC-12, and I am not touching the rule AC-3 or AC-5 state. If the code were the thing that were wrong, this work order would say so instead.",
+    "root_cause": "`makeTransactionWithChildCategory` builds the surviving row by spreading the split parent and overriding only `is_parent` and `category`. But `splitTransaction` sets `payee: null` on the parent when the split is opened, because it moves the payee down onto the children; `makeChild` is what puts it there. So every survivor this helper produces inherits `payee: null` from a parent that by construction no longer carries one, and `makeTransactionWithChildCategory` never takes it back. The row survives in the database with the correct amount and category and no payee at all, which is why every unit test passes and every browser check fails: the row is not gone, it is invisible to any payee-filtered view of the register. The defect is pre-existing on the all-zero arm; PR #100 widened the arm from \"promoted rows are all zero\" to \"promoted rows do not account for the parent\", dragging every under-fill shape onto the payee-losing path.",
+    "approach": "Take the payee from the row the category is already taken from.\n\n`makeTransactionWithChildCategory(parent, data)` is the single helper that builds the surviving row on both keep-parent paths — the single-child early return at transactions.ts:457 and the guarded branch at :515 — and it already reads one field off the promoted row (`category: data.category || null`). The fix is one line beside it: `payee: data.payee ?? parent.payee`. The promoted row is where the payee still lives, it is the row the register actually shows, and taking both fields from the same row gives them one provenance instead of two. The `??` parent fallback is the degenerate case, where the caller passed the parent itself because nothing was promoted; it cannot make anything worse, since that parent's payee is null too.\n\nThis is deliberately NOT the same approach as the previous plan's, and the difference is the whole point: the previous plan rewrote which rows an amount comparison runs over, in `makeAsNonChildTransactions`. That rewrite is correct and it stays. This work order changes one field on one helper and touches no arithmetic at all, because the arithmetic is not what is broken.\n\nThe trap to avoid is over-correction. The obvious wrong fix is to force the parent's payee onto every row this function returns, or to change `splitTransaction` so the parent keeps its payee. Both would corrupt the split-OUT branch, which correctly returns each child with its OWN payee — a child whose payee the user retyped must not be stamped with the parent's. The fix is scoped to the survivor, and the tests pin both directions so the next attempt cannot widen it.\n\nOn the tests: the reason this shipped green the first time is that `asRows` destructures `{ id, amount }`, so the `unsplitting a split` block is structurally incapable of seeing a payee. The new cases assert `payee` directly on the returned rows rather than through `asRows`, on each shape QA reported — never-filled, under-filled, single-child, opposite-sign — and a case asserts the split-OUT branch still returns each child's own payee, so the fix cannot be widened into a regression. I confirmed the fix by applying it and running the full loot-core node suite: 1297 passed, 1 expected failure, 0 failed.",
+    "files": [
+      {
+        "path": "packages/loot-core/src/shared/transactions.ts",
+        "action": "edit",
+        "change": "In `makeTransactionWithChildCategory` (the helper at :110-119 that builds the surviving row on both keep-parent paths), add `payee: data.payee ?? parent.payee` beside the existing `category: data.category || null`, with a short comment naming why the parent's payee cannot be inherited: `splitTransaction` sets `payee: null` on a parent when the split opens and moves the payee onto the children, so a survivor built from the parent alone comes back payee-less and drops out of any payee-filtered view. Take it from the same promoted row the category comes from so both fields share one provenance. Change nothing else in this file — the amount arithmetic, the `promotedRowsAccountForParent` relation, the magnitude comparison and the `error: null` clearances from the previous plan all stay exactly as they are on the branch.",
+        "why": "This is the only place a surviving row is constructed. Every one of QA's ten failures runs through it; every one of QA's five passes does not. The field is wrong there and nowhere else."
+      },
+      {
+        "path": "packages/loot-core/src/shared/transactions.test.ts",
+        "action": "edit",
+        "change": "Add cases to the existing `describe('unsplitting a split')` block that assert `payee` on the returned rows directly rather than through the `asRows` helper, which destructures only `{ id, amount }` and is why 19 green cases missed this: one per shape QA reported (never-filled, one leg typed and one empty, the single-child early return, and opposite-sign legs that fall short), each with the parent carrying `payee: 'payee-parent'` and the split already opened so the parent is `payee: null`; each asserting the survivor carries `payee-parent`. Add a case asserting the split-OUT branch is unchanged: a correctly filled split whose children carry a payee different from the parent's returns rows carrying the CHILDREN's payee, so a fix that stamps the parent's payee everywhere goes red. Name the cases for the provenance they pin, in the style of the existing ones.",
+        "why": "A test proves the fix once; this block is what makes the fix permanent. Its current blindness to `payee` is the reason a real defect reached a browser."
+      }
+    ],
+    "tests": [
+      {
+        "path": "packages/loot-core/src/shared/transactions.test.ts",
+        "action": "edit",
+        "cases": [
+          "REPRODUCES THE QA FAILURE (T-2/T-1, `Array []`): a split parent at 12345 with two 0.00 children, payee already moved onto the children, both children unsplit — the returned survivor carries `payee: 'payee-parent'`, not null. On the PR head this returns `payee: null` and the row renders blank, which is what `error-context.md` caught as \"No transactions\" under the payee search.",
+          "REPRODUCES THE QA FAILURE (T-3, T-8, `Array []`): parent 12345 (and, for the expense arm, -12345) with children 5000 and 0, both unsplit — the survivor keeps `payee: 'payee-parent'`. The sign is in both arms because `splitTransaction` nulls the payee identically for an expense.",
+          "REPRODUCES THE QA FAILURE (the single-child early return at :452-472, which QA's T-3/T-12 route through with one leg selected): a one-child split unsplit through that early return promotes a row carrying `payee: 'payee-parent'` and `error: null`. Both assertions on one row, because that branch is the only one that clears the error and must clear it without dropping the payee.",
+          "REPRODUCES THE QA FAILURE (T-12, opposite signs): parent 12345 with children 5000 and -5000, both unsplit — the survivor keeps `payee: 'payee-parent'`. Promoted total is net zero, so this is the shape the previous plan's magnitude comparison was written for, and it is still a payee-less row on the branch.",
+          "PINS THE FIX AGAINST BEING WIDENED (the over-correction the fix invites): a correctly filled split 5000/7345 on a 12345 parent, whose children were retyped to a payee of their own differing from the parent's, unsplit in full — the two returned rows carry the CHILDREN's payee, not the parent's. This is the branch QA's T-5/T-6/T-9/T-14 already pass, and a fix that forced the parent's payee onto every survivor would break it.",
+          "MUTATION CHECK, run by hand before the PR is opened: delete the one added line and every case above that asserts a survivor's payee goes red; restore it and all 19 pre-existing cases plus the new ones pass. The pre-existing 19 assert only `{ id, amount }` through `asRows` and must stay green throughout — if they do not, the fix changed arithmetic, which it must not."
+        ]
+      }
+    ],
+    "acceptance": [
+      {
+        "id": "AC-1",
+        "check": "A never-filled split unsplit in the register leaves the parent row at its full amount with no row left behind at 0.00, and no schedule occurrence is lost.",
+        "how_to_verify": "In the demo budget, split a transaction that came from a schedule, type nothing into either leg, unsplit both. One row at the original amount remains. Repeat on a plain transaction.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-2",
+        "check": "A split where one leg is typed and the other left empty does not lose the parent's amount when both legs are unsplit; the parent row survives at its full amount.",
+        "how_to_verify": "Split a 123.45 row, type 50.00 into one child, leave the other empty, unsplit both. Expect one row at 123.45. This is the case PR #81's qa_script told QA to expect and the shipped guard did not deliver.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-3",
+        "check": "Unsplitting ONE leg of a split that has three or more children and was never filled leaves the parent at its original amount, not at the sum of the remaining (empty) children.",
+        "how_to_verify": "CORRECTED EXAMPLE — the rule above is unchanged and the code agrees with it; the worked example was wrong on two counts, and both are why T-4 and T-13 failed against a correct implementation. First, a three-leg split cannot be built: the split editor opens with two blank legs and 'Add Split' adds two at a time, so a three-or-more-leg split is built as FOUR legs. Second, the example said the unsplit leg 'stands alone at 0.00' without saying what happens to the legs that were not selected — they stay, at 0.00, so the row set is one larger than the example implied. Split a 123.45 row into four legs, type nothing into any of them, and unsplit exactly ONE leg. Expect FIVE rows for that payee: the parent at 123.45, the unsplit leg standing alone at 0.00, and the other three legs still behind the parent at 0.00. The parent reading 123.45 rather than 0.00 is what this criterion is about; the count of five is not.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-4",
+        "check": "A split whose children were filled in correctly still splits out — parent deleted, the typed rows standing alone at their typed amounts — including when only one leg is unsplit.",
+        "how_to_verify": "Split a 123.45 row, type 50.00 and 73.45, unsplit both: two rows at 50.00 and 73.45. Unsplit only the 50.00 leg: still two rows, 50.00 and 73.45.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-5",
+        "check": "A split whose children sum to MORE than the parent still splits out, so the surplus the user typed is not collapsed onto the parent.",
+        "how_to_verify": "CORRECTED EXAMPLE — the rule above is unchanged and the code agrees with it; the worked example named a route the register will not perform. A split whose legs do not sum to the parent cannot be committed from the 'Add New' row at all: the editing row replaces its Add button with an 'Amount left: …' strip, so the new-transaction row never closes and there is nothing to unsplit. Build the shape the only reachable way — commit a correctly filled 50.00 / 73.45 split on a 123.45 parent, then edit one leg upward from 50.00 to 70.00, giving 70.00 / 73.45 = 143.45, which is 20.00 more than the parent. Unsplit both legs: two rows at 70.00 and 73.45, with the 20.00 surplus still standing as typed and not collapsed onto a parent. This arm must not be over-corrected by the keep-parent rule.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-6",
+        "check": "An expense behaves like an income under the new rule: an under-filled expense split keeps its parent, a correctly filled one splits out.",
+        "how_to_verify": "In the demo budget, split an expense of 123.45, type -50.00 into one leg, leave the other empty, unsplit both. Expect one row at -123.45. Then fill -50.00 / -73.45 and unsplit both: two rows at -50.00 and -73.45.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-7",
+        "check": "A zero-amount split whose schedule occurrence is stamped is still kept intact by the rewritten guard — the all-zero arm the original guard existed for is not regressed by the change to a two-sided relation.",
+        "how_to_verify": "Unit case in tests[]. The existing covered behaviour must survive the rewrite; the all-zero term is kept as a separate clause in promotedRowsAccountForParent precisely so this holds.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-8",
+        "check": "The surviving row after an unsplit carries no stale split error on the single-child path.",
+        "how_to_verify": "Unit case in tests[]: a parent carrying a SplitTransactionError with one 0.00 child unsplit promotes a row with `error` null, matching the two-child branch.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-9",
+        "check": "The test that covers the surviving row's category uses three distinct categories, is named for the provenance it actually pins, and fails if the implementation changes.",
+        "how_to_verify": "Unit case in tests[]. Flip the implementation to read the category off the parent and confirm the test goes red.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-10",
+        "check": "`buildFutureScheduleOccurrences`'s `postedTransactions` JSDoc says the narrow type documents the three-column projection and enforces nothing.",
+        "how_to_verify": "Read the comment on the parameter at packages/loot-core/src/server/forecast/forecast-schedules.ts:186 and confirm the non-enforcement caveat is present.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-11",
+        "check": "The comment justifying the forecast test's per-test service lifecycle is one sentence of justification plus the load-bearing technical reason, not twelve lines.",
+        "how_to_verify": "Read the comment above `createForecastWithSplitPostedOccurrence` in packages/loot-core/src/server/forecast/app.test.ts. The claim that `_account` and rule-derived fields need the JSON-path mappings populated must survive the trim.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-12",
+        "check": "`yarn workspace @actual-app/core run test` and `yarn typecheck` pass, with the two previously-flipping under-fill tests rewritten to the new expectation rather than deleted.",
+        "how_to_verify": "Run both from the repository root. I verified the baseline for this: with the proposed rule patched in, the full loot-core node suite gives 1288 passed / 2 failed, and the only two failures are `splits out the typed amounts when two of three partly-typed children are unsplit` and `still splits out when one child of an under-filled split is unsplit` — the two tests this ticket reverses. After flipping them the suite must be fully green. Also run the web config (test:web) since the guard is shared.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-13",
+        "check": "A transaction that survives an unsplit because its split was under-filled keeps its payee: the row is still found by searching the register for that payee, and still shows that payee in the register, on every shape that keeps a parent.",
+        "how_to_verify": "The bug QA found, and the one behind ten of its fifteen checks. In the demo budget, commit a correctly filled split on a 123.45 row under a payee you choose, blank one leg back to 0.00, unsplit both legs, and then search the register for that payee. The surviving 123.45 row is there, showing that payee — not an empty register. Repeat for: both legs blank (never filled); the single-leg unsplit; opposite-sign legs; and the expense form (-123.45). Before this fix the surviving row renders with a blank payee and disappears from the payee-filtered view entirely — the row is not deleted, it is invisible, which is why the failures read as an empty array rather than as a wrong amount. A check that only counts rows without filtering by payee cannot see this, so the search filter is load-bearing in this criterion.",
+        "verify": "browser"
+      },
+      {
+        "id": "AC-14",
+        "check": "The unit tests assert the surviving row's payee directly, on each shape that keeps a parent, and go red if the fix is removed.",
+        "how_to_verify": "The `unsplitting a split` block's `asRows` helper destructures only `{ id, amount }`, which is how nineteen green cases and a real browser defect coexisted: the block was structurally blind to this field. The new cases must read `payee` off the returned rows rather than through `asRows`, and must cover the never-filled, the under-filled, the single-child early return and the opposite-sign shapes. Delete the fix and confirm they fail; restore it and confirm they pass. The pre-existing nineteen must stay green throughout — they assert no payee, so anything else means arithmetic moved.",
+        "verify": "test"
+      },
+      {
+        "id": "AC-15",
+        "check": "The fix is scoped to the surviving row: the split-out branch still returns each promoted row with its own payee, not the parent's, so a leg whose payee the user retyped is not overwritten.",
+        "how_to_verify": "The obvious wrong fix is to force the parent's payee onto every row `makeTransactionWithChildCategory` returns, or to change `splitTransaction` so the parent keeps its payee. Both corrupt the split-out path, which is why five of QA's checks already pass and must keep passing. Re-type one leg of a filled split to a different payee, unsplit both legs, and confirm each resulting row carries the payee that leg has rather than the original parent's. Unit case in tests[]. QA's T-5, T-6, T-9 and T-14 cover the plain form of this in the browser.",
+        "verify": "test"
+      }
+    ],
+    "qa_script": [
+      "The PR title must begin with `[AI] ` — `.github/agents/pr-and-commit-rules.md` makes that mandatory for every agent-authored PR, and PR #81 shipped without it and it was filed as a finding against that PR. Apply it yourself; the pipeline does not.",
+      "Search the register by payee before asserting anything about a surviving row. Six of the ten failures read as `Array []` purely because the survivor had no payee to match; an unfiltered row count would not have noticed. This is the habit that separates 'the row is wrong' from 'the row is invisible', and it is what AC-13 turns into a criterion.",
+      "Build a never-filled or under-filled split by committing a correctly filled one and blanking legs on the saved row. The register will not commit a split whose legs do not sum to the parent: the editing row swaps its Add button for an 'Amount left: …' strip, and waiting on the Add button is a 20s timeout that never reaches the product. This is what T-7 and T-11 hit.",
+      "Build an over-filled split the same way — commit 50.00 / 73.45 on a 123.45 parent, then raise one leg to 70.00. AC-5's arm is only reachable that way.",
+      "A three-or-more-leg split is built as FOUR legs; the split editor opens with two and 'Add Split' adds two at a time. After unsplitting ONE leg of a four-leg split, expect FIVE rows for that payee, not four: the parent, the promoted leg, and the three legs still behind it. T-4 and T-13 asserted four.",
+      "Do not read a wrong amount as a wrong amount without checking the payee first. Not one of the ten failures reported a wrong figure; they reported a missing row. The arithmetic in this function is correct on the branch and this change does not touch it.",
+      "Confirm `yarn workspace @actual-app/core run test` and `yarn typecheck` both pass from the repository root, and that the nineteen pre-existing `unsplitting a split` cases are still green — they assert only `{ id, amount }`, so if they moved, something changed that this fix was not supposed to change."
+    ],
+    "risks": [
+      "The fix reads a field off `data` on a parameter typed `Partial<TransactionEntity>`, and `data` is a promoted child in the normal case but can be the parent itself when nothing was promoted (the `?? parentTransaction` fallback at :521). The `??` keeps that degenerate case from getting worse — the parent's payee is null there too — but it means the payee's provenance is 'the row the category came from', not 'a child'. The comment must say so, or the next reader will assume a stronger guarantee than exists.",
+      "`payee` is not the only field `splitTransaction` moves or clears on the parent. This change covers the one QA demonstrated. `subtransactions` and `is_parent` are handled by the two callers in Account.tsx, and I verified those paths through the reducer but did not drive the app, so a sibling field with the same shape of defect would not have shown up here.",
+      "The fix could be over-applied by someone reading the symptom rather than the helper: stamping the parent's payee on every row, or changing `splitTransaction` to stop nulling the parent, both break the split-out path. AC-15 and the split-out case in tests[] exist to catch that; they only help if the implementer runs them.",
+      "Two of QA's ten failures (T-7, T-11) were never product failures — they timed out in QA's own fixture helper. If the corrected AC-5 example is not followed, those will fail again for the same reason and this work order will look wrong. That is a real risk and the reason AC-5's worked example was corrected rather than left alone.",
+      "AC-3's corrected example now states a five-row expectation. If the implementer reads that as licence to change the row count in the code, they will break the rule the criterion states. The count is in the example, not the rule, and the rule is what the code already satisfies."
+    ],
+    "out_of_scope": [
+      "Why the pre-existing all-zero arm lost the payee before this PR. It is dated and described here, and the single-line fix covers it, but no change is proposed to how or when that arm was introduced.",
+      "The parent in the keep-parent branch inherits its SplitTransactionError rather than having it recomputed, so a parent whose amount changes can carry a stale split badge. Pre-existing, unchanged by this work, and fixing it means touching error handling. The previous plan already recorded it here.",
+      "Whether the parent or the first selected child should win the surviving row's category. Child-wins is pinned as deliberate by the existing single-child test and the previous plan left it; making the parent win is a behaviour change needing a maintainer's call, and this change deliberately does not disturb it.",
+      "QA's fixture helpers (`qa-evidence/.../spec/helpers.ts`) are QA's, not the product's. The two routes they cannot perform are corrected here as criterion examples rather than by asking anyone to change the suite."
+    ],
+    "evidence": [
+      "qa-evidence/qa-evidence/qa-evidence/results.json: 10 of 15 specs FAIL. T-2, T-3, T-8, T-12, T-15 all record `- Array [\"123.45\"] / + Array []` (T-8: `-123.45`). Not one records a wrong amount. T-4 and T-13 record an EXTRA `\"0.00\"` — received ['0.00','0.00','0.00','0.00','123.45'] against an expected four entries. T-7 and T-11 record `TimeoutError: locator.click: Timeout 20000ms exceeded … waiting for getByTestId('add-button')`.",
+      "qa-evidence/.../test-results/unsplit-T-2-*/error-context.md: the search box holds \"QA Fixture A\" and the register body reads \"No transactions\". The screenshot test-failed-1.png confirms it. The row was not lost; it does not match a payee filter.",
+      "Probe against the REAL `makeAsNonChildTransactions` on the PR head (parent payee moved onto children, i.e. parent `payee: null`): never-filled, under-filled, single-child and opposite-sign shapes each return `updated: [{ id: 'p', amount: 12345, payee: null, is_parent: false }]`; the split-out shape returns the promoted children with `payee: 'PAYEE_X'` intact. That set is exactly QA's five passes and its ten failures.",
+      "Probe against the pre-PR code: the all-zero arm already returned `payee: null`, but `underFilledBothUnsplit` split out with the payee intact. PR #100 widened the payee-losing path; it did not create it.",
+      "Code: `splitTransaction` (transactions.ts:386-415) returns `{ ...rest, is_parent: true, payee: null, … }`. `makeChild` (:57-83) sets `payee: 'payee' in data ? data.payee : parent.payee`. `makeTransactionWithChildCategory` (:110-119) spreads the parent and overrides only `is_parent` and `category`. It is called at :460 and :519 — the only two constructions of a surviving row.",
+      "Rendering: `useDisplayPayee` reads `transaction.payee` for a row with no subtransactions, and null renders as an empty string. That is the mechanism by which a surviving row matches no `hasText: payee` filter.",
+      "Why 19 unit cases stayed green: `asRows` at transactions.test.ts:457 destructures `{ id, amount }` only. Every assertion in the block goes through it, or checks `error` / `category` / `schedule`. None reads `payee`.",
+      "T-7/T-11 are not product failures: `qa-evidence/.../spec/helpers.ts` header, lines 18-21 — 'The editing row replaces its Add button with an \"Amount left: … / Distribute / Add Split\" error strip whenever the split has an outstanding difference, so an under-filled split cannot be committed from that row.' Both fixtures pass legs that do not sum to the parent, so `addSplit` times out at :276 and the product is never exercised.",
+      "T-4/T-13 row arithmetic: the fixture builds four legs (`['50.00','40.00','30.00','3.45']`), unsplits one, and expects four rows. One promoted leg plus three still behind the kept parent is four rows at 0.00, plus the parent at 123.45 — five. AC-3's own rule already says the unsplit leg stands alone at 0.00, which is a row.",
+      "Fix applied locally and the full loot-core node suite run from the repository root: 87 files passed / 1 skipped, 1297 tests passed / 1 expected failure / 2 skipped, 0 failed. That edit was a verification artefact and has been reverted — this work order is the only output and nothing is committed.",
+      "qa-evidence/.../ci/loot-core-unsplit-unit.log: all 19 unsplit unit cases pass on HEAD `0261aa0a`. qa-evidence/.../ci/ac9-mutation.log: the AC-9 mutation turns the category test red, so AC-9 is genuinely satisfied. qa-evidence/.../ci/ac10-ac11-comment-source.txt: AC-10 and AC-11 are satisfied by the shipped diff. qa-evidence/.../ci/typecheck.log: green. None of AC-7 through AC-12 is disturbed by this work order."
+    ],
+    "alternatives_considered": [
+      {
+        "approach": "Patch `makeAsNonChildTransactions` to restore the payee on the rows it returns — set `payee: parentTransaction.payee ?? <promoted child's payee>` at each of the two keep-parent return sites.",
+        "rejected_because": "Same one line of effect, worse place. The helper is what makes the row, so the invariant 'a survivor carries the payee of the row it was promoted from' would live in three call sites instead of one, and the two branches could drift. It also leaves the single-child early return and the guarded branch free to disagree about the field, which is the exact inconsistency AC-8 was written to end."
+      },
+      {
+        "approach": "Change `splitTransaction` to stop nulling the parent's payee, so the survivor inherits it correctly and nothing downstream changes.",
+        "rejected_because": "Corrects the symptom by breaking the model. The parent is `payee: null` on purpose because the payee belongs to the legs once a split exists; the register renders a split parent from its children. Re-populating it would put a second, divergent copy of the payee on the parent, and every consumer that reads a parent's payee would now see a value that only some children agree with."
+      },
+      {
+        "approach": "Force the parent's payee onto every row `makeTransactionWithChildCategory` returns, on the reasoning that the survivor inherits the parent's whole identity.",
+        "rejected_because": "Breaks the split-OUT branch, which is the one that already works. `makeChild` gives each child the parent's payee only as a default; a leg the user retyped carries its own, and a correct split-out must return that leg's payee. QA's T-5, T-6, T-9 and T-14 pass today and would go red. Rejected as the over-correction AC-15 exists to prevent."
+      },
+      {
+        "approach": "Change `useDisplayPayee` to fall back to a split parent's first child's payee when the row's own payee is null.",
+        "rejected_because": "Treats the symptom where it is rendered and leaves the database row wrong. Every other consumer of that transaction — sync, the API, the rules engine, exports — would still see `payee: null`, and the row would remain invisible to anything that filters on the field rather than rendering it. The defect is that the row was built wrong, not that it was displayed wrong."
+      },
+      {
+        "approach": "Treat this as two identical failures and write stop.json — the previous plan's approach has now failed twice.",
+        "rejected_because": "This is not the same approach failing twice. PR #100 implemented the previous plan's arithmetic rewrite and QA's five arithmetic checks pass (T-5, T-6, T-9, T-10, T-14); the ten failures are a different field on a different function, which the previous plan never looked at. A `failure-packet.json` is also absent, so this is a QA verdict rather than a mechanically unbuildable plan. The new approach changes the file and the function the old one targeted, so a third attempt along these lines is not what is being proposed."
+      },
+      {
+        "approach": "Leave the two non-product failure classes alone and let the implementer discover them.",
+        "rejected_because": "QA is given no memory of what it found last time. T-7, T-11, T-4 and T-13 will fail identically on every future run until the criterion examples that produce them are corrected, and each of those failures reads like a product defect. Correcting the examples is the only durable fix and it is explicitly mine to make."
+      }
+    ],
+    "assumptions": [
+      "`makeAsNonChildTransactions` is the only reducer that promotes a split parent into a surviving non-child row. I verified the two call sites in Account.tsx (~:1242 parent-selected and ~:1266 some-children-selected), both passing `options({ splits: 'grouped' })` and `ungroupTransaction`, and both reaching this function.",
+      "The payee a split's children carry is the payee the user originally typed, because `makeChild` copies it from the parent at the moment the split opens and `splitTransaction` pushes it down. A leg whose payee the user later retypes carries its own, which is why AC-15 pins the split-out direction rather than assuming a single payee.",
+      "QA's `fixtureRows` filter (`table.getByTestId('row').filter({ hasText: payee })`) is a legitimate model of what a user sees when they search the register, so a payee-less row's invisibility there is a real user-visible defect and not an artefact of the harness. The T-2 page snapshot and screenshot support this directly.",
+      "`asRows` in transactions.test.ts is the right helper for `[id, amount]` assertions and should stay; the new cases read `payee` off the returned rows directly rather than widening it, because widening it would touch all 19 existing assertions for no gain."
+    ],
+    "unknowns": [
+      "Whether any other consumer of a split parent's payee reads it expecting null now that survivors carry one — sync, the API's transaction shapes, the rules engine, CSV/OFX export. I traced the register's render path and the two UI call sites; I did not audit every reader of the field.",
+      "Whether a parent that survives an unsplit with children still behind it (`deleteParentTransaction === false`) displays correctly in the register under a payee search. T-4 and T-13 exercised exactly that shape and returned all five rows through a payee filter, so it appears to, but the count was wrong for an unrelated reason and I did not re-verify that shape in isolation.",
+      "Whether the surviving row should carry the payee of the FIRST promoted child or of the parent as originally typed, on the two-child path where two legs with different payees are unsplit together. The fix takes the first promoted row's payee, matching what `category` already does and what the existing single-child test pins for category; if the parent's original payee is the right answer, that is the same maintainer's call the category finding was left at."
+    ],
+    "residual_risks": [
+      "This fixes the field QA demonstrated. If a surviving row is wrong in some other way that QA's assertions did not compare — a wrong account, date, cleared flag or sort order — QA will keep finding it one run at a time, because the checks that failed here compared amounts and payees and nothing else.",
+      "T-7 and T-11 are corrected in the criteria, not in QA's suite. If the next QA run's helper is unchanged and the criterion examples are not followed literally, those two will fail again at the same 20s timeout on the Add button, having verified nothing.",
+      "AC-3's corrected example states a five-row expectation where the old one implied four. If QA's assertion is written from the old example rather than the corrected one, T-4 and T-13 will fail again for the same arithmetic reason, on a correct implementation.",
+      "The unit block is now payee-aware only in the new cases. A future change to `asRows`, or a rewrite of the block that consolidates the new assertions back through it, would silently restore the blindness that let this ship."
+    ]
   }
 }
