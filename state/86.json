@@ -1,7 +1,7 @@
 {
   "issue": 86,
   "pr": 102,
-  "state": "qa",
+  "state": "needs-human",
   "owner": null,
   "lock_expires": null,
   "lock_run": null,
@@ -224,7 +224,7 @@
   "review_history": [],
   "review_root_caused": [],
   "created_at": "2026-10-04T19:00:39.114Z",
-  "updated_at": "2026-10-05T07:15:41.699Z",
+  "updated_at": "2026-10-05T08:14:53.511Z",
   "history": [
     {
       "at": "2026-10-05T01:03:23.913Z",
@@ -355,6 +355,11 @@
       "at": "2026-10-05T07:15:41.699Z",
       "agent": "qa",
       "action": "qa attempt 1"
+    },
+    {
+      "at": "2026-10-05T08:14:53.511Z",
+      "agent": "qa",
+      "action": "-> needs-human"
     }
   ],
   "epic": 83,
