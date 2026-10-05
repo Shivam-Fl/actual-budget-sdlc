@@ -1,15 +1,6 @@
-Unsplitting a split no longer destroys the parent transaction's amount
+---
+category: Bugfixes
+authors: [Shivam-Fl]
+---
 
-When you unsplit a transaction, the parent row was only kept when every row
-that would replace it was `0.00`. Anything else — a partly typed split whose
-children fall short of the parent — deleted the parent and left behind rows
-summing to less than it, or (on a three-or-more-child split) rewrote the
-parent to the sum of the children that stayed. Both silently discarded part of
-the transaction's amount, and on a split opened from a schedule it also lost
-the occurrence stamp, so `/schedules` read the occurrence as Due again.
-
-The parent is now kept whenever the rows replacing it do not account for it,
-on both code paths, and a surviving parent is reduced by what left rather than
-recomputed from what stayed. Splits that were filled in correctly, and splits
-whose children were typed to more than the parent, still split out as before —
-the surplus you typed is not collapsed onto the parent.
+Fix unsplitting a split losing part of the parent transaction's amount. A split whose children fell short of the parent — a partly typed one — used to be deleted and replaced with rows summing to less than it, and a three-or-more-child split was rewritten to the sum of the children that stayed; on a split opened from a schedule the occurrence stamp was lost too, so `/schedules` read the occurrence as Due again. The parent is now kept on both paths whenever the rows replacing it do not account for it, reduced by what left rather than recomputed from what stayed. Correctly filled splits, and splits whose children were typed to more than the parent, still split out as before.
