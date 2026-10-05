@@ -188,7 +188,13 @@
     ],
     "mode": "committed"
   },
-  "touch_paths": [],
+  "touch_paths": [
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.fixtures.tsx",
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.missingKey.test.tsx",
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.test.tsx",
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.test.tsx",
+    "packages/desktop-client/src/components/reports/graphs/tableGraph/ReportTableList.missingKey.test.tsx"
+  ],
   "acceptance": [],
   "planned_route": [
     "plan",
