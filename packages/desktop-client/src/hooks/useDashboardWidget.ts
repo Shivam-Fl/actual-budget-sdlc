@@ -19,10 +19,25 @@ export function useDashboardWidget<W extends DashboardWidgetEntity>({
 
   // A disabled query never fetches, so react-query leaves it 'pending' forever.
   // Every report route renders <LoadingIndicator /> while isPending is true, so
-  // an id-less route would spin indefinitely. This is react-query's own
-  // isLoading definition, and the conjunction is what keeps a background
-  // refetch over cached data off the loading branch.
+  // an id-less route would spin indefinitely. The conjunction is what keeps a
+  // background refetch over cached data off the loading branch.
+  //
+  // This computes `isPending && fetchStatus !== 'idle'`, which is not
+  // react-query's own isPending && isFetching (queryObserver.js:310). The two
+  // differ in exactly one case — a paused query — and it is deliberately
+  // counted as loading here: such a query is still trying and may resume, so
+  // dropping out of the loading branch would render an empty report with no
+  // explanation, which is worse than a spinner.
   const isFirstLoad = query.isPending && query.fetchStatus !== 'idle';
 
-  return { ...query, isPending: isFirstLoad, isLoading: isFirstLoad };
+  // Returned explicitly rather than spread: spreading would leave `status`,
+  // `isSuccess` and `isInitialLoading` visible next to a derived `isPending`
+  // that disagrees with them on an id-less route.
+  return {
+    data: query.data,
+    error: query.error,
+    isPending: isFirstLoad,
+    isLoading: isFirstLoad,
+    fetchStatus: query.fetchStatus,
+  };
 }

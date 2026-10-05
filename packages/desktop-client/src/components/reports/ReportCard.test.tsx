@@ -1,7 +1,11 @@
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import { Button } from '@actual-app/components/button';
+import { theme } from '@actual-app/components/theme';
 import { View } from '@actual-app/components/view';
 import { initServer } from '@actual-app/core/platform/client/connection';
 import { act, fireEvent, render, screen } from '@testing-library/react';
@@ -101,6 +105,24 @@ function getCard() {
   return screen.getByRole('button', { name: /Balance Forecast/ });
 }
 
+// The card body is the View ReportCard renders inside the click surface, and it
+// is what carries the background and the box-shadow rules — the surface
+// deliberately has neither.
+function getCardBody() {
+  const body = getCard().firstElementChild;
+  if (!body) throw new Error('the card rendered no body');
+  return body;
+}
+
+// Reads a sibling source file and flattens it enough that a claim about a
+// comment cannot be satisfied or dodged purely by where the line breaks and
+// `//` markers fall.
+function readOwnSource(file: string) {
+  return readFileSync(path.resolve(import.meta.dirname, file), 'utf8')
+    .replaceAll(/^\s*\/\//gm, ' ')
+    .replaceAll(/\s+/g, ' ');
+}
+
 function dispatchKeyDown(target: Element, key: string, repeat = false) {
   const event = new KeyboardEvent('keydown', {
     key,
@@ -184,13 +206,15 @@ describe('ReportCard click surface', () => {
     expect(card.tagName).toBe('DIV');
   });
 
-  it('navigates to the card route when the card body is clicked', async () => {
+  // Fired on a descendant rather than on the surface itself: a click whose
+  // target is the surface passes with or without the guard, so it cannot tell
+  // this handler from a wrong one. Clicking the card's body text is what a user
+  // actually does, and it has to keep navigating.
+  it('navigates to the card route when a descendant of the click surface is clicked', async () => {
     renderCard(<CardWithInnerControl />);
     await act(() => Promise.resolve());
 
-    fireEvent.click(
-      screen.getByRole('button', { name: /Balance Forecast March/ }),
-    );
+    fireEvent.click(screen.getByText('Balance Forecast'));
 
     expect(mockNavigate).toHaveBeenCalledTimes(1);
     expect(mockNavigate).toHaveBeenCalledWith('/reports/net-worth', {
@@ -284,6 +308,26 @@ describe('ReportCard click surface', () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  // The click-side twin of the three keydown cases above: the same controls,
+  // activated by click instead of keypress, and the card must stay out of it.
+  it('does not navigate when a native control inside the widget body is clicked', async () => {
+    renderCard(<CardWithNativeInnerControls />);
+    await act(() => Promise.resolve());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Native control' }));
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it('leaves a text field inside the widget body alone when it is clicked', async () => {
+    renderCard(<CardWithNativeInnerControls />);
+    await act(() => Promise.resolve());
+
+    fireEvent.click(screen.getByLabelText('Widget name'));
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
   it('leaves a space typed into a text field inside the widget body alone', async () => {
     renderCard(<CardWithNativeInnerControls />);
     await act(() => Promise.resolve());
@@ -298,8 +342,46 @@ describe('ReportCard click surface', () => {
     renderCard(<CardWithInnerControl />);
     await act(() => Promise.resolve());
 
+    // An empty read would satisfy the assertion below for the wrong reason —
+    // emotion writing CSSOM rules instead of text nodes would silently turn
+    // this into a pass. So check the read happened first.
+    const surfaceCss = injectedCssFor(getCard());
+    expect(surfaceCss).not.toBe('');
+
     // The affordance is the card body's shadow deepening, not a tint on the
     // surface; reintroducing one would be a new look rather than this fix.
-    expect(injectedCssFor(getCard())).not.toMatch(/background(-color)?\s*:/);
+    expect(surfaceCss).not.toMatch(/background(-color)?\s*:/);
+  });
+
+  it('gives the card body a themed background and a resting shadow', async () => {
+    renderCard(<CardWithInnerControl />);
+    await act(() => Promise.resolve());
+
+    const bodyCss = injectedCssFor(getCardBody());
+    expect(bodyCss).not.toBe('');
+
+    expect(bodyCss).toContain(`background-color:${theme.tableBackground}`);
+    expect(bodyCss).toMatch(/box-shadow:\s*0 2px 6px/);
+  });
+
+  it('deepens the card body shadow on hover', async () => {
+    renderCard(<CardWithInnerControl />);
+    await act(() => Promise.resolve());
+
+    const bodyCss = injectedCssFor(getCardBody());
+    expect(bodyCss).not.toBe('');
+
+    // getComputedStyle cannot see a :hover state in jsdom, so this is the only
+    // place the hover claim is checkable at all.
+    expect(bodyCss).toMatch(/:hover\s*\{[^{}]*box-shadow:\s*0 4px 6px/);
+  });
+
+  it('records the nested-interactive trade in the comment above the surface', () => {
+    const source = readOwnSource('ReportCard.tsx');
+
+    // Without a <Button>, role="button" around focusable descendants is itself
+    // the nested-interactive shape. Saying so is the point of the comment.
+    expect(source).toContain('nested-interactive');
+    expect(source).toContain('CalendarCard');
   });
 });
