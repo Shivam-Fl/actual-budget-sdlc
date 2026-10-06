@@ -30,12 +30,18 @@ export function useDashboardWidget<W extends DashboardWidgetEntity>({
   // explanation, which is worse than a spinner.
   const isFirstLoad = query.isPending && query.fetchStatus !== 'idle';
 
-  // Returned explicitly rather than spread: spreading would leave `status`,
-  // `isSuccess` and `isInitialLoading` visible next to a derived `isPending`
-  // that disagrees with them on an id-less route.
+  // One rule for the whole return: it carries what a caller needs — the data,
+  // the derived loading flag, and `fetchStatus` because that is the un-derived
+  // input the derivation reads, so a caller seeing `isPending: false` can tell a
+  // disabled query from one that resolved with no data.
+  //
+  // Returned explicitly rather than spread because spreading would leave
+  // react-query's `status`, `isSuccess` and `isInitialLoading` visible next to a
+  // derived `isPending` that disagrees with them on an id-less route. Everything
+  // else react-query exposes either disagrees with the derived flag or has no
+  // reader.
   return {
     data: query.data,
-    error: query.error,
     isPending: isFirstLoad,
     isLoading: isFirstLoad,
     fetchStatus: query.fetchStatus,

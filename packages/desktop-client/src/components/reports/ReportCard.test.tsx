@@ -1,9 +1,6 @@
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-
 import { Button } from '@actual-app/components/button';
 import { theme } from '@actual-app/components/theme';
 import { View } from '@actual-app/components/view';
@@ -11,11 +8,13 @@ import { initServer } from '@actual-app/core/platform/client/connection';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { MockInstance } from 'vitest';
 
+import { Link } from '#components/common/Link';
 import {
   configureTestAppStore,
   createTestQueryClient,
   TestProviders,
 } from '#mocks';
+import { readNormalizedSource } from '#mocks/source';
 
 import { ReportCard } from './ReportCard';
 
@@ -101,6 +100,63 @@ function CardWithNativeInnerControls() {
   );
 }
 
+// A descendant the browser can focus but that is not a control: it can take a
+// keypress, so the keydown guard hands it the keypress, but a click on it is an
+// ordinary card click. ReportTable's scroll container renders exactly this.
+function CardWithFocusablePlainDiv() {
+  return (
+    <ReportCard widgetId="widget-1" to="/reports/net-worth">
+      <View>
+        <span>Balance Forecast</span>
+        <div tabIndex={0} data-testid="focusable-div">
+          Focusable plain div
+        </div>
+      </View>
+    </ReportCard>
+  );
+}
+
+function CardWithInnerLink() {
+  return (
+    <ReportCard widgetId="widget-1" to="/reports/net-worth">
+      <View>
+        <span>Balance Forecast</span>
+        {/* The external variant renders a plain <a href>, which is what the
+            selector entry matches — and the repo forbids a bare <a>. */}
+        <Link variant="external" to="https://example.com">
+          link
+        </Link>
+      </View>
+    </ReportCard>
+  );
+}
+
+function CardWithInnerRole({ role }: { role: string }) {
+  return (
+    <ReportCard widgetId="widget-1" to="/reports/net-worth">
+      <View>
+        <span>Balance Forecast</span>
+        <div role={role} data-testid="inner-role">
+          Inner role
+        </div>
+      </View>
+    </ReportCard>
+  );
+}
+
+function CardWithInnerSummary() {
+  return (
+    <ReportCard widgetId="widget-1" to="/reports/net-worth">
+      <View>
+        <span>Balance Forecast</span>
+        <details>
+          <summary data-testid="inner-summary">Inner summary</summary>
+        </details>
+      </View>
+    </ReportCard>
+  );
+}
+
 function getCard() {
   return screen.getByRole('button', { name: /Balance Forecast/ });
 }
@@ -112,15 +168,6 @@ function getCardBody() {
   const body = getCard().firstElementChild;
   if (!body) throw new Error('the card rendered no body');
   return body;
-}
-
-// Reads a sibling source file and flattens it enough that a claim about a
-// comment cannot be satisfied or dodged purely by where the line breaks and
-// `//` markers fall.
-function readOwnSource(file: string) {
-  return readFileSync(path.resolve(import.meta.dirname, file), 'utf8')
-    .replaceAll(/^\s*\/\//gm, ' ')
-    .replaceAll(/\s+/g, ' ');
 }
 
 function dispatchKeyDown(target: Element, key: string, repeat = false) {
@@ -338,6 +385,88 @@ describe('ReportCard click surface', () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
+  // The next two pin a deliberate asymmetry between the two guards on this
+  // surface, not a bug. Focusability is what the keydown guard tests, but it is
+  // deliberately NOT what the click guard tests: a click can start on static
+  // content, so the click guard asks whether the click landed on an activatable
+  // control instead. ReportTable's `tabIndex={0}` scroll container is why that
+  // distinction has to hold — it renders inside a card that carries a `to`, and
+  // a click anywhere in that table still navigates the card while Enter on it
+  // does not. Adding `[tabindex]` to INTERACTIVE_SELECTOR would collapse the
+  // two guards together and silently break that click.
+  it('navigates the card when a focusable non-activatable descendant is clicked', async () => {
+    renderCard(<CardWithFocusablePlainDiv />);
+    await act(() => Promise.resolve());
+
+    fireEvent.click(screen.getByTestId('focusable-div'));
+
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith('/reports/net-worth', {
+      state: { goBack: true },
+    });
+  });
+
+  it('does not navigate when Enter is pressed on a focusable non-activatable descendant', async () => {
+    renderCard(<CardWithFocusablePlainDiv />);
+    await act(() => Promise.resolve());
+
+    dispatchKeyDown(screen.getByTestId('focusable-div'), 'Enter');
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  // The selector gives a link inside a widget body its own click, by the same
+  // rule that keeps CalendarCard's month button from also navigating the card.
+  // Unreachable through the app today — no card body renders an anchor, and
+  // MarkdownCard, the only body that renders markdown, passes no `to` and so
+  // never installs this handler — which is why the entry needs a test of its
+  // own rather than a reason to be deleted.
+  it('does not navigate when a link inside the widget body is clicked', async () => {
+    renderCard(<CardWithInnerLink />);
+    await act(() => Promise.resolve());
+
+    fireEvent.click(screen.getByRole('link', { name: 'link' }));
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  // One case per selector entry, so deleting a single entry fails exactly one
+  // of them rather than hiding inside a shared assertion.
+  const activatableRoles = [
+    'radio',
+    'switch',
+    'option',
+    'menuitemcheckbox',
+    'menuitemradio',
+    'textbox',
+    'combobox',
+    'searchbox',
+    'slider',
+    'spinbutton',
+    'treeitem',
+  ];
+
+  it.each(activatableRoles)(
+    'does not navigate when a descendant with role=%s is clicked',
+    async role => {
+      renderCard(<CardWithInnerRole role={role} />);
+      await act(() => Promise.resolve());
+
+      fireEvent.click(screen.getByTestId('inner-role'));
+
+      expect(mockNavigate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not navigate when a summary inside the widget body is clicked', async () => {
+    renderCard(<CardWithInnerSummary />);
+    await act(() => Promise.resolve());
+
+    fireEvent.click(screen.getByTestId('inner-summary'));
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
   it('gives the click surface no background, at rest or on hover', async () => {
     renderCard(<CardWithInnerControl />);
     await act(() => Promise.resolve());
@@ -377,7 +506,7 @@ describe('ReportCard click surface', () => {
   });
 
   it('records the nested-interactive trade in the comment above the surface', () => {
-    const source = readOwnSource('ReportCard.tsx');
+    const source = readNormalizedSource(import.meta.dirname, 'ReportCard.tsx');
 
     // Without a <Button>, role="button" around focusable descendants is itself
     // the nested-interactive shape. Saying so is the point of the comment.

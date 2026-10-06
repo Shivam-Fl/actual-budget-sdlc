@@ -20,8 +20,28 @@ import {
 
 import { NON_DRAGGABLE_AREA_CLASS_NAME } from './constants';
 
-// Everything a click can land on that owns the click itself. Used to tell a
-// card click apart from a click on a control the widget body rendered.
+// Everything a click can land on that owns the click itself. The invariant: a
+// click on the card's own content navigates the card, while a click on a control
+// the widget body rendered belongs to that control. This list is what tells the
+// two apart — which is also why the surface is a View with role="button" rather
+// than a <Button>, since a <button> here could not host a control of its own.
+//
+// The two guards on this surface deliberately cover different sets. A click can
+// start anywhere — a span, a chart node, table text — so this guard asks "is
+// this an activatable control?". A keypress can only ever start on a focusable
+// element, so the keydown guard below can ask the cheaper "did this start
+// somewhere other than the surface?" and cover every descendant at once.
+//
+// Focusability is therefore NOT the click guard's test, which is why `[tabindex]`
+// is absent from this list even though the keydown guard treats every descendant
+// as owning its keypress. ReportTable's `tabIndex={0}` scroll container renders
+// inside a card that carries a `to` — a custom-report widget whose graphType is
+// TableGraph — so a click anywhere in that table navigates the card while Enter
+// on it does not. That asymmetry is deliberate, and it is pinned by tests in
+// ReportCard.test.tsx.
+//
+// `a[href]` is here for the same reason as CalendarCard's month button: a link
+// in a widget body owns its own click, or both navigations would fire.
 const INTERACTIVE_SELECTOR = [
   'button',
   'input',
@@ -34,6 +54,18 @@ const INTERACTIVE_SELECTOR = [
   '[role="checkbox"]',
   '[role="tab"]',
   '[role="menuitem"]',
+  '[role="radio"]',
+  '[role="switch"]',
+  '[role="option"]',
+  '[role="menuitemcheckbox"]',
+  '[role="menuitemradio"]',
+  '[role="textbox"]',
+  '[role="combobox"]',
+  '[role="searchbox"]',
+  '[role="slider"]',
+  '[role="spinbutton"]',
+  '[role="treeitem"]',
+  'summary',
 ].join(',');
 
 type ReportCardProps = {

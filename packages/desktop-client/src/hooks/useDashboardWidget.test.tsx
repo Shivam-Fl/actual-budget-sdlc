@@ -1,8 +1,5 @@
 import type { ReactNode } from 'react';
 
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-
 import { initServer } from '@actual-app/core/platform/client/connection';
 import type { NetWorthWidget } from '@actual-app/core/types/models';
 import { render, renderHook, screen, waitFor } from '@testing-library/react';
@@ -12,6 +9,7 @@ import {
   createTestQueryClient,
   TestProviders,
 } from '#mocks';
+import { readNormalizedSource } from '#mocks/source';
 
 import { useDashboardWidget } from './useDashboardWidget';
 
@@ -128,7 +126,9 @@ describe('useDashboardWidget', () => {
   // Spreading the react-query result would put these back next to a derived
   // isPending that disagrees with them: on an id-less route a caller could read
   // isPending === false alongside status === 'pending' and isSuccess === false.
-  it('does not expose status, isSuccess or isInitialLoading', () => {
+  // `error` had no reader at all, so it is dropped too; `fetchStatus` stays
+  // because the derived flag above is computed from it.
+  it('exposes only data, the derived loading flags and fetchStatus', () => {
     const { wrapper } = setup();
     const { result } = renderHook(() => useDashboardWidget({ id: undefined }), {
       wrapper,
@@ -137,15 +137,14 @@ describe('useDashboardWidget', () => {
     expect(result.current).not.toHaveProperty('status');
     expect(result.current).not.toHaveProperty('isSuccess');
     expect(result.current).not.toHaveProperty('isInitialLoading');
+    expect(result.current).not.toHaveProperty('error');
   });
 
   it('records in a comment what isFirstLoad actually computes', () => {
-    const source = readFileSync(
-      path.resolve(import.meta.dirname, 'useDashboardWidget.ts'),
-      'utf8',
-    )
-      .replaceAll(/^\s*\/\//gm, ' ')
-      .replaceAll(/\s+/g, ' ');
+    const source = readNormalizedSource(
+      import.meta.dirname,
+      'useDashboardWidget.ts',
+    );
 
     // The comment used to claim to be react-query's own isLoading, which it is
     // not. It hid across a line break and a `//` marker, so only a normalized
