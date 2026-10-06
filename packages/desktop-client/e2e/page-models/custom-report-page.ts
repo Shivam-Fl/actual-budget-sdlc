@@ -48,32 +48,16 @@ export class CustomReportPage {
   }
 
   /**
-   * Open the conditions picker. The report's filter button is the icon-only
-   * button in the topbar - it carries no accessible name - so it is found by
-   * its position among the topbar buttons rather than by role name.
+   * Open the conditions picker. The report's filter button is icon-only, so it
+   * carries an aria-label rather than a text node - which means it is addressed
+   * by its accessible name rather than by its position among the topbar
+   * buttons. `exact` keeps it distinct from the accounts page's sibling, which
+   * is named 'Filter'.
    */
   async openConditionsMenu() {
-    const buttons = this.pageContent.getByRole('button');
-    const count = await buttons.count();
-
-    for (let index = 0; index < count; index++) {
-      const button = buttons.nth(index);
-      const hasName =
-        (await button.getAttribute('aria-label')) ||
-        (await button.innerText()).trim();
-      if (hasName) {
-        continue;
-      }
-
-      const box = await button.boundingBox();
-      // Top-right of the topbar, left of the report-name button.
-      if (box && box.x > 850) {
-        await button.click();
-        return;
-      }
-    }
-
-    throw new Error('Could not find the report conditions button');
+    await this.pageContent
+      .getByRole('button', { name: 'Filters', exact: true })
+      .click();
   }
 
   /** The row NAMES the table renders, with the amounts filtered out. */
