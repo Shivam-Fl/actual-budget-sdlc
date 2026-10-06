@@ -63,8 +63,8 @@ export function createGroupedSpreadsheet({
     });
     const conditionsOpKey = conditionsOp === 'or' ? '$or' : '$and';
 
-    // Same rule as custom-spreadsheet: a weekly bucket covers its whole week,
-    // clamped to today. Without this the grouped/table view of the same weekly
+    // Same rule as the rest of the report — see getEffectiveEndDate in
+    // reportRanges.ts. Without it the grouped/table view of the same weekly
     // report would disagree with its graph view.
     const effectiveEndDate = getEffectiveEndDate(
       endDate,
@@ -89,13 +89,9 @@ export function createGroupedSpreadsheet({
       budgetType,
     }));
 
-    // This guard remaps rows onto week starts; it is deliberately *not* applied
-    // to the widening above, which applies to every balance type. Budget rows
-    // arrive keyed by month while weekly bucket labels are week starts, so a
-    // budget row can never match a bucket and the remap would only misattribute
-    // one. Widening a budgeted weekly report is therefore free: it fetches one
-    // more month of rows that are still discarded. Keep the two decisions as
-    // they are — the widening is shared, this remap is budgeted-only.
+    // Budget rows are keyed by month and weekly buckets by week start, so no
+    // budget row can match a bucket and the widening above is free; this remap
+    // stays budgeted-only because it would misattribute one.
     if (interval === 'Weekly' && balanceTypeOp !== 'totalBudgeted') {
       debts = debts.map(d => {
         return {
@@ -130,9 +126,7 @@ export function createGroupedSpreadsheet({
           showHiddenCategories,
           showUncategorized,
           startDate,
-          endDate,
-          interval,
-          firstDayOfWeekIdx,
+          effectiveEndDate,
         });
 
         const stackedCategories =
@@ -148,9 +142,7 @@ export function createGroupedSpreadsheet({
               showHiddenCategories,
               showUncategorized,
               startDate,
-              endDate,
-              interval,
-              firstDayOfWeekIdx,
+              effectiveEndDate,
             });
             return { ...calc };
           });

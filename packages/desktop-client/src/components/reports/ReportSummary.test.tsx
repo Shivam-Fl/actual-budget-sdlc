@@ -30,10 +30,10 @@ function pinToday(today: string) {
 }
 
 /**
- * The date range lives in the summary's first child view. Read it directly
- * rather than through `getByText`, because a yearly report collapses the range
- * to a bare year and the summary body renders other strings a substring search
- * would trip over.
+ * Reads the date range out of the summary's header node itself. Used by the
+ * yearly case, which `getByText` cannot reach: both ends format to '2026' and
+ * the from-to segment is suppressed, so only the node's exact textContent
+ * distinguishes it.
  */
 function getHeader(container: HTMLElement) {
   const header = container.firstElementChild?.firstElementChild;
@@ -130,30 +130,31 @@ describe('ReportSummary date range', () => {
   it('honours a Monday first day of week in the weekly header', () => {
     pinToday('2026-10-09');
 
-    const { container } = renderSummary({
+    renderSummary({
       startDate: '2026-09-28',
       endDate: '2026-09-28',
       interval: 'Weekly',
       firstDayOfWeekIdx: '1',
     });
 
-    expect(getHeader(container)).toHaveTextContent('09/28/2026 to 10/04/2026');
+    expect(screen.getByText('09/28/2026 to 10/04/2026')).toBeInTheDocument();
   });
 
   it('stops a Sunday-first week one day earlier than a Monday-first one', () => {
     // Same inputs as above, so the pair proves the pref reaches the header: a
     // To that is itself the last day of its week would make either case a
-    // no-op and both assertions pass with the pref ignored.
+    // no-op and both assertions pass with the pref ignored. Both assert through
+    // getByText, like the six above; only the yearly case needs getHeader.
     pinToday('2026-10-09');
 
-    const { container } = renderSummary({
+    renderSummary({
       startDate: '2026-09-28',
       endDate: '2026-09-28',
       interval: 'Weekly',
       firstDayOfWeekIdx: '0',
     });
 
-    expect(getHeader(container)).toHaveTextContent('09/28/2026 to 10/03/2026');
+    expect(screen.getByText('09/28/2026 to 10/03/2026')).toBeInTheDocument();
   });
 
   it('leaves a Daily header on the dates it was given', () => {

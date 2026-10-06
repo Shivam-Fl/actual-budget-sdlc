@@ -185,7 +185,6 @@ function getQueryEndDates(): string[] {
 async function runCustom(props: createCustomSpreadsheetProps): Promise<{
   data: CustomData;
   queryEndDates: string[];
-  budgetMonths: string[];
 }> {
   const queryEndDates = getQueryEndDates();
 
@@ -199,7 +198,7 @@ async function runCustom(props: createCustomSpreadsheetProps): Promise<{
   if (!data) {
     throw new Error('Spreadsheet did not produce report data');
   }
-  return { data, queryEndDates, budgetMonths: [...budgetMonths] };
+  return { data, queryEndDates };
 }
 
 async function runGrouped(

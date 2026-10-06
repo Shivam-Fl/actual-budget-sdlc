@@ -3,13 +3,11 @@ import type {
   GroupedEntity,
   IntervalEntity,
 } from '@actual-app/core/types/models';
-import type { SyncedPrefs } from '@actual-app/core/types/prefs';
 
 import type {
   QueryDataEntity,
   UncategorizedEntity,
 } from '#components/reports/ReportOptions';
-import { getEffectiveEndDate } from '#components/reports/reportRanges';
 
 import { filterHiddenItems } from './filterHiddenItems';
 
@@ -23,9 +21,7 @@ type recalculateProps = {
   showHiddenCategories?: boolean;
   showUncategorized?: boolean;
   startDate: string;
-  endDate: string;
-  interval: string;
-  firstDayOfWeekIdx?: SyncedPrefs['firstDayOfWeekIdx'];
+  effectiveEndDate: string;
 };
 
 export function recalculate({
@@ -38,9 +34,7 @@ export function recalculate({
   showHiddenCategories,
   showUncategorized,
   startDate,
-  endDate,
-  interval,
-  firstDayOfWeekIdx,
+  effectiveEndDate,
 }: recalculateProps): GroupedEntity {
   let totalAssets = 0;
   let totalDebts = 0;
@@ -88,17 +82,14 @@ export function recalculate({
 
       const change = last ? intervalTotals - last.totalTotals : 0;
 
-      // The last weekly bucket covers its whole week, not just the week-start
-      // the From/To pickers can offer, and never projects past today. Same rule
-      // as the query bound in the spreadsheet factories, so the bucket and the
-      // data behind it agree.
-      //
-      // The helper is anchored on `endDate` rather than this bucket's own start:
-      // the final element of a weekly range is `weekFromDate(endDate)`, so both
-      // are in the same week and give the same answer.
+      // The caller passes the end date it already computed for its query bound,
+      // so this bucket and the data behind it cannot disagree. It is the
+      // caller's own effectiveEndDate rather than one recomputed from `endDate`
+      // here, because only the caller knows which endDate its `intervals` were
+      // built from.
       const intervalEndDate =
         index + 1 === intervals.length
-          ? getEffectiveEndDate(endDate, interval, firstDayOfWeekIdx)
+          ? effectiveEndDate
           : monthUtils.subDays(intervals[index + 1], 1);
 
       arr.push({
