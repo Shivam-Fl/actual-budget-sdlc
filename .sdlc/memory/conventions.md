@@ -50,6 +50,19 @@ comment in this repo, read it top to bottom against the code it sits above. See
 - A regression test must be **able to fail**. Assert on behaviour, not on the presence
   of a mock: `expect(vi.isMockFunction(globalThis.fetch)).toBe(true)` passes for a spy
   that serves nothing. Prove it by sabotaging the guard and recording the failing run.
+- **React's two key warnings are not interchangeable, and one of them is
+  deduplicated per test file.** `'Encountered two children with the same key'` is emitted
+  on every offending render, so several tests in one file can each assert it.
+  `'Each child in a list should have a unique "key" prop.'` is emitted **at most once
+  per test file** — measured at `missing=1, missing=0, missing=0` across three
+  separate tests — so whichever test renders first consumes the file's budget and
+  every later test asserting on it **passes vacuously however the keys are built**. A
+  test that guards a missing-key failure must therefore own a file of its own, or it
+  is decoration. Also keep each filter narrow: a `/same key/` pattern also matches the
+  missing-key sentence, so one test's filter can absorb another's signal.
+- An assertion of "no warning logged" needs a **positive** assertion beside it. On an
+  empty render the warning assertion passes whether or not the component rendered, so
+  assert the rows are on screen first.
 - `loot-core` splits its suite across two vitest configs with different `include` lists —
   see `qa/environment.md` before running a single file.
 - e2e is **not** covered by `yarn typecheck`. See `qa/environment.md`.
