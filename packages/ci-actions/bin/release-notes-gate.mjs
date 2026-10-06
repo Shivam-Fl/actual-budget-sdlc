@@ -10,6 +10,7 @@ import {
   describeAuthor,
   findNonPersonAuthors,
   sanitizeWorkflowCommandData,
+  listNotePaths as walkNotePaths,
 } from '../src/release-notes/util.mjs';
 
 // Resolved against this file rather than the working directory, because lage and
@@ -23,36 +24,22 @@ const NOTES_DIR = fileURLToPath(
  * Every release note under NOTES_DIR, as paths relative to it with forward
  * slashes, sorted.
  *
- * The walk is recursive and README.md is excluded only at the top level, which
- * is `selectReleaseNotePaths`' rule rather than `parseReleaseNotes`' — the two
- * already disagree about the same directory, because one is fed a recursive git
- * diff pathspec and the other a single `readdir`. The checker selects a nested
- * note, the changelog generator lists it with `git ls-tree -r` and
- * count-points.mjs counts it under a recursive `upcoming-release-notes` glob, so
- * a note this gate cannot see is a note that is published and credited to
- * nobody. Rules come from util.mjs for the same reason: one rule set, so the
- * gate and the checker cannot drift apart.
+ * The walk lives in util.mjs and this is the wrapper that supplies the default,
+ * because the rule it encodes — recurse into every subdirectory, and exclude
+ * README.md only at the top level — has to be the same rule everywhere the notes
+ * directory is enumerated. The checker selects a nested note through a recursive
+ * git diff pathspec, the changelog generator lists it with `git ls-tree -r` and
+ * count-points.mjs counts it under a recursive `upcoming-release-notes` glob; the
+ * publisher calls this very function. One implementation, so a note nobody can
+ * see is no longer a note that gets validated, counted, and then published
+ * nowhere and credited to nobody.
+ *
+ * `onError` is forwarded rather than reimplemented: the gate is the caller that
+ * reports an unreadable directory instead of throwing on it, and it can only do
+ * that if the walk does not stop there.
  */
-export function listNotePaths(dir = NOTES_DIR) {
-  const paths = [];
-
-  function walk(current, prefix) {
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-
-      if (entry.isDirectory()) {
-        walk(path.join(current, entry.name), relative);
-      } else if (entry.name.endsWith('.md') && relative !== 'README.md') {
-        paths.push(relative);
-      }
-    }
-  }
-
-  walk(dir, '');
-  // Compared rather than left to the default, because a default sort compares
-  // UTF-16 code units: the report order is part of what a contributor reads when
-  // several notes fail at once, and it should not shift with the input locale.
-  return paths.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+export function listNotePaths(dir = NOTES_DIR, onError) {
+  return walkNotePaths(dir, onError);
 }
 
 /**
@@ -64,7 +51,7 @@ export function listNotePaths(dir = NOTES_DIR) {
  * contributor has to type into a shell — and which is why the nested case names
  * `qa-nested/bad-note.md` rather than a bare basename.
  */
-export function validateNote(relativePath, dir = NOTES_DIR) {
+function validateNote(relativePath, dir = NOTES_DIR) {
   let data;
   let content;
 
@@ -116,14 +103,42 @@ export function validateNote(relativePath, dir = NOTES_DIR) {
   return failures;
 }
 
-/** Every rule failure across every note in the directory, in path order. */
+/**
+ * Every rule failure across every note in the directory, in path order.
+ *
+ * A directory the walk cannot read is a failure like any other, and it is
+ * reported alongside the note failures rather than instead of them: catching it
+ * around the whole walk meant one unreadable subdirectory discarded every note
+ * already read, so the next run met a previously hidden failure for the first
+ * time. The top-level directory is the same case with an empty prefix, and still
+ * yields exactly one string — the caller prints each entry as an `::error::` line
+ * and exits 1, which is how an unreadable directory reaches the log instead of a
+ * stack trace.
+ */
 export function collectFailures(dir = NOTES_DIR) {
-  return listNotePaths(dir).flatMap(relativePath =>
-    validateNote(relativePath, dir),
-  );
+  const unreadable = [];
+  const paths = listNotePaths(dir, (prefix, error) => {
+    // Named rather than a fixed string, because the suite hands this a temporary
+    // directory and a fixed one would misreport it.
+    unreadable.push(
+      `cannot read ${prefix ? path.join(dir, prefix) : dir}: ${error.message}`,
+    );
+  });
+
+  // Sorted like the walk's own paths, and for the same reason: these entries
+  // arrive in readdir order, which is the filesystem's and not ours, and a
+  // contributor reading several failures at once must not see them reordered by
+  // which machine they ran on.
+  // oxlint-disable-next-line typescript/require-array-sort-compare -- the default comparator already is the deterministic, locale-independent order
+  const sorted = unreadable.sort();
+
+  return [
+    ...sorted,
+    ...paths.flatMap(relativePath => validateNote(relativePath, dir)),
+  ];
 }
 
-export function main() {
+function main() {
   const failures = collectFailures();
 
   if (failures.length > 0) {

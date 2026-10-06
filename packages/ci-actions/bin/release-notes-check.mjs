@@ -17,7 +17,15 @@ const execFile = promisify(childProcess.execFile);
 
 const NOTES_DIR = 'upcoming-release-notes';
 
-console.log('Looking in ' + fs.realpathSync(NOTES_DIR));
+try {
+  console.log('Looking in ' + fs.realpathSync(NOTES_DIR));
+} catch (error) {
+  // Reported rather than thrown, and through the same reportError as every
+  // other failure below: a missing notes directory is a fact about the checkout
+  // this job can explain, not a stack trace the contributor has to read. The
+  // exit code is unchanged — both of reportError's exits are 1.
+  reportError('Cannot read ' + NOTES_DIR + '/: ' + error.message);
+}
 
 const baseRef = process.env.BASE_REF;
 if (!baseRef) {
@@ -41,18 +49,26 @@ function reportError(message) {
     : '';
   console.log(`::notice::${sanitizeWorkflowCommandData(readme)}`);
 
-  // GITHUB_STEP_SUMMARY is supplied by the runner, so it is always set in
-  // Actions and absent on a local run. The summary is the only thing the
-  // message is written to, so without it there is nothing left to do but exit.
-  if (!process.env.GITHUB_STEP_SUMMARY) {
-    process.exit(1);
+  // GITHUB_STEP_SUMMARY is supplied by the runner and absent on a local run,
+  // and the two are written to the same place: a synchronous append guarded by
+  // try/catch, then an unconditional exit. The write has to be guarded because
+  // appendFileSync throws on an unwritable summary path, and an unhandled
+  // WriteStream 'error' event would replace this message with a stack trace —
+  // defeating the reason this function exists. The exit has to be unconditional
+  // because the deferred one only ran on 'close': with the summary set, which is
+  // every real Actions run and the shape this script's module-scope guard calls
+  // it in, reportError returned and the checks below carried on to report a
+  // second, unrelated error over the first.
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    try {
+      fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, readme);
+    } catch {
+      // Nothing: the error line above is the report, and an unwritable summary
+      // path must not turn it into a stack trace.
+    }
   }
 
-  fs.createWriteStream(process.env.GITHUB_STEP_SUMMARY)
-    .end(readme)
-    .on('close', () => {
-      process.exit(1);
-    });
+  process.exit(1);
 }
 
 function validateFile(path) {
