@@ -9,6 +9,28 @@ import type {
   TransactionEntity,
 } from '@actual-app/core/types/models';
 
+// A schedule link and its occurrence stamp are only meaningful together, so
+// every builder here writes `schedule_occurrence` explicitly: on update an
+// omitted key is never written and the stale stamp would survive.
+
+export function linkScheduleUpdate(
+  id: string,
+  scheduleId: string,
+): Partial<TransactionEntity> {
+  return { id, schedule: scheduleId, schedule_occurrence: null };
+}
+
+export function unlinkScheduleUpdate(id: string): Partial<TransactionEntity> {
+  // The cast `schedule: null` needs: the column stores null for "unlinked",
+  // but `TransactionEntity['schedule']` is typed `string`. Widening the model
+  // would retire it.
+  return {
+    id,
+    schedule: null,
+    schedule_occurrence: null,
+  } as unknown as Partial<TransactionEntity>;
+}
+
 export function isFutureTransaction(transaction: TransactionEntity): boolean {
   const today = monthUtils.currentDay();
   return transaction.date > today;

@@ -27,6 +27,7 @@ import type {
 } from '#modals/modalsSlice';
 import { aqlQuery } from '#queries/aqlQuery';
 import { useDispatch } from '#redux';
+import { unlinkScheduleUpdate } from '#util/schedule-actions';
 
 type BatchReconciledReason = Extract<
   ConfirmTransactionEditReason,
@@ -432,9 +433,7 @@ export function useTransactionBatchActions() {
     onSuccess,
   }: BatchUnlinkScheduleProps) => {
     const changes = {
-      updated: ids.map(
-        id => ({ id, schedule: null }) as unknown as Partial<TransactionEntity>,
-      ),
+      updated: ids.map(unlinkScheduleUpdate),
     };
     await send('transactions-batch-update', changes);
     onSuccess?.(ids);
