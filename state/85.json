@@ -467,5 +467,6 @@
       "Whether a user reads the rules-side outcome of a refused `doesNotContain` as a bug. It is a genuine semantic change on that surface, recorded in AC-11 and in the unicodeLike.ts comment, but no UI distinguishes 'refused' from 'matched nothing', so a user has no signal that the pattern was refused rather than evaluated. Surfacing one is a product decision this ticket does not make (see out_of_scope)."
     ],
     "version": 7
-  }
+  },
+  "stall_reported_for": "2026-10-06T06:44:30.315Z"
 }
