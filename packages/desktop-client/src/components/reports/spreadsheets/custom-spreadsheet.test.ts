@@ -377,6 +377,20 @@ afterEach(async () => {
   servedRows.current = weeklyRows;
 });
 
+// The weekly end-bound suite lives here and nowhere else.
+//
+// A second copy of these same ten cases lived in weekly-end-date.test.ts,
+// left behind by a merge-conflict resolution; vitest's glob picked up both
+// files, so every case ran twice on every test run.
+//
+// The two were compared before the duplicate was deleted: the ten `it`
+// titles are identical, and diffing the describe blocks differs only in the
+// props wrapper (`runCustom({...})` against `runCustom(weeklyProps({...}))`,
+// whose defaults are the ones `runCustom` already supplied). No assertion,
+// expected value or fixture differs anywhere in the diff.
+//
+// Nothing was folded back, because the duplicate added nothing unique.
+
 describe('weekly custom report end bound', () => {
   it('covers the whole final week once that week has elapsed', async () => {
     pinToday('2026-10-05');
